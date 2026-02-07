@@ -563,32 +563,12 @@ class TestProxyManagerMergeQueue:
             await manager._trigger_merge_workflow("abc12345", "make test")
 
 
-class TestProxyManagerStopCommand:
-    """Tests for @botName stop command handling."""
+class TestStopReaction:
+    """Tests for 🛑 reaction-based stop handling."""
 
     @pytest.mark.asyncio
-    async def test_stop_command_detected(self):
-        """Test stop command is recognized in comment."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager)
-        manager.mention_keyword = "@coder"
-        manager._handle_stop_command = AsyncMock()
-
-        await manager._handle_board_event(
-            {
-                "event_type": "comment_created",
-                "card_id": "abc12345",
-                "comment_id": "comm1",
-                "content": "@coder stop",
-                "author_name": "Paul",
-            }
-        )
-
-        manager._handle_stop_command.assert_called_once_with("abc12345", "comm1")
-
-    @pytest.mark.asyncio
-    async def test_stop_command_kills_process(self):
-        """Test stop command kills the Claude process."""
+    async def test_stop_reaction_kills_process(self):
+        """Test 🛑 reaction on triggering comment kills the Claude process."""
         state_manager = MagicMock()
         manager = ProxyManager(state_manager)
         manager.client = MagicMock()
@@ -597,16 +577,20 @@ class TestProxyManagerStopCommand:
         manager._active_sessions["abc12345"] = ActiveSession(
             card_id="abc12345",
             worktree_path=Path("/tmp/wt"),
+            comment_id="comm1",
             process=mock_process,
         )
 
-        await manager._handle_stop_command("abc12345", "comm1")
+        await manager._handle_reaction_added(
+            {"emoji": "🛑", "card_id": "abc12345", "comment_id": "comm1", "user_name": "Paul"}
+        )
 
         mock_process.kill.assert_called_once()
+        assert "abc12345" not in manager._active_sessions
 
     @pytest.mark.asyncio
-    async def test_stop_command_preserves_worktree(self):
-        """Test stop command does NOT remove worktree."""
+    async def test_stop_reaction_preserves_worktree(self):
+        """Test 🛑 reaction does NOT remove worktree."""
         state_manager = MagicMock()
         manager = ProxyManager(state_manager)
         manager.client = MagicMock()
@@ -615,16 +599,80 @@ class TestProxyManagerStopCommand:
         manager._active_sessions["abc12345"] = ActiveSession(
             card_id="abc12345",
             worktree_path=Path("/tmp/wt"),
+            comment_id="comm1",
             process=MagicMock(),
         )
 
-        await manager._handle_stop_command("abc12345", "comm1")
+        await manager._handle_stop_reaction("abc12345", "comm1")
 
         manager.worktree_manager.remove_worktree.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_stop_command_adds_reaction(self):
-        """Test stop command adds 🛑 reaction."""
+    async def test_stop_reaction_no_active_session_noop(self):
+        """Test 🛑 reaction does nothing if no active session."""
+        state_manager = MagicMock()
+        manager = ProxyManager(state_manager)
+        manager.client = MagicMock()
+
+        # No active session for this card
+        await manager._handle_stop_reaction("abc12345", "comm1")
+
+        # Should not raise, session dict unchanged
+        assert len(manager._active_sessions) == 0
+
+    @pytest.mark.asyncio
+    async def test_stop_reaction_ignores_wrong_comment(self):
+        """Test 🛑 reaction on a different comment is ignored."""
+        state_manager = MagicMock()
+        manager = ProxyManager(state_manager)
+        manager.client = MagicMock()
+
+        mock_process = MagicMock()
+        manager._active_sessions["abc12345"] = ActiveSession(
+            card_id="abc12345",
+            worktree_path=Path("/tmp/wt"),
+            comment_id="comm1",  # Session was triggered by comm1
+            process=mock_process,
+        )
+
+        # React on a different comment (comm2)
+        await manager._handle_stop_reaction("abc12345", "comm2")
+
+        # Process should NOT be killed
+        mock_process.kill.assert_not_called()
+        assert "abc12345" in manager._active_sessions
+
+    @pytest.mark.asyncio
+    async def test_stop_reaction_routed_from_board_event(self):
+        """Test 🛑 reaction is properly routed from _handle_board_event."""
+        state_manager = MagicMock()
+        manager = ProxyManager(state_manager)
+        manager.client = MagicMock()
+        manager._handle_stop_reaction = AsyncMock()
+
+        mock_process = MagicMock()
+        manager._active_sessions["abc12345"] = ActiveSession(
+            card_id="abc12345",
+            worktree_path=Path("/tmp/wt"),
+            comment_id="comm1",
+            process=mock_process,
+        )
+
+        await manager._handle_board_event(
+            {
+                "event_type": "reaction_added",
+                "emoji": "🛑",
+                "card_id": "abc12345",
+                "comment_id": "comm1",
+                "user_name": "Paul",
+            }
+        )
+
+        manager._handle_stop_reaction.assert_called_once_with("abc12345", "comm1")
+
+    @pytest.mark.asyncio
+    async def test_stop_reaction_no_process_still_cleans_session(self):
+        """Test 🛑 reaction cleans up session even if no process is running."""
         state_manager = MagicMock()
         manager = ProxyManager(state_manager)
         manager.client = MagicMock()
@@ -632,25 +680,42 @@ class TestProxyManagerStopCommand:
         manager._active_sessions["abc12345"] = ActiveSession(
             card_id="abc12345",
             worktree_path=Path("/tmp/wt"),
-            process=MagicMock(),
+            comment_id="comm1",
+            process=None,  # No process yet
         )
 
-        await manager._handle_stop_command("abc12345", "comm1")
+        await manager._handle_stop_reaction("abc12345", "comm1")
 
-        manager.client.toggle_reaction.assert_called_with("abc12345", "comm1", "🛑")
+        assert "abc12345" not in manager._active_sessions
 
     @pytest.mark.asyncio
-    async def test_stop_command_no_active_session_noop(self):
-        """Test stop command does nothing if no active session."""
+    async def test_word_stop_in_comment_no_longer_triggers_stop(self):
+        """Test that the word 'stop' in a comment does NOT trigger stop behavior."""
         state_manager = MagicMock()
         manager = ProxyManager(state_manager)
+        manager.mention_keyword = "@coder"
         manager.client = MagicMock()
+        manager.worktree_manager = MagicMock()
+        manager.worktree_manager.create_worktree.return_value = Path("/tmp/wt")
+        manager.executor = MagicMock()
+        manager.executor.extract_command.return_value = "stop the presses"
+        manager.executor.build_prompt.return_value = "prompt"
+        manager.executor.execute = AsyncMock(
+            return_value=ClaudeResult(success=True, result_text="Done")
+        )
 
-        # No active session for this card
-        await manager._handle_stop_command("abc12345", "comm1")
+        # A comment with "stop" should now be processed normally, not trigger stop
+        await manager._handle_comment_created(
+            {
+                "card_id": "abc12345",
+                "comment_id": "comm1",
+                "content": "@coder stop the presses",
+                "author_name": "Paul",
+            }
+        )
 
-        # Should not raise, just return
-        manager.client.toggle_reaction.assert_not_called()
+        # Should have been processed as a normal mention
+        manager.executor.execute.assert_called_once()
 
 
 class TestProcessingAttribute:
