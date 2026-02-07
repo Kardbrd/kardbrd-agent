@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.kardbrd.manager</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REPO_DIR__/examples/macos/kardbrd-manager-run.sh</string>
+    </array>
+
+    <!-- Working directory for git operations -->
+    <key>WorkingDirectory</key>
+    <string>__REPO_DIR__</string>
+
+    <!-- Start when plist is loaded -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Auto-restart on crash/exit -->
+    <key>KeepAlive</key>
+    <dict>
+        <!-- Restart on non-zero exit, not on graceful shutdown -->
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Prevent rapid restart loops (30 seconds between restarts) -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <!-- Log files -->
+    <key>StandardOutPath</key>
+    <string>__HOME__/.local/share/kardbrd/kardbrd-manager/logs/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.local/share/kardbrd/kardbrd-manager/logs/stderr.log</string>
+
+    <!-- Environment variables -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>REPO_DIR</key>
+        <string>__REPO_DIR__</string>
+        <key>STATE_DIR</key>
+        <string>__HOME__/.local/share/kardbrd/kardbrd-manager</string>
+        <!-- Common locations: /opt/homebrew/bin/uv, ~/.local/bin/uv -->
+        <key>UV</key>
+        <string>/opt/homebrew/bin/uv</string>
+    </dict>
+</dict>
+</plist>

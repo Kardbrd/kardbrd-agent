@@ -1,0 +1,10 @@
+[Unit]
+Description=Scheduled update of kardbrd-agent container image
+
+[Timer]
+# Run every 30 minutes
+OnCalendar=*:0/30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

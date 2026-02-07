@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kardbrd-agent"
+version = "0.1.0"
+description = "Proxy agent that spawns Claude CLI to work on kardbrd cards."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+authors = [
+    { name = "Kardbrd Team" }
+]
+keywords = ["kardbrd", "ai", "agent", "automation", "proxy", "claude"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "kardbrd-client",
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "fastmcp>=2.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[project.scripts]
+kardbrd-agent = "kardbrd_agent.cli:main"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"kardbrd_agent/cli.py" = ["B008"]  # typer.Option() in defaults is standard
+
+[tool.uv.sources]
+kardbrd-client = { git = "https://github.com/kardbrd/kardbrd-client.git" }

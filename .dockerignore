@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+
+# Environment files
+.env
+.env.*
+!*.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Git
+.git/
+
+# Project files not needed in image
+examples/
+CLAUDE.md
+.claude/
+.pre-commit-config.yaml
+
+# State (mounted at runtime)
+state/

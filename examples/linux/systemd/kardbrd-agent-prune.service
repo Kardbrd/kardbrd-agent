@@ -1,0 +1,7 @@
+[Unit]
+Description=Prune unused kardbrd-agent container images
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/kardbrd-agent/agent.env
+ExecStart=/bin/sh -c '${CONTAINER_CMD:-podman} image prune -af --filter "until=24h"'

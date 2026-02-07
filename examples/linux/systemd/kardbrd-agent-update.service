@@ -1,0 +1,6 @@
+[Unit]
+Description=Update kardbrd-agent container image
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/kardbrd-agent-update.sh
