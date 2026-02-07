@@ -78,6 +78,8 @@ FROM base AS agent
 RUN apt-get update && apt-get install -y python3 python3-venv && rm -rf /var/lib/apt/lists/*
 RUN npm install -g @anthropic-ai/claude-code
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+RUN useradd -m -s /bin/bash -u 1000 agent && mkdir -p /app/state && chown agent:agent /app/state
+USER agent
 WORKDIR /home/agent/repository
 ENTRYPOINT ["uvx", "--from", "git+https://github.com/kardbrd/kardbrd-agent.git", "kardbrd-agent"]
 CMD ["start", "--cwd", "/home/agent/repository"]

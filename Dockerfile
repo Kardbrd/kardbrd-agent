@@ -1,8 +1,9 @@
 # Stage 1: uv binary
 FROM ghcr.io/astral-sh/uv:latest AS uv
 
-# Stage 2: Node.js binaries
+# Stage 2: Node.js + Claude CLI
 FROM node:22-slim AS node
+RUN npm install -g @anthropic-ai/claude-code
 
 # Stage 3: Build Python environment
 FROM python:3.12-slim AS builder
@@ -24,20 +25,17 @@ COPY kardbrd_agent/ kardbrd_agent/
 RUN uv sync --frozen
 
 # Stage 4: Runtime
-FROM python:3.12-slim
+FROM python:3.12-slim AS agent
 
 RUN apt-get update && apt-get install -y --no-install-recommends git openssh-client && rm -rf /var/lib/apt/lists/*
 
-# Node.js from stage 2
+# Node.js + Claude CLI from stage 2
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
-COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
-RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
+COPY --from=node /usr/local/lib/node_modules/@anthropic-ai /usr/local/lib/node_modules/@anthropic-ai
+RUN ln -s /usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js /usr/local/bin/claude
 
-# Install Claude CLI globally
-RUN mkdir -p /data/npm-global && npm install -g @anthropic-ai/claude-code --prefix /data/npm-global
-
-# uv (used to build kardbrd-agent itself; NOT required for target repo worktrees)
-COPY --from=uv /uv /usr/local/bin/uv
+# uv + uvx (used to build kardbrd-agent itself; NOT required for target repo worktrees)
+COPY --from=uv /uv /uvx /usr/local/bin/
 
 # Python venv from builder
 COPY --from=builder /app/.venv /app/.venv
@@ -54,7 +52,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 COPY kardbrd_agent/ kardbrd_agent/
 
-ENV PATH="/data/npm-global/bin:/app/.venv/bin:$PATH"
+ENV PATH="/app/.venv/bin:$PATH"
 ENV AGENT_STATE_DIR=/app/state AGENT_MCP_PORT=8765 LOG_LEVEL=INFO PYTHONUNBUFFERED=1
 
 USER agent

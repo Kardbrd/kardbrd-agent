@@ -4,6 +4,7 @@ services:
       context: ./repository
       target: agent                                # uses the agent target from your Dockerfile
       # dockerfile: Dockerfile.agent               # uncomment if using a separate Dockerfile.agent
+    user: "1000:1000"
     restart: unless-stopped
     environment:
       - ANTHROPIC_API_KEY

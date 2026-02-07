@@ -40,12 +40,14 @@ FROM base AS agent
 RUN apt-get update && apt-get install -y python3 python3-venv && rm -rf /var/lib/apt/lists/*
 RUN npm install -g @anthropic-ai/claude-code
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+RUN useradd -m -s /bin/bash -u 1000 agent && mkdir -p /app/state && chown agent:agent /app/state
+USER agent
 WORKDIR /home/agent/repository
 ENTRYPOINT ["uvx", "--from", "git+https://github.com/kardbrd/kardbrd-agent.git", "kardbrd-agent"]
 CMD ["start", "--cwd", "/home/agent/repository"]
 ```
 
-The `agent` target adds only what's needed on top of your existing image: `python3`, `python3-venv` (for uvx), Claude CLI, and `uv`.
+The `agent` target adds only what's needed on top of your existing image: `python3`, `python3-venv` (for uvx), Claude CLI, `uv`, and a non-root user. Claude CLI refuses to run as root with `--dangerously-skip-permissions`, so the non-root user is required.
 
 **No Dockerfile yet?** Create a `Dockerfile.agent` instead — see [Dockerfile.agent examples](#dockerfileagent-examples) below.
 
@@ -149,6 +151,8 @@ FROM base AS agent
 RUN apt-get update && apt-get install -y python3 python3-venv && rm -rf /var/lib/apt/lists/*
 RUN npm install -g @anthropic-ai/claude-code
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+RUN useradd -m -s /bin/bash -u 1000 agent && mkdir -p /app/state && chown agent:agent /app/state
+USER agent
 WORKDIR /home/agent/repository
 ENTRYPOINT ["uvx", "--from", "git+https://github.com/kardbrd/kardbrd-agent.git", "kardbrd-agent"]
 CMD ["start", "--cwd", "/home/agent/repository"]
@@ -167,6 +171,8 @@ FROM base AS agent
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
 RUN npm install -g @anthropic-ai/claude-code
+RUN useradd -m -s /bin/bash -u 1000 agent && mkdir -p /app/state && chown agent:agent /app/state
+USER agent
 WORKDIR /home/agent/repository
 ENTRYPOINT ["uvx", "--from", "git+https://github.com/kardbrd/kardbrd-agent.git", "kardbrd-agent"]
 CMD ["start", "--cwd", "/home/agent/repository"]
@@ -184,6 +190,8 @@ FROM base AS agent
 RUN apt-get update && apt-get install -y python3 python3-venv nodejs npm && rm -rf /var/lib/apt/lists/*
 RUN npm install -g @anthropic-ai/claude-code
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+RUN useradd -m -s /bin/bash -u 1000 agent && mkdir -p /app/state && chown agent:agent /app/state
+USER agent
 WORKDIR /home/agent/repository
 ENTRYPOINT ["uvx", "--from", "git+https://github.com/kardbrd/kardbrd-agent.git", "kardbrd-agent"]
 CMD ["start", "--cwd", "/home/agent/repository"]
@@ -203,6 +211,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 RUN npm install -g @anthropic-ai/claude-code
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+RUN useradd -m -s /bin/bash -u 1000 agent && mkdir -p /app/state && chown agent:agent /app/state
+USER agent
 WORKDIR /home/agent/repository
 ENTRYPOINT ["uvx", "--from", "git+https://github.com/kardbrd/kardbrd-agent.git", "kardbrd-agent"]
 CMD ["start", "--cwd", "/home/agent/repository"]
@@ -217,6 +227,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
 RUN npm install -g @anthropic-ai/claude-code
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+RUN useradd -m -s /bin/bash -u 1000 agent && mkdir -p /app/state && chown agent:agent /app/state
+USER agent
 WORKDIR /home/agent/repository
 ENTRYPOINT ["uvx", "--from", "git+https://github.com/kardbrd/kardbrd-agent.git", "kardbrd-agent"]
 CMD ["start", "--cwd", "/home/agent/repository"]
@@ -300,7 +312,7 @@ If `AGENT_SETUP_CMD` (e.g. `pnpm install`) fails in worktrees, make sure the bas
 
 ### Permission errors on volumes
 
-The container runs as root by default. If you run as a non-root user, ensure local directories are writable:
+The container runs as UID 1000 (`agent` user). Ensure local directories are writable:
 
 ```bash
 sudo chown -R 1000:1000 state workspaces claude
