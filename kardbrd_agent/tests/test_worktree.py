@@ -222,6 +222,79 @@ class TestWorktreeManagerSetupCommand:
         mock_run.assert_not_called()
 
 
+class TestWorktreeManagerUpdateMain:
+    """Tests for _update_main_branch."""
+
+    @patch("kardbrd_agent.worktree.subprocess.run")
+    def test_update_main_branch_success_from_main(self, mock_run: MagicMock, tmp_path: Path):
+        """Test updating main when already on main branch."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="main\n")
+
+        manager = WorktreeManager(tmp_path)
+        result = manager._update_main_branch()
+
+        assert result is True
+        # fetch, rev-parse, checkout main, pull --ff-only (no restore needed)
+        assert mock_run.call_count == 4
+
+    @patch("kardbrd_agent.worktree.subprocess.run")
+    def test_update_main_branch_success_from_other_branch(
+        self, mock_run: MagicMock, tmp_path: Path
+    ):
+        """Test updating main when on a different branch restores original branch."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="feature/xyz\n")
+
+        manager = WorktreeManager(tmp_path)
+        result = manager._update_main_branch()
+
+        assert result is True
+        # fetch, rev-parse, checkout main, pull --ff-only, checkout feature/xyz
+        assert mock_run.call_count == 5
+        # Last call should restore the original branch
+        last_call = mock_run.call_args_list[-1]
+        assert last_call[0][0] == ["git", "checkout", "feature/xyz"]
+
+    @patch("kardbrd_agent.worktree.subprocess.run")
+    def test_update_main_branch_fetch_failure(self, mock_run: MagicMock, tmp_path: Path):
+        """Test that fetch failure returns False without blocking."""
+        mock_run.side_effect = subprocess.CalledProcessError(
+            1, "git", stderr="fatal: could not fetch"
+        )
+
+        manager = WorktreeManager(tmp_path)
+        result = manager._update_main_branch()
+
+        assert result is False
+
+    @patch("kardbrd_agent.worktree.subprocess.run")
+    def test_update_main_branch_pull_failure(self, mock_run: MagicMock, tmp_path: Path):
+        """Test that pull --ff-only failure returns False without blocking."""
+        # fetch succeeds, rev-parse succeeds, checkout succeeds, pull fails
+        effects = [
+            MagicMock(returncode=0, stdout="main\n"),  # fetch
+            MagicMock(returncode=0, stdout="main\n"),  # rev-parse
+            MagicMock(returncode=0, stdout=""),  # checkout main
+            subprocess.CalledProcessError(1, "git", stderr="fatal: not possible to fast-forward"),
+        ]
+        mock_run.side_effect = effects
+
+        manager = WorktreeManager(tmp_path)
+        result = manager._update_main_branch()
+
+        assert result is False
+
+    @patch("kardbrd_agent.worktree.subprocess.run")
+    def test_update_main_branch_runs_in_base_repo(self, mock_run: MagicMock, tmp_path: Path):
+        """Test all git commands run in the base repo directory."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="main\n")
+
+        manager = WorktreeManager(tmp_path)
+        manager._update_main_branch()
+
+        for call in mock_run.call_args_list:
+            assert call[1]["cwd"] == tmp_path
+
+
 class TestWorktreeManagerCreate:
     """Tests for WorktreeManager.create_worktree."""
 
@@ -235,7 +308,11 @@ class TestWorktreeManagerCreate:
 
         manager = WorktreeManager(base_repo)
 
-        with patch.object(manager, "_setup_symlinks"), patch.object(manager, "_run_setup_command"):
+        with (
+            patch.object(manager, "_update_main_branch"),
+            patch.object(manager, "_setup_symlinks"),
+            patch.object(manager, "_run_setup_command"),
+        ):
             worktree_path = manager.create_worktree("abc12345xyz")
 
         assert worktree_path == tmp_path / "card-abc12345"
@@ -247,7 +324,11 @@ class TestWorktreeManagerCreate:
 
         manager = WorktreeManager(tmp_path)
 
-        with patch.object(manager, "_setup_symlinks"), patch.object(manager, "_run_setup_command"):
+        with (
+            patch.object(manager, "_update_main_branch"),
+            patch.object(manager, "_setup_symlinks"),
+            patch.object(manager, "_run_setup_command"),
+        ):
             manager.create_worktree("abc12345")
 
         cmd = mock_run.call_args[0][0]
@@ -260,7 +341,11 @@ class TestWorktreeManagerCreate:
 
         manager = WorktreeManager(tmp_path)
 
-        with patch.object(manager, "_setup_symlinks"), patch.object(manager, "_run_setup_command"):
+        with (
+            patch.object(manager, "_update_main_branch"),
+            patch.object(manager, "_setup_symlinks"),
+            patch.object(manager, "_run_setup_command"),
+        ):
             manager.create_worktree("test-card", branch_name="feature/my-feature")
 
         call_args = mock_run.call_args
@@ -296,7 +381,11 @@ class TestWorktreeManagerCreate:
         base_repo.mkdir()
         manager = WorktreeManager(base_repo)
 
-        with patch.object(manager, "_setup_symlinks"), patch.object(manager, "_run_setup_command"):
+        with (
+            patch.object(manager, "_update_main_branch"),
+            patch.object(manager, "_setup_symlinks"),
+            patch.object(manager, "_run_setup_command"),
+        ):
             worktree_path = manager.create_worktree("test1234")
 
         assert worktree_path == tmp_path / "card-test1234"
@@ -310,6 +399,7 @@ class TestWorktreeManagerCreate:
         manager = WorktreeManager(git_repo)
 
         with (
+            patch.object(manager, "_update_main_branch"),
             patch.object(manager, "_setup_symlinks") as mock_symlinks,
             patch.object(manager, "_run_setup_command"),
         ):
@@ -324,6 +414,7 @@ class TestWorktreeManagerCreate:
         manager = WorktreeManager(tmp_path, setup_command="uv sync")
 
         with (
+            patch.object(manager, "_update_main_branch"),
             patch.object(manager, "_setup_symlinks"),
             patch.object(manager, "_run_setup_command") as mock_setup,
         ):
@@ -339,11 +430,46 @@ class TestWorktreeManagerCreate:
         base_repo.mkdir()
         manager = WorktreeManager(base_repo)
 
-        with patch.object(manager, "_setup_symlinks"), patch.object(manager, "_run_setup_command"):
+        with (
+            patch.object(manager, "_update_main_branch"),
+            patch.object(manager, "_setup_symlinks"),
+            patch.object(manager, "_run_setup_command"),
+        ):
             worktree_path = manager.create_worktree("abc12345")
 
         assert "abc12345" in manager.active_worktrees
         assert manager.active_worktrees["abc12345"] == worktree_path
+
+    @patch("kardbrd_agent.worktree.subprocess.run")
+    def test_create_worktree_calls_update_main(self, mock_run: MagicMock, tmp_path: Path):
+        """Test that create_worktree calls _update_main_branch for new worktrees."""
+        mock_run.return_value = MagicMock(returncode=0)
+
+        base_repo = tmp_path / "kbn"
+        base_repo.mkdir()
+        manager = WorktreeManager(base_repo)
+
+        with (
+            patch.object(manager, "_update_main_branch") as mock_update,
+            patch.object(manager, "_setup_symlinks"),
+            patch.object(manager, "_run_setup_command"),
+        ):
+            manager.create_worktree("abc12345")
+            mock_update.assert_called_once()
+
+    def test_create_worktree_skips_update_main_for_existing(self, tmp_path: Path):
+        """Test that create_worktree skips _update_main_branch for existing worktrees."""
+        base_repo = tmp_path / "kbn"
+        base_repo.mkdir()
+        manager = WorktreeManager(base_repo)
+
+        # Pre-create the worktree directory
+        worktree_path = tmp_path / "card-existing"
+        worktree_path.mkdir()
+
+        with patch.object(manager, "_update_main_branch") as mock_update:
+            manager.create_worktree("existing-card")
+            mock_update.assert_not_called()
 
 
 class TestWorktreeManagerRemove:
