@@ -80,6 +80,8 @@ class ClaudeExecutor:
         self.cwd = Path(cwd) if cwd else Path.cwd()
         self.timeout = timeout
         self.mcp_port = mcp_port
+        # Currently running subprocess, exposed for external cancellation
+        self._process: asyncio.subprocess.Process | None = None
 
     async def execute(
         self,
@@ -135,6 +137,7 @@ class ClaudeExecutor:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=working_dir,
             )
+            self._process = process
 
             # Collect output with timeout
             try:
@@ -171,6 +174,7 @@ class ClaudeExecutor:
                 error=str(e),
             )
         finally:
+            self._process = None
             # Clean up temp MCP config file
             if mcp_config_path and mcp_config_path.exists():
                 try:

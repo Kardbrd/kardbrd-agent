@@ -18,7 +18,7 @@ RETRY_EMOJI = "🔄"
 # Emoji for stopping an active session (user reacts on their triggering comment)
 STOP_EMOJI = "🛑"
 # Emojis to clear before retrying
-COMPLETION_EMOJIS = ("✅", "🛑")
+COMPLETION_EMOJIS = ("✅", STOP_EMOJI)
 
 # Default name for the merge queue list
 DEFAULT_MERGE_QUEUE_LIST = "merge queue"
@@ -287,6 +287,10 @@ class ProxyManager:
         emoji = message.get("emoji")
         card_id = message.get("card_id")
         comment_id = message.get("comment_id")
+
+        if not card_id or not comment_id:
+            logger.warning("Reaction event missing card_id or comment_id, ignoring")
+            return
 
         if emoji == STOP_EMOJI:
             await self._handle_stop_reaction(card_id, comment_id)
@@ -608,14 +612,17 @@ DO NOT do any new work - just publish what you already did."""
         session = self._active_sessions[card_id]
 
         # Only stop if the reaction is on the comment that triggered this session
-        if session.comment_id and session.comment_id != comment_id:
+        if session.comment_id != comment_id:
             logger.info(
                 f"Stop reaction on comment {comment_id} doesn't match "
                 f"triggering comment {session.comment_id}, ignoring"
             )
             return
 
-        if session.process:
+        if self.executor and self.executor._process:
+            self.executor._process.kill()
+            logger.info(f"Killed Claude subprocess for card {card_id} via stop reaction")
+        elif session.process:
             session.process.kill()
             logger.info(f"Killed Claude session for card {card_id} via stop reaction")
 
@@ -701,7 +708,9 @@ DO NOT do any new work - just publish what you already did."""
         # Kill active session if running
         if card_id in self._active_sessions:
             session = self._active_sessions[card_id]
-            if session.process:
+            if self.executor and self.executor._process:
+                self.executor._process.kill()
+            elif session.process:
                 session.process.kill()
             del self._active_sessions[card_id]
 

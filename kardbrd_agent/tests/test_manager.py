@@ -352,17 +352,18 @@ class TestProxyManagerCardMoved:
 
     @pytest.mark.asyncio
     async def test_cleanup_worktree_kills_active_session(self):
-        """Test active Claude process is killed during cleanup."""
+        """Test active Claude process is killed during cleanup via executor."""
         state_manager = MagicMock()
         manager = ProxyManager(state_manager)
         manager.worktree_manager = MagicMock()
 
-        # Create mock process
         mock_process = MagicMock()
+        manager.executor = MagicMock()
+        manager.executor._process = mock_process
+
         manager._active_sessions["abc12345"] = ActiveSession(
             card_id="abc12345",
             worktree_path=Path("/tmp/wt"),
-            process=mock_process,
         )
 
         await manager._cleanup_worktree("abc12345")
@@ -567,11 +568,37 @@ class TestStopReaction:
     """Tests for 🛑 reaction-based stop handling."""
 
     @pytest.mark.asyncio
-    async def test_stop_reaction_kills_process(self):
-        """Test 🛑 reaction on triggering comment kills the Claude process."""
+    async def test_stop_reaction_kills_executor_process(self):
+        """Test 🛑 reaction kills the executor's subprocess (runtime path)."""
         state_manager = MagicMock()
         manager = ProxyManager(state_manager)
         manager.client = MagicMock()
+
+        mock_process = MagicMock()
+        manager.executor = MagicMock()
+        manager.executor._process = mock_process
+
+        manager._active_sessions["abc12345"] = ActiveSession(
+            card_id="abc12345",
+            worktree_path=Path("/tmp/wt"),
+            comment_id="comm1",
+        )
+
+        await manager._handle_reaction_added(
+            {"emoji": "🛑", "card_id": "abc12345", "comment_id": "comm1", "user_name": "Paul"}
+        )
+
+        mock_process.kill.assert_called_once()
+        assert "abc12345" not in manager._active_sessions
+
+    @pytest.mark.asyncio
+    async def test_stop_reaction_falls_back_to_session_process(self):
+        """Test 🛑 reaction falls back to session.process when executor has no process."""
+        state_manager = MagicMock()
+        manager = ProxyManager(state_manager)
+        manager.client = MagicMock()
+        manager.executor = MagicMock()
+        manager.executor._process = None
 
         mock_process = MagicMock()
         manager._active_sessions["abc12345"] = ActiveSession(
@@ -641,6 +668,53 @@ class TestStopReaction:
         # Process should NOT be killed
         mock_process.kill.assert_not_called()
         assert "abc12345" in manager._active_sessions
+
+    @pytest.mark.asyncio
+    async def test_stop_reaction_ignores_when_session_comment_id_is_none(self):
+        """Test 🛑 reaction is rejected when session has no comment_id."""
+        state_manager = MagicMock()
+        manager = ProxyManager(state_manager)
+        manager.client = MagicMock()
+
+        mock_process = MagicMock()
+        manager._active_sessions["abc12345"] = ActiveSession(
+            card_id="abc12345",
+            worktree_path=Path("/tmp/wt"),
+            comment_id=None,  # No comment_id tracked
+            process=mock_process,
+        )
+
+        await manager._handle_stop_reaction("abc12345", "comm1")
+
+        # Process should NOT be killed because session.comment_id is None
+        mock_process.kill.assert_not_called()
+        assert "abc12345" in manager._active_sessions
+
+    @pytest.mark.asyncio
+    async def test_stop_reaction_ignores_missing_card_id(self):
+        """Test reaction handler ignores events with missing card_id."""
+        state_manager = MagicMock()
+        manager = ProxyManager(state_manager)
+        manager._handle_stop_reaction = AsyncMock()
+
+        await manager._handle_reaction_added(
+            {"emoji": "🛑", "card_id": None, "comment_id": "comm1", "user_name": "Paul"}
+        )
+
+        manager._handle_stop_reaction.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stop_reaction_ignores_missing_comment_id(self):
+        """Test reaction handler ignores events with missing comment_id."""
+        state_manager = MagicMock()
+        manager = ProxyManager(state_manager)
+        manager._handle_stop_reaction = AsyncMock()
+
+        await manager._handle_reaction_added(
+            {"emoji": "🛑", "card_id": "abc12345", "comment_id": None, "user_name": "Paul"}
+        )
+
+        manager._handle_stop_reaction.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stop_reaction_routed_from_board_event(self):
