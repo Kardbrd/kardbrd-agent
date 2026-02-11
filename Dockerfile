@@ -53,7 +53,7 @@ COPY pyproject.toml uv.lock ./
 COPY kardbrd_agent/ kardbrd_agent/
 
 ENV PATH="/app/.venv/bin:$PATH"
-ENV AGENT_STATE_DIR=/app/state AGENT_MCP_PORT=8765 LOG_LEVEL=INFO PYTHONUNBUFFERED=1
+ENV AGENT_STATE_DIR=/app/state LOG_LEVEL=INFO PYTHONUNBUFFERED=1
 
 USER agent
 

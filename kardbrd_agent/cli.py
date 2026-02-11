@@ -122,13 +122,6 @@ def start(
         envvar="AGENT_TIMEOUT",
         help="Maximum execution time in seconds for Claude (default 1 hour)",
     ),
-    port: int = typer.Option(
-        None,
-        "--port",
-        "-p",
-        envvar="AGENT_MCP_PORT",
-        help="MCP server port (enables unified mode with HTTP server + WebSocket)",
-    ),
     max_concurrent: int = typer.Option(
         3,
         "--max-concurrent",
@@ -164,8 +157,7 @@ def start(
 ):
     """Start the proxy manager and listen for @mentions.
 
-    In unified mode (--port), runs both an MCP HTTP server and WebSocket listener.
-    Claude Code instances spawned by the proxy will connect to the local MCP server.
+    Each Claude CLI session spawns its own kardbrd-mcp subprocess for MCP tools.
     """
     state_manager = get_state_manager()
 
@@ -190,12 +182,7 @@ def start(
         config_table.add_row("Worktrees directory", str(worktrees_dir))
     config_table.add_row("Timeout", f"{timeout}s")
     config_table.add_row("Max concurrent", str(max_concurrent))
-
-    if port:
-        config_table.add_row("MCP port", str(port))
-        config_table.add_row("Mode", "[cyan]unified[/cyan] (HTTP + WebSocket)")
-    else:
-        config_table.add_row("Mode", "WebSocket only")
+    config_table.add_row("MCP", "kardbrd-mcp (stdio per session)")
 
     config_table.add_row("Setup command", setup_cmd or "[dim]none (skip)[/dim]")
     if merge_queue_list:
@@ -219,7 +206,6 @@ def start(
         state_manager=state_manager,
         cwd=cwd,
         timeout=timeout,
-        mcp_port=port,
         max_concurrent=max_concurrent,
         worktrees_dir=worktrees_dir,
         setup_command=setup_cmd,
@@ -264,14 +250,6 @@ def status():
 
     console.print(table)
     console.print(f"\nTotal: {len(subscriptions)} subscription(s)\n")
-
-
-@app.command(name="proxy-mcp")
-def proxy_mcp():
-    """Start MCP proxy server (stdio transport) for Claude Code integration."""
-    from .mcp_proxy import run_mcp_server
-
-    run_mcp_server(state_dir=get_state_dir())
 
 
 @app.command()

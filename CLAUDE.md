@@ -30,7 +30,7 @@ pre-commit run --all-files
 pre-commit run ruff --all-files
 
 # CLI entry point
-kardbrd-agent start --port 8765
+kardbrd-agent start
 ```
 
 ## Architecture
@@ -39,7 +39,7 @@ kardbrd-agent start --port 8765
 
 **ClaudeExecutor** (`executor.py`) — Spawns `claude -p` subprocess with `--output-format=stream-json`. Parses streaming output, extracts session IDs for resumption, enforces timeouts. Builds prompts with card context and detects skill commands ("/kp", "/ki").
 
-**MCP Proxy** (`mcp_proxy.py`) — FastMCP server (HTTP/SSE or stdio) that proxies kardbrd tools to Claude. **ProxySessionRegistry** tracks per-card tool calls to determine if Claude posted a response; if not, ProxyManager resumes the session with a publication prompt.
+**MCP Proxy** (`mcp_proxy.py`) — Data classes for session tracking (ProxySession, ProxySessionRegistry). Previously hosted a FastMCP HTTP/SSE server; now Claude CLI spawns `kardbrd-mcp` (from kardbrd-client) as a stdio subprocess per session.
 
 **WorktreeManager** (`worktree.py`) — Creates git worktrees as sibling directories to the base repo (`~/src/kbn-abc12345/`). Sets up symlinks for .mcp.json, .env, .claude/settings.local.json. Runs `uv sync --quiet` in each worktree.
 

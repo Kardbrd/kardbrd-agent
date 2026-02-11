@@ -201,59 +201,72 @@ class TestCreateMcpConfig:
         """Test that create_mcp_config creates a temp file."""
         from kardbrd_agent.executor import create_mcp_config
 
-        config_path = create_mcp_config()
+        config_path = create_mcp_config(api_url="http://localhost:8000", bot_token="test-token")
         try:
             assert config_path.exists()
             assert config_path.suffix == ".json"
         finally:
             config_path.unlink(missing_ok=True)
 
-    def test_config_has_correct_structure(self):
-        """Test that the config file has the correct structure."""
+    def test_config_has_stdio_transport(self):
+        """Test that the config uses stdio transport with kardbrd-mcp command."""
         import json
 
-        from kardbrd_agent.executor import DEFAULT_MCP_PORT, create_mcp_config
+        from kardbrd_agent.executor import create_mcp_config
 
-        config_path = create_mcp_config()
+        config_path = create_mcp_config(api_url="http://localhost:8000", bot_token="test-token")
         try:
             with open(config_path) as f:
                 config = json.load(f)
 
             assert "mcpServers" in config
             assert "kardbrd" in config["mcpServers"]
-            assert config["mcpServers"]["kardbrd"]["type"] == "sse"
-            assert f":{DEFAULT_MCP_PORT}/sse" in config["mcpServers"]["kardbrd"]["url"]
+            server = config["mcpServers"]["kardbrd"]
+            assert server["command"] == "kardbrd-mcp"
+            assert "--api-url" in server["args"]
+            assert "http://localhost:8000" in server["args"]
+            assert "--token" in server["args"]
+            assert "test-token" in server["args"]
+            # Should NOT have SSE-style keys
+            assert "type" not in server
+            assert "url" not in server
         finally:
             config_path.unlink(missing_ok=True)
 
-    def test_config_uses_custom_port(self):
-        """Test that create_mcp_config uses a custom port."""
+    def test_config_uses_provided_credentials(self):
+        """Test that credentials are correctly embedded in config."""
         import json
 
         from kardbrd_agent.executor import create_mcp_config
 
-        config_path = create_mcp_config(port=9999)
+        config_path = create_mcp_config(
+            api_url="https://api.example.com", bot_token="secret-bot-123"
+        )
         try:
             with open(config_path) as f:
                 config = json.load(f)
 
-            assert ":9999/sse" in config["mcpServers"]["kardbrd"]["url"]
+            args = config["mcpServers"]["kardbrd"]["args"]
+            assert "https://api.example.com" in args
+            assert "secret-bot-123" in args
         finally:
             config_path.unlink(missing_ok=True)
 
 
 class TestClaudeExecutorWithMcp:
-    """Tests for ClaudeExecutor with MCP port."""
+    """Tests for ClaudeExecutor with MCP credentials."""
 
-    def test_executor_stores_mcp_port(self):
-        """Test that executor stores the mcp_port."""
-        executor = ClaudeExecutor(mcp_port=8765)
-        assert executor.mcp_port == 8765
+    def test_executor_stores_api_url_and_token(self):
+        """Test that executor stores the API credentials."""
+        executor = ClaudeExecutor(api_url="http://localhost:8000", bot_token="test-token")
+        assert executor.api_url == "http://localhost:8000"
+        assert executor.bot_token == "test-token"
 
-    def test_executor_without_mcp_port(self):
-        """Test that executor works without mcp_port."""
+    def test_executor_without_mcp_credentials(self):
+        """Test that executor works without MCP credentials."""
         executor = ClaudeExecutor()
-        assert executor.mcp_port is None
+        assert executor.api_url is None
+        assert executor.bot_token is None
 
 
 class TestClaudeExecutorCwd:

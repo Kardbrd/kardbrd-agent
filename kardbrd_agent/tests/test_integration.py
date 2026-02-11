@@ -5,7 +5,7 @@ These tests use real filesystem operations but mock git commands.
 
 import asyncio
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -84,6 +84,7 @@ class TestConcurrentProcessingIntegration:
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
         manager.client.toggle_reaction = MagicMock()
+        manager._has_recent_bot_comment = MagicMock(return_value=True)
 
         execution_order = []
 
@@ -128,6 +129,7 @@ class TestConcurrentProcessingIntegration:
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
         manager.client.toggle_reaction = MagicMock()
+        manager._has_recent_bot_comment = MagicMock(return_value=True)
 
         execution_count = {"current": 0, "max": 0}
 
@@ -168,8 +170,6 @@ class TestRetryIntegration:
     @pytest.mark.asyncio
     async def test_retry_blocked_during_concurrent_processing(self, git_repo: Path):
         """Test retry is blocked when any card is being processed."""
-        from unittest.mock import AsyncMock
-
         state_manager = MagicMock()
         manager = ProxyManager(state_manager, max_concurrent=3, cwd=git_repo)
         manager.client = MagicMock()
@@ -179,6 +179,7 @@ class TestRetryIntegration:
             "author": {"display_name": "Paul"},
         }
         manager.client.toggle_reaction = MagicMock()
+        manager._has_recent_bot_comment = MagicMock(return_value=True)
 
         retry_attempted = asyncio.Event()
 
@@ -217,68 +218,27 @@ class TestRetryIntegration:
         await process_task
 
 
-class TestSessionIsolationIntegration:
-    """Integration tests for session isolation across concurrent cards."""
+class TestApiVerificationIntegration:
+    """Integration tests for API-based verification during concurrent processing."""
 
     @pytest.mark.asyncio
-    async def test_concurrent_cards_have_isolated_sessions(self, git_repo: Path):
-        """Test two concurrent cards don't share session state."""
+    async def test_concurrent_cards_api_verification_independent(self, git_repo: Path):
+        """Test API verification works independently for concurrent cards."""
         state_manager = MagicMock()
         manager = ProxyManager(state_manager, max_concurrent=2, cwd=git_repo)
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
         manager.client.toggle_reaction = MagicMock()
+        manager.client.add_comment = MagicMock()
 
-        sessions_during_execution = {}
+        # Card1's Claude posts a comment; Card2's does not
+        def api_check(card_id, seconds=60):
+            return card_id == "card1"
 
-        async def capture_session(prompt, cwd=None, **kwargs):
-            card_id = cwd.name.replace("card-", "") if cwd else "unknown"
-            # Record session state during execution
-            session = manager.session_registry.get_current_session()
-            sessions_during_execution[card_id] = {
-                "comment_posted": session.comment_posted if session else None,
-                "card_updated": session.card_updated if session else None,
-            }
-
-            # Simulate card1 posting a comment via MCP
-            if "card1111" in card_id:
-                manager.session_registry.record_tool_call("add_comment", {})
-
-            await asyncio.sleep(0.05)
-            return ClaudeResult(success=True, result_text="Done")
-
-        manager.executor = MagicMock()
-        manager.executor.extract_command.return_value = "/kp"
-        manager.executor.build_prompt.return_value = "prompt"
-        manager.executor.execute = capture_session
-        manager.worktree_manager = MagicMock()
-        manager.worktree_manager.create_worktree.side_effect = [
-            git_repo.parent / "card-card1111",
-            git_repo.parent / "card-card2222",
-        ]
-
-        (git_repo.parent / "card-card1111").mkdir(exist_ok=True)
-        (git_repo.parent / "card-card2222").mkdir(exist_ok=True)
-
-        # Process two cards concurrently
-        await asyncio.gather(
-            manager._process_mention("card1111", "comm1", "@coder /kp", "Paul"),
-            manager._process_mention("card2222", "comm2", "@coder /ki", "Paul"),
-        )
-
-        # Verify both cards were processed
-        assert "card1111" in sessions_during_execution or "card2222" in sessions_during_execution
-
-    @pytest.mark.asyncio
-    async def test_session_cleaned_up_after_completion(self, git_repo: Path):
-        """Test session is removed from registry after card processing completes."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager, cwd=git_repo)
-        manager.client = MagicMock()
-        manager.client.get_card_markdown.return_value = "# Card"
-        manager.client.toggle_reaction = MagicMock()
+        manager._has_recent_bot_comment = MagicMock(side_effect=api_check)
 
         async def mock_execute(prompt, cwd=None, **kwargs):
+            await asyncio.sleep(0.02)
             return ClaudeResult(success=True, result_text="Done")
 
         manager.executor = MagicMock()
@@ -286,17 +246,50 @@ class TestSessionIsolationIntegration:
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = mock_execute
         manager.worktree_manager = MagicMock()
+        manager.worktree_manager.create_worktree.side_effect = [
+            git_repo.parent / "card-card1",
+            git_repo.parent / "card-card2",
+        ]
+        (git_repo.parent / "card-card1").mkdir(exist_ok=True)
+        (git_repo.parent / "card-card2").mkdir(exist_ok=True)
+
+        await asyncio.gather(
+            manager._process_mention("card1", "comm1", "@coder /kp", "Paul"),
+            manager._process_mention("card2", "comm2", "@coder /kp", "Paul"),
+        )
+
+        # Card1 should get success reaction (API says bot posted)
+        toggle_calls = manager.client.toggle_reaction.call_args_list
+        card1_success = any(call[0][0] == "card1" and call[0][2] == "✅" for call in toggle_calls)
+        assert card1_success, "Card1 should get ✅ when API confirms bot posted"
+
+    @pytest.mark.asyncio
+    async def test_active_session_cleaned_up_on_success(self, git_repo: Path):
+        """Test _active_sessions entry removed after successful processing."""
+        state_manager = MagicMock()
+        manager = ProxyManager(state_manager, cwd=git_repo)
+        manager.client = MagicMock()
+        manager.client.get_card_markdown.return_value = "# Card"
+        manager.client.toggle_reaction = MagicMock()
+        manager._has_recent_bot_comment = MagicMock(return_value=True)
+
+        manager.executor = MagicMock()
+        manager.executor.extract_command.return_value = "/kp"
+        manager.executor.build_prompt.return_value = "prompt"
+        manager.executor.execute = AsyncMock(
+            return_value=ClaudeResult(success=True, result_text="Done")
+        )
+        manager.worktree_manager = MagicMock()
         manager.worktree_manager.create_worktree.return_value = git_repo.parent / "card-card1"
         (git_repo.parent / "card-card1").mkdir(exist_ok=True)
 
         await manager._process_mention("card1", "comm1", "@coder /kp", "Paul")
 
-        # Session should be cleaned up
-        assert manager.session_registry.get_session("card1") is None
+        assert "card1" not in manager._active_sessions
 
     @pytest.mark.asyncio
-    async def test_session_cleaned_up_after_error(self, git_repo: Path):
-        """Test session is removed even if processing fails."""
+    async def test_active_session_cleaned_up_on_error(self, git_repo: Path):
+        """Test _active_sessions entry removed even after an exception."""
         state_manager = MagicMock()
         manager = ProxyManager(state_manager, cwd=git_repo)
         manager.client = MagicMock()
@@ -307,16 +300,22 @@ class TestSessionIsolationIntegration:
 
         await manager._process_mention("card1", "comm1", "@coder /kp", "Paul")
 
-        # Session should still be cleaned up
-        assert manager.session_registry.get_session("card1") is None
+        assert "card1" not in manager._active_sessions
+
+    @pytest.mark.asyncio
+    async def test_no_session_registry_attribute(self, git_repo: Path):
+        """Test ProxyManager has no session_registry attribute."""
+        state_manager = MagicMock()
+        manager = ProxyManager(state_manager, cwd=git_repo)
+        assert not hasattr(manager, "session_registry")
 
 
 class TestDuplicateCommentPrevention:
-    """Integration tests for preventing duplicate comments."""
+    """Integration tests for preventing duplicate comments via API check."""
 
     @pytest.mark.asyncio
-    async def test_no_fallback_comment_when_mcp_posted(self, git_repo: Path):
-        """Test fallback comment not posted when Claude already posted via MCP."""
+    async def test_no_fallback_comment_when_api_confirms_posted(self, git_repo: Path):
+        """Test fallback comment not posted when API confirms bot already posted."""
         state_manager = MagicMock()
         manager = ProxyManager(state_manager, cwd=git_repo)
         manager.client = MagicMock()
@@ -324,9 +323,10 @@ class TestDuplicateCommentPrevention:
         manager.client.toggle_reaction = MagicMock()
         manager.client.add_comment = MagicMock()
 
+        # API says bot posted
+        manager._has_recent_bot_comment = MagicMock(return_value=True)
+
         async def mock_execute(prompt, cwd=None, **kwargs):
-            # Simulate Claude posting via MCP
-            manager.session_registry.record_tool_call("add_comment", {"card_id": "card1"})
             return ClaudeResult(success=True, result_text="Posted!", session_id="sess123")
 
         manager.executor = MagicMock()
@@ -344,69 +344,49 @@ class TestDuplicateCommentPrevention:
 
         # Success reaction should be added
         toggle_calls = [call[0] for call in manager.client.toggle_reaction.call_args_list]
-        # Should have the success emoji call
         assert any(call[2] == "✅" for call in toggle_calls)
 
     @pytest.mark.asyncio
-    async def test_concurrent_mcp_calls_record_to_correct_sessions(self, git_repo: Path):
-        """Test MCP tool calls during concurrent processing record to correct card sessions.
-
-        This tests the fix for a race condition where _current_card_id could be
-        overwritten by a concurrent task before the MCP tool call is recorded,
-        causing duplicates when the manager thinks Claude didn't post.
-        """
+    async def test_no_fallback_when_resume_api_confirms_posted(self, git_repo: Path):
+        """Test fallback skipped when API confirms bot posted after resume."""
         state_manager = MagicMock()
-        manager = ProxyManager(state_manager, max_concurrent=2, cwd=git_repo)
+        manager = ProxyManager(state_manager, cwd=git_repo)
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
         manager.client.toggle_reaction = MagicMock()
         manager.client.add_comment = MagicMock()
 
-        async def mock_execute_card1(prompt, cwd=None, **kwargs):
-            # Wait to ensure card2 starts and potentially overwrites _current_card_id
-            await asyncio.sleep(0.02)
-            # Simulate MCP tool call with card_id in arguments (as real MCP does)
-            # The fix ensures this records to card1's session even if _current_card_id is card2
-            manager.session_registry.record_tool_call(
-                "add_comment", {"card_id": "card1", "content": "from card1"}
-            )
-            return ClaudeResult(success=True, result_text="Done")
+        # First check: not posted → triggers resume; second check: posted
+        call_count = {"n": 0}
 
-        async def mock_execute_card2(prompt, cwd=None, **kwargs):
-            # Don't post anything - just wait
-            await asyncio.sleep(0.05)
-            return ClaudeResult(success=True, result_text="Done")
+        def progressive_api_check(card_id, seconds=60):
+            call_count["n"] += 1
+            return call_count["n"] > 1  # False first, True after
 
-        call_count = {"count": 0}
+        manager._has_recent_bot_comment = MagicMock(side_effect=progressive_api_check)
 
-        async def route_execute(prompt, cwd=None, **kwargs):
-            call_count["count"] += 1
-            if call_count["count"] == 1:
-                return await mock_execute_card1(prompt, cwd, **kwargs)
-            return await mock_execute_card2(prompt, cwd, **kwargs)
+        execute_call_count = {"n": 0}
+
+        async def mock_execute(prompt, resume_session_id=None, cwd=None, **kwargs):
+            execute_call_count["n"] += 1
+            if execute_call_count["n"] == 1:
+                return ClaudeResult(success=True, result_text="Done", session_id="sess123")
+            return ClaudeResult(success=True, result_text="Posted via MCP")
 
         manager.executor = MagicMock()
         manager.executor.extract_command.return_value = "/kp"
         manager.executor.build_prompt.return_value = "prompt"
-        manager.executor.execute = route_execute
+        manager.executor.execute = mock_execute
         manager.worktree_manager = MagicMock()
-        manager.worktree_manager.create_worktree.side_effect = [
-            git_repo.parent / "card-card1",
-            git_repo.parent / "card-card2",
-        ]
+        manager.worktree_manager.create_worktree.return_value = git_repo.parent / "card-card1"
         (git_repo.parent / "card-card1").mkdir(exist_ok=True)
-        (git_repo.parent / "card-card2").mkdir(exist_ok=True)
 
-        await asyncio.gather(
-            manager._process_mention("card1", "comm1", "@coder /kp", "Paul"),
-            manager._process_mention("card2", "comm2", "@coder /kp", "Paul"),
-        )
+        await manager._process_mention("card1", "comm1", "@coder /kp", "Paul")
 
-        # Card1 should have success reaction (comment was tracked correctly to card1's session)
-        toggle_calls = manager.client.toggle_reaction.call_args_list
-        card1_success = any(call[0][0] == "card1" and call[0][2] == "✅" for call in toggle_calls)
-        assert card1_success, "Card1 should get success reaction when comment tracked correctly"
-
-        # No fallback add_comment should have been called for card1
-        # (fallback only happens when session tracking fails)
-        manager.client.add_comment.assert_not_called()
+        # No fallback add_comment for result text
+        fallback_calls = [
+            call
+            for call in manager.client.add_comment.call_args_list
+            if "Posted via MCP" in str(call) or "Done" in str(call)
+        ]
+        assert len(fallback_calls) == 0, "Should not post fallback when API confirms post"
