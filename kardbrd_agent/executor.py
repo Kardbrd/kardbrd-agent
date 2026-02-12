@@ -9,18 +9,17 @@ from pathlib import Path
 
 logger = logging.getLogger("kardbrd_agent")
 
-# Default MCP server port
-DEFAULT_MCP_PORT = 8765
 
-
-def create_mcp_config(port: int = DEFAULT_MCP_PORT) -> Path:
+def create_mcp_config(api_url: str, bot_token: str) -> Path:
     """
     Create a temporary MCP config file for Claude Code.
 
-    The config points Claude to the local MCP HTTP server.
+    The config tells Claude to spawn kardbrd-mcp as a stdio subprocess
+    with the bot's credentials.
 
     Args:
-        port: Port where MCP server is running
+        api_url: The kardbrd API base URL
+        bot_token: The bot's authentication token
 
     Returns:
         Path to the temporary config file
@@ -28,8 +27,13 @@ def create_mcp_config(port: int = DEFAULT_MCP_PORT) -> Path:
     config = {
         "mcpServers": {
             "kardbrd": {
-                "type": "sse",
-                "url": f"http://localhost:{port}/sse",
+                "command": "kardbrd-mcp",
+                "args": [
+                    "--api-url",
+                    api_url,
+                    "--token",
+                    bot_token,
+                ],
             }
         }
     }
@@ -67,7 +71,8 @@ class ClaudeExecutor:
         self,
         cwd: str | Path | None = None,
         timeout: int = 3600,  # 1 hour default
-        mcp_port: int | None = None,
+        api_url: str | None = None,
+        bot_token: str | None = None,
     ):
         """
         Initialize the executor.
@@ -75,11 +80,13 @@ class ClaudeExecutor:
         Args:
             cwd: Working directory for Claude (defaults to current directory)
             timeout: Maximum execution time in seconds (default 1 hour)
-            mcp_port: Port for MCP server (if set, enables --mcp-config)
+            api_url: API base URL for kardbrd-mcp (if set with bot_token, enables --mcp-config)
+            bot_token: Bot authentication token for kardbrd-mcp
         """
         self.cwd = Path(cwd) if cwd else Path.cwd()
         self.timeout = timeout
-        self.mcp_port = mcp_port
+        self.api_url = api_url
+        self.bot_token = bot_token
 
     async def execute(
         self,
@@ -101,10 +108,10 @@ class ClaudeExecutor:
         # Use passed cwd or default
         working_dir = cwd or self.cwd
 
-        # Create MCP config if port is set
+        # Create MCP config if credentials are set
         mcp_config_path: Path | None = None
-        if self.mcp_port:
-            mcp_config_path = create_mcp_config(self.mcp_port)
+        if self.api_url and self.bot_token:
+            mcp_config_path = create_mcp_config(self.api_url, self.bot_token)
 
         cmd = [
             "claude",

@@ -28,9 +28,8 @@ RUN echo "Host *\n    StrictHostKeyChecking accept-new" > /etc/ssh/ssh_config.d/
 
 WORKDIR /app
 
-ENV KARDBRD_AGENT_REPO="https://github.com/Kardbrd/kardbrd-agent.git"
-ENV KARDBRD_AGENT_BRANCH="main"
-ENV AGENT_STATE_DIR=/app/state AGENT_MCP_PORT=8765 LOG_LEVEL=INFO PYTHONUNBUFFERED=1
+ENV PATH="/app/.venv/bin:$PATH"
+ENV AGENT_STATE_DIR=/app/state LOG_LEVEL=INFO PYTHONUNBUFFERED=1
 
 USER agent
 

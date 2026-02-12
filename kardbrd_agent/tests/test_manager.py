@@ -54,6 +54,19 @@ class TestProxyManager:
         assert manager.timeout == 300
         assert manager.max_concurrent == 5
 
+    def test_no_session_registry(self):
+        """Test ProxyManager no longer has session_registry."""
+        state_manager = MagicMock()
+        manager = ProxyManager(state_manager)
+        assert not hasattr(manager, "session_registry")
+        assert not hasattr(manager, "session")
+
+    def test_no_mcp_port(self):
+        """Test ProxyManager no longer has mcp_port."""
+        state_manager = MagicMock()
+        manager = ProxyManager(state_manager)
+        assert not hasattr(manager, "mcp_port")
+
 
 class TestActiveSession:
     """Tests for ActiveSession dataclass."""
@@ -189,6 +202,7 @@ class TestProxyManagerAsync:
         )
         manager.worktree_manager = MagicMock()
         manager.worktree_manager.create_worktree.return_value = Path("/tmp/card-abc12345")
+        manager._has_recent_bot_comment = MagicMock(return_value=False)
 
         await manager._process_mention("abc12345", "comm1", "@coder hi", "Paul")
 
@@ -211,6 +225,7 @@ class TestProxyManagerAsync:
         worktree_path = Path("/tmp/card-abc12345")
         manager.worktree_manager = MagicMock()
         manager.worktree_manager.create_worktree.return_value = worktree_path
+        manager._has_recent_bot_comment = MagicMock(return_value=False)
 
         await manager._process_mention("abc12345", "comm1", "@coder hi", "Paul")
 
@@ -234,6 +249,7 @@ class TestProxyManagerAsync:
         )
         manager.worktree_manager = MagicMock()
         manager.worktree_manager.create_worktree.return_value = Path("/tmp/wt")
+        manager._has_recent_bot_comment = MagicMock(return_value=False)
 
         await manager._process_mention("abc12345", "comm1", "@coder hi", "Paul")
 
@@ -737,6 +753,7 @@ class TestProcessingAttribute:
         manager.executor = MagicMock()
         manager.executor.extract_command.return_value = "/kp"
         manager.executor.build_prompt.return_value = "prompt"
+        manager._has_recent_bot_comment = MagicMock(return_value=False)
 
         processing_during_execution = []
 
@@ -888,11 +905,11 @@ class TestRetryHandler:
 
 
 class TestResumeToPublish:
-    """Tests for _resume_to_publish session handling."""
+    """Tests for _resume_to_publish with API-based verification."""
 
     @pytest.mark.asyncio
-    async def test_resume_preserves_session_state(self):
-        """Test resume does NOT reset session state (prevents duplicate comments)."""
+    async def test_resume_success_with_api_confirmed_post(self):
+        """Test no fallback when API confirms bot posted after resume."""
         state_manager = MagicMock()
         manager = ProxyManager(state_manager)
         manager.client = MagicMock()
@@ -900,11 +917,7 @@ class TestResumeToPublish:
         manager.executor.execute = AsyncMock(
             return_value=ClaudeResult(success=True, result_text="Done")
         )
-
-        # Pre-set session state (simulating prior MCP post)
-        manager.session_registry.set_current_card("card123")
-        card_session = manager.session_registry.get_session("card123")
-        card_session.comment_posted = True
+        manager._has_recent_bot_comment = MagicMock(return_value=True)
 
         await manager._resume_to_publish(
             card_id="card123",
@@ -913,36 +926,34 @@ class TestResumeToPublish:
             author_name="Paul",
         )
 
-        # Session state should be preserved, not reset
-        assert card_session.comment_posted is True
-
-    @pytest.mark.asyncio
-    async def test_resume_detects_prior_mcp_post(self):
-        """Test resume correctly detects when MCP already posted."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager)
-        manager.client = MagicMock()
-        manager.executor = MagicMock()
-        manager.executor.execute = AsyncMock(
-            return_value=ClaudeResult(success=True, result_text="Done")
-        )
-
-        # Set session state to indicate comment was posted
-        manager.session_registry.set_current_card("card123")
-        card_session = manager.session_registry.get_session("card123")
-        card_session.comment_posted = True
-
-        await manager._resume_to_publish(
-            card_id="card123",
-            comment_id="comm1",
-            session_id="session-abc",
-            author_name="Paul",
-        )
-
-        # Should NOT post fallback since comment_posted is True
+        # Should NOT post fallback since API says bot posted
         manager.client.add_comment.assert_not_called()
         # Should add success reaction
         manager.client.toggle_reaction.assert_called_with("card123", "comm1", "✅")
+
+    @pytest.mark.asyncio
+    async def test_resume_success_without_post_triggers_fallback(self):
+        """Test fallback posted when API says bot did NOT post after resume."""
+        state_manager = MagicMock()
+        manager = ProxyManager(state_manager)
+        manager.client = MagicMock()
+        manager.executor = MagicMock()
+        manager.executor.execute = AsyncMock(
+            return_value=ClaudeResult(success=True, result_text="Some result")
+        )
+        manager._has_recent_bot_comment = MagicMock(return_value=False)
+
+        await manager._resume_to_publish(
+            card_id="card123",
+            comment_id="comm1",
+            session_id="session-abc",
+            author_name="Paul",
+        )
+
+        # Should post fallback
+        manager.client.add_comment.assert_called_once()
+        assert "Some result" in manager.client.add_comment.call_args[0][1]
+        assert "@Paul" in manager.client.add_comment.call_args[0][1]
 
 
 class TestHasRecentBotComment:
@@ -1050,9 +1061,6 @@ class TestFallbackCommentGuard:
         # Mock _has_recent_bot_comment to return True
         manager._has_recent_bot_comment = MagicMock(return_value=True)
 
-        # Ensure session shows no MCP post (to trigger fallback path)
-        manager.session_registry.set_current_card("card123")
-
         await manager._resume_to_publish(
             card_id="card123",
             comment_id="comm1",
@@ -1078,9 +1086,6 @@ class TestFallbackCommentGuard:
 
         # Mock _has_recent_bot_comment to return False
         manager._has_recent_bot_comment = MagicMock(return_value=False)
-
-        # Ensure session shows no MCP post (to trigger fallback path)
-        manager.session_registry.set_current_card("card123")
 
         await manager._resume_to_publish(
             card_id="card123",

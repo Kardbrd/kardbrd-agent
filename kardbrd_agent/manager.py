@@ -43,9 +43,8 @@ class ProxyManager:
 
     Uses WebSocket for real-time event handling. When a comment with @mention
     is detected, fetches the card context and spawns Claude CLI to process
-    the request.
-
-    In unified mode, also runs an MCP HTTP server that Claude connects to.
+    the request. Each Claude session spawns its own kardbrd-mcp subprocess
+    for MCP tools.
     """
 
     def __init__(
@@ -54,7 +53,6 @@ class ProxyManager:
         mention_keyword: str = "@coder",
         cwd: str | Path | None = None,
         timeout: int = 3600,
-        mcp_port: int | None = None,
         max_concurrent: int = 3,
         worktrees_dir: str | Path | None = None,
         setup_command: str | None = None,
@@ -69,7 +67,6 @@ class ProxyManager:
             mention_keyword: The keyword to respond to (e.g., "@coder")
             cwd: Working directory for Claude (defaults to current directory)
             timeout: Maximum execution time in seconds for Claude (default 1 hour)
-            mcp_port: Port for MCP HTTP server (enables unified mode if set)
             max_concurrent: Maximum number of concurrent Claude sessions
             worktrees_dir: Optional directory for worktrees (defaults to cwd parent)
             setup_command: Shell command to run in worktrees after creation (e.g. "npm install")
@@ -80,7 +77,6 @@ class ProxyManager:
         self.mention_keyword = mention_keyword.lower()
         self.cwd = Path(cwd) if cwd else Path.cwd()
         self.timeout = timeout
-        self.mcp_port = mcp_port
         self.max_concurrent = max_concurrent
         self.worktrees_dir = Path(worktrees_dir) if worktrees_dir else None
         self.setup_command = setup_command
@@ -94,13 +90,6 @@ class ProxyManager:
         self.worktree_manager: WorktreeManager | None = None
         self._subscription_info: dict | None = None  # Cached subscription info for status pings
 
-        # Session tracker for MCP tool calls (per-card)
-        from .mcp_proxy import ProxySessionRegistry
-
-        self.session_registry = ProxySessionRegistry()
-        # Legacy alias for compatibility
-        self.session = self.session_registry
-
         # Concurrency control: semaphore limits parallel Claude sessions
         self._semaphore = asyncio.Semaphore(max_concurrent)
         # Track active sessions: card_id → ActiveSession
@@ -113,14 +102,9 @@ class ProxyManager:
         Start the proxy manager.
 
         Loads subscription, connects to WebSocket, and begins listening
-        for @mention events.
-
-        In unified mode (mcp_port set), also runs the MCP HTTP server.
+        for @mention events. Each Claude CLI session spawns its own
+        kardbrd-mcp subprocess for MCP tools.
         """
-        import asyncio
-
-        from .mcp_proxy import run_http_async
-
         # Load subscription
         subscriptions = self.state_manager.get_all_subscriptions()
         if not subscriptions:
@@ -154,7 +138,8 @@ class ProxyManager:
         self.executor = ClaudeExecutor(
             cwd=self.cwd,
             timeout=self.timeout,
-            mcp_port=self.mcp_port,
+            api_url=subscription.api_url,
+            bot_token=subscription.bot_token,
         )
 
         # Initialize worktree manager
@@ -177,25 +162,7 @@ class ProxyManager:
         logger.info(f"Working directory: {self.cwd}")
         logger.info(f"Listening for {self.mention_keyword} mentions...")
 
-        if self.mcp_port:
-            # Unified mode: run MCP HTTP server + WebSocket listener + status ping
-            logger.info(f"Unified mode: MCP HTTP server on port {self.mcp_port}")
-
-            async def run_websocket():
-                await self.connection.connect()
-
-            async def run_mcp():
-                await run_http_async(
-                    state_dir=str(self.state_manager.state_dir),
-                    port=self.mcp_port,
-                    session=self.session,
-                )
-
-            # Run all concurrently
-            await asyncio.gather(run_mcp(), run_websocket(), self._status_ping_loop())
-        else:
-            # Legacy mode: WebSocket + status ping
-            await asyncio.gather(self.connection.connect(), self._status_ping_loop())
+        await asyncio.gather(self.connection.connect(), self._status_ping_loop())
 
     async def stop(self) -> None:
         """Stop the proxy manager."""
@@ -435,9 +402,6 @@ class ProxyManager:
                 )
                 self._active_sessions[card_id] = session
 
-                # Set current card context for MCP session tracking
-                self.session_registry.set_current_card(card_id)
-
                 # Fetch card markdown for context
                 logger.info(f"Fetching card {card_id} context...")
                 card_markdown = self.client.get_card_markdown(card_id)
@@ -455,8 +419,6 @@ class ProxyManager:
                     author_name=author_name,
                 )
 
-                # Session is already fresh from set_current_card (no reset needed)
-
                 # Execute Claude in worktree directory
                 logger.info(f"Spawning Claude in {worktree_path}...")
                 result = await self.executor.execute(prompt, cwd=worktree_path)
@@ -469,10 +431,9 @@ class ProxyManager:
                 if result.success:
                     logger.info("Claude completed successfully")
 
-                    # Check if Claude posted via MCP (use card-specific session)
-                    card_session = self.session_registry.get_session(card_id)
-                    if card_session and (card_session.comment_posted or card_session.card_updated):
-                        logger.info("Claude posted response via MCP")
+                    # Check if Claude posted via the kardbrd API
+                    if self._has_recent_bot_comment(card_id):
+                        logger.info("Claude posted response (verified via API)")
                         self._add_reaction(card_id, comment_id, "✅")
                     elif result.session_id:
                         # Claude didn't post - resume session with explicit instructions
@@ -515,10 +476,9 @@ class ProxyManager:
                     logger.error("Failed to post error comment")
 
             finally:
-                # Clear processing flag, remove from active sessions, and clean up session
+                # Clear processing flag and remove from active sessions
                 self._processing = False
                 self._active_sessions.pop(card_id, None)
-                self.session_registry.cleanup_card(card_id)
 
     async def _resume_to_publish(
         self,
@@ -551,11 +511,6 @@ End your comment by mentioning @{author_name}
 
 DO NOT do any new work - just publish what you already did."""
 
-        # Set current card context for MCP session tracking (creates fresh session if needed)
-        # Note: Do NOT reset session - preserve tracking state from original execution
-        # to avoid losing evidence of prior MCP posts (fixes duplicate comment bug)
-        self.session_registry.set_current_card(card_id)
-
         logger.info(f"Resuming session {session_id} to publish response...")
         result = await self.executor.execute(
             resume_prompt,
@@ -563,13 +518,8 @@ DO NOT do any new work - just publish what you already did."""
             cwd=worktree_path,
         )
 
-        # Check card-specific session for resume result
-        card_session = self.session_registry.get_session(card_id)
-        if (
-            result.success
-            and card_session
-            and (card_session.comment_posted or card_session.card_updated)
-        ):
+        # Check if Claude posted via the API
+        if result.success and self._has_recent_bot_comment(card_id):
             logger.info("Resume successful - response published")
             self._add_reaction(card_id, comment_id, "✅")
         elif result.success:

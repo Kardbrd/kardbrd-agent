@@ -1,27 +1,18 @@
-"""MCP proxy server that exposes kardbrd tools via FastMCP.
+"""Session tracking data classes and logging utilities.
 
-This module creates an MCP server that proxies tool calls to the kardbrd API
-using the bot's authentication token from the subscription state.
+ProxySession and ProxySessionRegistry track card processing state.
+The _redact_sensitive helper is used for safe logging of tool arguments.
+
+Note: Previously this module hosted a FastMCP HTTP/SSE proxy server.
+MCP tools are now provided by the kardbrd-mcp stdio subprocess from
+the kardbrd-client package.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
-
-from fastmcp import FastMCP
-from fastmcp.tools import Tool
-from kardbrd_client import (
-    TOOLS,
-    DirectoryStateManager,
-    KardbrdClient,
-    ToolExecutor,
-)
-
-if TYPE_CHECKING:
-    from fastmcp.tools.tool import ToolResult
+from typing import Any
 
 logger = logging.getLogger("kardbrd_agent.mcp_proxy")
 
@@ -156,148 +147,6 @@ class ProxySessionRegistry:
             session.reset()
 
 
-class ProxyTool(Tool):
-    """A Tool that proxies calls to a ToolExecutor."""
-
-    _executor: ToolExecutor
-    _tool_name: str
-    _session: ProxySession | None
-
-    def __init__(
-        self,
-        executor: ToolExecutor,
-        tool_name: str,
-        description: str,
-        parameters: dict[str, Any],
-        session: ProxySession | None = None,
-    ):
-        """Initialize the proxy tool.
-
-        Args:
-            executor: The ToolExecutor to proxy calls to
-            tool_name: Name of the tool
-            description: Tool description
-            parameters: JSON schema for tool parameters
-            session: Optional session tracker for recording tool calls
-        """
-        super().__init__(
-            name=tool_name,
-            description=description,
-            parameters=parameters,
-        )
-        # Store as instance attributes (not model fields)
-        object.__setattr__(self, "_executor", executor)
-        object.__setattr__(self, "_tool_name", tool_name)
-        object.__setattr__(self, "_session", session)
-
-    async def run(self, arguments: dict[str, Any]) -> ToolResult:
-        """Execute the tool via ToolExecutor.
-
-        Args:
-            arguments: Tool arguments from MCP client
-
-        Returns:
-            ToolResult wrapping the tool execution result
-        """
-        from fastmcp.tools.tool import ToolResult
-
-        name = object.__getattribute__(self, "_tool_name")
-        executor = object.__getattribute__(self, "_executor")
-        session = object.__getattribute__(self, "_session")
-
-        logger.info(f"Proxying tool call: {name}")
-        logger.debug(f"Arguments: {_redact_sensitive(arguments)}")
-
-        # Track the tool call in session
-        if session:
-            session.record_tool_call(name, arguments)
-
-        try:
-            # ToolExecutor is sync, run in thread pool
-            result = await asyncio.to_thread(executor.execute, name, arguments)
-            logger.debug(f"Tool {name} completed successfully")
-            # Wrap result in ToolResult for FastMCP compatibility
-            if isinstance(result, str):
-                return ToolResult(content=result)
-            return ToolResult(structured_content=result)
-        except Exception as e:
-            logger.error(f"Tool {name} failed: {e}")
-            raise
-
-
-def create_mcp_server(
-    state_manager: DirectoryStateManager,
-    session: ProxySession | None = None,
-) -> FastMCP:
-    """
-    Create a FastMCP server with all kardbrd tools proxied.
-
-    Args:
-        state_manager: State manager containing the bot subscription
-        session: Optional session tracker for recording tool calls
-
-    Returns:
-        Configured FastMCP server instance
-    """
-    mcp = FastMCP(
-        name="kardbrd-proxy",
-        instructions=(
-            "Kardbrd MCP proxy server. Provides access to kardbrd board tools "
-            "including reading/writing cards, comments, checklists, and more."
-        ),
-    )
-
-    # Get the first subscription (Phase 1.1 only supports single board)
-    subscriptions = state_manager.get_all_subscriptions()
-    if not subscriptions:
-        raise RuntimeError(
-            "No subscriptions configured. Use 'kardbrd-agent sub <setup-url>' first."
-        )
-
-    # Use first subscription
-    board_id, subscription = next(iter(subscriptions.items()))
-    logger.info(f"Proxy configured for board {board_id} as @{subscription.agent_name}")
-
-    # Create client and executor with bot's credentials
-    client = KardbrdClient(
-        base_url=subscription.api_url,
-        token=subscription.bot_token,
-    )
-    executor = ToolExecutor(client)
-
-    # Register all tools from TOOLS schema
-    for tool_def in TOOLS:
-        tool = _create_proxy_tool(executor, tool_def, session)
-        mcp.add_tool(tool)
-
-    return mcp
-
-
-def _create_proxy_tool(
-    executor: ToolExecutor,
-    tool_def: dict[str, Any],
-    session: ProxySession | None = None,
-) -> ProxyTool:
-    """
-    Create a ProxyTool from a tool definition.
-
-    Args:
-        executor: The ToolExecutor to proxy calls to
-        tool_def: Tool definition from TOOLS schema
-        session: Optional session tracker for recording tool calls
-
-    Returns:
-        A ProxyTool instance
-    """
-    return ProxyTool(
-        executor=executor,
-        tool_name=tool_def["name"],
-        description=tool_def["description"],
-        parameters=tool_def["input_schema"],
-        session=session,
-    )
-
-
 def _redact_sensitive(data: dict[str, Any]) -> dict[str, Any]:
     """Redact potentially sensitive data from logs."""
     redacted = {}
@@ -312,40 +161,3 @@ def _redact_sensitive(data: dict[str, Any]) -> dict[str, Any]:
             redacted[k] = v
 
     return redacted
-
-
-async def run_http_async(
-    state_dir: str = "state",
-    port: int = 8765,
-    session: ProxySession | None = None,
-) -> None:
-    """
-    Run the MCP proxy server with HTTP/SSE transport (async).
-
-    Args:
-        state_dir: Path to state directory
-        port: Port to listen on (default 8765)
-        session: Optional session tracker for recording tool calls
-    """
-    state_manager = DirectoryStateManager(state_dir)
-    mcp = create_mcp_server(state_manager, session=session)
-
-    logger.info(f"Starting kardbrd MCP proxy server (HTTP) on port {port}")
-    await mcp.run_http_async(transport="sse", port=port)
-
-
-def run_mcp_server(state_dir: str = "state") -> None:
-    """
-    Run the MCP proxy server with stdio transport.
-
-    This is the main entry point for the proxy-mcp CLI command.
-    """
-    from kardbrd_client import configure_logging
-
-    configure_logging()
-
-    state_manager = DirectoryStateManager(state_dir)
-    mcp = create_mcp_server(state_manager)
-
-    logger.info("Starting kardbrd MCP proxy server (stdio)")
-    mcp.run()
