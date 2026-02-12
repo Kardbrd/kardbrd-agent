@@ -100,6 +100,59 @@ class WorktreeManager:
             capture_output=True,
         )
 
+    def _update_main_branch(self) -> bool:
+        """Fetch and fast-forward main before creating a new worktree."""
+        try:
+            # Fetch just main from origin
+            subprocess.run(
+                ["git", "fetch", "origin", "main"],
+                cwd=self.base_repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            # Get current branch to restore later
+            current = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=self.base_repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+            # Update main via fast-forward
+            subprocess.run(
+                ["git", "checkout", "main"],
+                cwd=self.base_repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "pull", "--ff-only"],
+                cwd=self.base_repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            # Restore previous branch if needed
+            if current != "main":
+                subprocess.run(
+                    ["git", "checkout", current],
+                    cwd=self.base_repo,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
+            logger.info("Updated main branch from origin")
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Failed to update main branch: {e.stderr}")
+            return False
+
     def create_worktree(self, card_id: str, branch_name: str | None = None) -> Path:
         """
         Create a worktree for a card.
@@ -129,6 +182,9 @@ class WorktreeManager:
             return worktree_path
 
         logger.info(f"Creating worktree for card {card_id} at {worktree_path}")
+
+        # Update main before creating worktree from latest
+        self._update_main_branch()
 
         try:
             # Create worktree with new branch

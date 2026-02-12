@@ -15,6 +15,8 @@ logger = logging.getLogger("kardbrd_agent")
 
 # Emoji for triggering a retry of a previous @mention
 RETRY_EMOJI = "🔄"
+# Emoji for stopping an active session (user reacts on their triggering comment)
+STOP_EMOJI = "🛑"
 # Emojis to clear before retrying
 COMPLETION_EMOJIS = ("✅", "🛑")
 
@@ -30,6 +32,7 @@ class ActiveSession:
 
     card_id: str
     worktree_path: Path
+    comment_id: str | None = field(default=None)
     process: asyncio.subprocess.Process | None = field(default=None)
     session_id: str | None = field(default=None)
 
@@ -233,11 +236,6 @@ class ProxyManager:
 
         logger.info(f"Detected {self.mention_keyword} mention by {author_name} on card {card_id}")
 
-        # Check for stop command
-        if "stop" in content.lower():
-            await self._handle_stop_command(card_id, comment_id)
-            return
-
         # Check if already processing THIS card
         if card_id in self._active_sessions:
             logger.warning(f"Card {card_id} already being processed, skipping")
@@ -252,14 +250,19 @@ class ProxyManager:
         )
 
     async def _handle_reaction_added(self, message: dict) -> None:
-        """Handle reaction events - check for retry emoji."""
+        """Handle reaction events - check for retry or stop emoji."""
         emoji = message.get("emoji")
-        if emoji != RETRY_EMOJI:
-            logger.info(f"Ignoring non-retry emoji: {emoji}")
-            return
-
         card_id = message.get("card_id")
         comment_id = message.get("comment_id")
+
+        if emoji == STOP_EMOJI:
+            await self._handle_stop_reaction(card_id, comment_id)
+            return
+
+        if emoji != RETRY_EMOJI:
+            logger.info(f"Ignoring non-actionable emoji: {emoji}")
+            return
+
         user_name = message.get("user_name", "Unknown")
 
         logger.info(f"Retry requested by {user_name} on comment {comment_id}")
@@ -393,8 +396,10 @@ class ProxyManager:
                 worktree_path = self.worktree_manager.create_worktree(card_id)
                 logger.info(f"Using worktree: {worktree_path}")
 
-                # Track active session
-                session = ActiveSession(card_id=card_id, worktree_path=worktree_path)
+                # Track active session (including triggering comment for stop-by-reaction)
+                session = ActiveSession(
+                    card_id=card_id, worktree_path=worktree_path, comment_id=comment_id
+                )
                 self._active_sessions[card_id] = session
 
                 # Fetch card markdown for context
@@ -535,28 +540,37 @@ DO NOT do any new work - just publish what you already did."""
                 f"**Error resuming session**\n\n```\n{result.error}\n```\n\n@{author_name}",
             )
 
-    async def _handle_stop_command(self, card_id: str, comment_id: str) -> None:
+    async def _handle_stop_reaction(self, card_id: str, comment_id: str) -> None:
         """
-        Handle @botName stop command.
+        Handle stop via 🛑 reaction on the triggering comment.
 
-        Kills the Claude process but preserves the worktree.
+        When a user adds a 🛑 reaction to the comment that initiated work,
+        the active Claude session for that card is killed. The worktree is preserved.
 
         Args:
             card_id: The card ID
-            comment_id: The comment ID with the stop command
+            comment_id: The comment ID that received the 🛑 reaction
         """
         if card_id not in self._active_sessions:
-            logger.info(f"No active session for card {card_id}")
+            logger.info(f"No active session for card {card_id}, ignoring stop reaction")
             return
 
         session = self._active_sessions[card_id]
+
+        # Only stop if the reaction is on the comment that triggered this session
+        if session.comment_id and session.comment_id != comment_id:
+            logger.info(
+                f"Stop reaction on comment {comment_id} doesn't match "
+                f"triggering comment {session.comment_id}, ignoring"
+            )
+            return
+
         if session.process:
             session.process.kill()
-            logger.info(f"Killed Claude session for card {card_id}")
+            logger.info(f"Killed Claude session for card {card_id} via stop reaction")
 
         # Remove from active sessions but preserve worktree
         del self._active_sessions[card_id]
-        self._add_reaction(card_id, comment_id, "🛑")
 
     async def _handle_card_moved(self, message: dict) -> None:
         """
