@@ -25,9 +25,6 @@ kardbrd-agent sub <setup-url>
 
 # Start listening for @mentions
 kardbrd-agent start
-
-# Start in unified mode (enables MCP tools for Claude)
-kardbrd-agent start --port 8765
 ```
 
 ## Commands
@@ -39,7 +36,6 @@ kardbrd-agent start --port 8765
 | `kardbrd-agent status` | Show subscription status |
 | `kardbrd-agent config <board-id>` | Configure merge settings for a board |
 | `kardbrd-agent unsub --yes` | Unsubscribe from all boards |
-| `kardbrd-agent proxy-mcp` | Run MCP proxy server (stdio) |
 
 ### Start Options
 
@@ -47,8 +43,7 @@ kardbrd-agent start --port 8765
 kardbrd-agent start \
   --cwd /path/to/repo \      # Working directory for Claude
   --timeout 7200 \            # Max execution time in seconds (default: 3600)
-  --max-concurrent 5 \        # Max parallel Claude sessions (default: 3)
-  --port 8765                 # MCP server port (enables unified mode)
+  --max-concurrent 5          # Max parallel Claude sessions (default: 3)
 ```
 
 ## How It Works

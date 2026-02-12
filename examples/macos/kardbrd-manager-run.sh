@@ -112,7 +112,6 @@ trap - EXIT
 
 # Start kardbrd-manager (exec replaces this process)
 exec $UV run --project "$REPO_DIR" kardbrd-manager start \
-    --port 8765 \
     --cwd "$REPO_DIR" \
     --timeout 7200 \
     --max-concurrent 7

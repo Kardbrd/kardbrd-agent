@@ -794,7 +794,10 @@ class TestRetryHandler:
         state_manager = MagicMock()
         manager = ProxyManager(state_manager)
         manager.mention_keyword = "@coder"
-        manager._processing = True  # Simulate active processing
+        # Simulate active processing by adding a session
+        manager._active_sessions["other_card"] = ActiveSession(
+            card_id="other_card", worktree_path=Path("/tmp/wt")
+        )
         manager.client = MagicMock()
         manager.client.get_comment.return_value = {
             "content": "@coder /kp",
@@ -814,7 +817,6 @@ class TestRetryHandler:
         state_manager = MagicMock()
         manager = ProxyManager(state_manager)
         manager.mention_keyword = "@coder"
-        manager._processing = False
         manager.client = MagicMock()
         manager.client.get_comment.return_value = {
             "content": "@coder /kp",
@@ -834,7 +836,6 @@ class TestRetryHandler:
         state_manager = MagicMock()
         manager = ProxyManager(state_manager)
         manager.mention_keyword = "@coder"
-        manager._processing = False
         manager.client = MagicMock()
         manager.client.get_comment.return_value = {
             "content": "@coder /kp",
@@ -858,7 +859,6 @@ class TestRetryHandler:
         state_manager = MagicMock()
         manager = ProxyManager(state_manager)
         manager.mention_keyword = "@coder"
-        manager._processing = False
         manager.client = MagicMock()
         manager.client.get_comment.return_value = {
             "content": "Just a regular comment",
@@ -878,7 +878,6 @@ class TestRetryHandler:
         state_manager = MagicMock()
         manager = ProxyManager(state_manager)
         manager.mention_keyword = "@coder"
-        manager._processing = False
         manager.client = MagicMock()
         manager.client.get_comment.side_effect = Exception("API error")
         manager._process_mention = AsyncMock()

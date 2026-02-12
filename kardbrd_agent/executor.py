@@ -15,7 +15,8 @@ def create_mcp_config(api_url: str, bot_token: str) -> Path:
     Create a temporary MCP config file for Claude Code.
 
     The config tells Claude to spawn kardbrd-mcp as a stdio subprocess
-    with the bot's credentials.
+    with the bot's credentials passed via environment variables to avoid
+    exposing secrets in process argument lists.
 
     Args:
         api_url: The kardbrd API base URL
@@ -28,12 +29,11 @@ def create_mcp_config(api_url: str, bot_token: str) -> Path:
         "mcpServers": {
             "kardbrd": {
                 "command": "kardbrd-mcp",
-                "args": [
-                    "--api-url",
-                    api_url,
-                    "--token",
-                    bot_token,
-                ],
+                "args": [],
+                "env": {
+                    "KARDBRD_API_URL": api_url,
+                    "KARDBRD_TOKEN": bot_token,
+                },
             }
         }
     }

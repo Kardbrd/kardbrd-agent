@@ -8,7 +8,6 @@ Type=simple
 EnvironmentFile=%h/.config/kardbrd-agent/agent.env
 ExecStartPre=-/bin/sh -c '${CONTAINER_CMD:-podman} rm -f kardbrd-agent'
 ExecStart=/bin/sh -c '${CONTAINER_CMD:-podman} run --rm --name kardbrd-agent \
-    -p 8765:8765 \
     -e ANTHROPIC_API_KEY \
     -e LOG_LEVEL \
     -e GIT_AUTHOR_NAME \
@@ -21,8 +20,7 @@ ExecStart=/bin/sh -c '${CONTAINER_CMD:-podman} run --rm --name kardbrd-agent \
     -v %h/.ssh/kardbrd-agent:/home/agent/.ssh/id_ed25519:ro \
     -v %h/.ssh/kardbrd-agent-config:/home/agent/.ssh/config:ro \
     kardbrd-agent start \
-        --cwd /home/agent/workspaces/repo \
-        --port 8765'
+        --cwd /home/agent/workspaces/repo'
 ExecStop=/bin/sh -c '${CONTAINER_CMD:-podman} stop -t 600 kardbrd-agent'
 TimeoutStopSec=610
 Restart=on-failure

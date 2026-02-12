@@ -223,10 +223,12 @@ class TestCreateMcpConfig:
             assert "kardbrd" in config["mcpServers"]
             server = config["mcpServers"]["kardbrd"]
             assert server["command"] == "kardbrd-mcp"
-            assert "--api-url" in server["args"]
-            assert "http://localhost:8000" in server["args"]
-            assert "--token" in server["args"]
-            assert "test-token" in server["args"]
+            # Credentials passed via env vars, not args
+            assert server["env"]["KARDBRD_API_URL"] == "http://localhost:8000"
+            assert server["env"]["KARDBRD_TOKEN"] == "test-token"
+            # Args should not contain credentials
+            assert "--api-url" not in server.get("args", [])
+            assert "--token" not in server.get("args", [])
             # Should NOT have SSE-style keys
             assert "type" not in server
             assert "url" not in server
@@ -234,7 +236,7 @@ class TestCreateMcpConfig:
             config_path.unlink(missing_ok=True)
 
     def test_config_uses_provided_credentials(self):
-        """Test that credentials are correctly embedded in config."""
+        """Test that credentials are correctly embedded in config via env vars."""
         import json
 
         from kardbrd_agent.executor import create_mcp_config
@@ -246,9 +248,9 @@ class TestCreateMcpConfig:
             with open(config_path) as f:
                 config = json.load(f)
 
-            args = config["mcpServers"]["kardbrd"]["args"]
-            assert "https://api.example.com" in args
-            assert "secret-bot-123" in args
+            env = config["mcpServers"]["kardbrd"]["env"]
+            assert env["KARDBRD_API_URL"] == "https://api.example.com"
+            assert env["KARDBRD_TOKEN"] == "secret-bot-123"
         finally:
             config_path.unlink(missing_ok=True)
 

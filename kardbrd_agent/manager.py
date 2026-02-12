@@ -95,7 +95,11 @@ class ProxyManager:
         # Track active sessions: card_id → ActiveSession
         self._active_sessions: dict[str, ActiveSession] = {}
         self._running = False
-        self._processing = False  # Track if currently processing any card
+
+    @property
+    def _processing(self) -> bool:
+        """True when any card is being actively processed."""
+        return len(self._active_sessions) > 0
 
     async def start(self) -> None:
         """
@@ -385,7 +389,6 @@ class ProxyManager:
 
         # Acquire semaphore (blocks if max_concurrent reached)
         async with self._semaphore:
-            self._processing = True  # Mark as processing
             # Add 👀 reaction to acknowledge receipt
             self._add_reaction(card_id, comment_id, "👀")
 
@@ -476,8 +479,7 @@ class ProxyManager:
                     logger.error("Failed to post error comment")
 
             finally:
-                # Clear processing flag and remove from active sessions
-                self._processing = False
+                # Remove from active sessions
                 self._active_sessions.pop(card_id, None)
 
     async def _resume_to_publish(

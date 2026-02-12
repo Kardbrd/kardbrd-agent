@@ -164,7 +164,6 @@ Edit `kardbrd-manager-run.sh` to change the command-line arguments:
 
 | Option               | Current Value | Description                  |
 | -------------------- | ------------- | ---------------------------- |
-| `--port 8765`        | 8765          | MCP HTTP server port         |
 | `--max-concurrent 7` | 7             | Max parallel Claude sessions |
 | `--timeout 7200`     | 7200          | Session timeout (2 hours)    |
 | `--cwd`              | `$REPO_DIR`   | Working directory for Claude |
