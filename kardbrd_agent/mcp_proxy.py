@@ -23,12 +23,14 @@ class ProxySession:
 
     comment_posted: bool = False
     card_updated: bool = False
+    labels_modified: bool = False
     tools_called: list[str] = field(default_factory=list)
 
     def reset(self) -> None:
         """Reset session state before a new execution."""
         self.comment_posted = False
         self.card_updated = False
+        self.labels_modified = False
         self.tools_called.clear()
 
     def record_tool_call(self, tool_name: str, arguments: dict[str, Any]) -> None:
@@ -40,6 +42,9 @@ class ProxySession:
             logger.debug("Session: comment posted")
         elif tool_name == "update_card":
             self.card_updated = True
+            if "label_ids" in arguments:
+                self.labels_modified = True
+                logger.debug("Session: card labels modified")
             logger.debug("Session: card updated")
 
 
@@ -133,6 +138,12 @@ class ProxySessionRegistry:
         """Check if current session has updated a card."""
         session = self.get_current_session()
         return session.card_updated if session else False
+
+    @property
+    def labels_modified(self) -> bool:
+        """Check if current session has modified card labels."""
+        session = self.get_current_session()
+        return session.labels_modified if session else False
 
     @property
     def tools_called(self) -> list[str]:

@@ -250,6 +250,7 @@ class ClaudeExecutor:
         command: str,
         comment_content: str,
         author_name: str,
+        board_id: str | None = None,
     ) -> str:
         """
         Build the prompt for Claude from card context and user request.
@@ -260,6 +261,7 @@ class ClaudeExecutor:
             command: The extracted command (e.g., "/kp", "/ki", or free-form)
             comment_content: The full comment that triggered the proxy
             author_name: Name of the user who triggered the proxy
+            board_id: Optional board ID for label operations
 
         Returns:
             Formatted prompt string
@@ -278,6 +280,22 @@ End your comment by mentioning the requester: @{author_name}
 DO NOT just output text - you must use the add_comment tool to post your response.
 """
 
+        # Label instructions when board_id is available
+        label_instructions = ""
+        if board_id:
+            label_instructions = f"""
+## Labels
+
+Cards may have labels (shown as "Labels: ..." in card markdown).
+Available tools:
+- `mcp__kardbrd__get_board_labels` with board_id "{board_id}" \
+to discover available labels
+- `mcp__kardbrd__update_card` with `label_ids` (list of label IDs)
+
+**Important:** `label_ids` does a full replace — to add a label, \
+first read current labels, then send the full list.
+"""
+
         # Determine if this is a skill command or free-form request
         if command.startswith("/"):
             # Skill command - let Claude Code handle it
@@ -294,7 +312,7 @@ DO NOT just output text - you must use the add_comment tool to post your respons
 ## Card Content
 
 {card_markdown}
-{response_instructions}
+{label_instructions}{response_instructions}
 """
         else:
             # Free-form request - provide card context and the request
@@ -309,7 +327,7 @@ DO NOT just output text - you must use the add_comment tool to post your respons
 **Card ID:** {card_id}
 
 {card_markdown}
-
+{label_instructions}
 ---
 
 **Requested by:** @{author_name}

@@ -234,6 +234,54 @@ class TestProxyManagerAsync:
         assert call_kwargs["cwd"] == worktree_path
 
     @pytest.mark.asyncio
+    async def test_process_mention_passes_board_id_to_build_prompt(self):
+        """Test build_prompt receives board_id from subscription info."""
+        state_manager = MagicMock()
+        manager = ProxyManager(state_manager)
+
+        manager.client = MagicMock()
+        manager.client.get_card_markdown.return_value = "# Card"
+        manager.executor = MagicMock()
+        manager.executor.extract_command.return_value = "/kp"
+        manager.executor.build_prompt.return_value = "prompt"
+        manager.executor.execute = AsyncMock(
+            return_value=ClaudeResult(success=True, result_text="Done")
+        )
+        manager.worktree_manager = MagicMock()
+        manager.worktree_manager.create_worktree.return_value = Path("/tmp/card-abc12345")
+        manager._has_recent_bot_comment = MagicMock(return_value=False)
+        manager._subscription_info = {"board_id": "board789", "agent_name": "coder"}
+
+        await manager._process_mention("abc12345", "comm1", "@coder hi", "Paul")
+
+        call_kwargs = manager.executor.build_prompt.call_args[1]
+        assert call_kwargs["board_id"] == "board789"
+
+    @pytest.mark.asyncio
+    async def test_process_mention_no_subscription_info_board_id_is_none(self):
+        """Test build_prompt receives None board_id when no subscription info."""
+        state_manager = MagicMock()
+        manager = ProxyManager(state_manager)
+
+        manager.client = MagicMock()
+        manager.client.get_card_markdown.return_value = "# Card"
+        manager.executor = MagicMock()
+        manager.executor.extract_command.return_value = "/kp"
+        manager.executor.build_prompt.return_value = "prompt"
+        manager.executor.execute = AsyncMock(
+            return_value=ClaudeResult(success=True, result_text="Done")
+        )
+        manager.worktree_manager = MagicMock()
+        manager.worktree_manager.create_worktree.return_value = Path("/tmp/card-abc12345")
+        manager._has_recent_bot_comment = MagicMock(return_value=False)
+        manager._subscription_info = None
+
+        await manager._process_mention("abc12345", "comm1", "@coder hi", "Paul")
+
+        call_kwargs = manager.executor.build_prompt.call_args[1]
+        assert call_kwargs["board_id"] is None
+
+    @pytest.mark.asyncio
     async def test_active_session_removed_on_completion(self):
         """Test session is removed from tracking after completion."""
         state_manager = MagicMock()

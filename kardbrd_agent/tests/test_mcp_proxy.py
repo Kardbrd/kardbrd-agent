@@ -53,6 +53,7 @@ class TestProxySession:
         session = ProxySession()
         assert session.comment_posted is False
         assert session.card_updated is False
+        assert session.labels_modified is False
         assert session.tools_called == []
 
     def test_session_reset(self):
@@ -62,12 +63,14 @@ class TestProxySession:
         session = ProxySession()
         session.comment_posted = True
         session.card_updated = True
+        session.labels_modified = True
         session.tools_called = ["add_comment", "get_card"]
 
         session.reset()
 
         assert session.comment_posted is False
         assert session.card_updated is False
+        assert session.labels_modified is False
         assert session.tools_called == []
 
     def test_record_add_comment_sets_flag(self):
@@ -287,3 +290,78 @@ class TestProxySessionRegistry:
 
         # Should fall back to current session (card_a)
         assert registry.get_session("card_a").comment_posted is True
+
+    def test_registry_labels_modified_property(self):
+        """Test legacy labels_modified property returns current session's value."""
+        from kardbrd_agent.mcp_proxy import ProxySessionRegistry
+
+        registry = ProxySessionRegistry()
+        registry.set_current_card("card1")
+        registry.record_tool_call(
+            "update_card", {"card_id": "card1", "label_ids": ["label1", "label2"]}
+        )
+
+        assert registry.labels_modified is True
+
+    def test_registry_labels_modified_false_without_label_ids(self):
+        """Test labels_modified is False when update_card has no label_ids."""
+        from kardbrd_agent.mcp_proxy import ProxySessionRegistry
+
+        registry = ProxySessionRegistry()
+        registry.set_current_card("card1")
+        registry.record_tool_call("update_card", {"card_id": "card1", "title": "New Title"})
+
+        assert registry.labels_modified is False
+
+    def test_registry_labels_modified_false_no_session(self):
+        """Test labels_modified is False when no session is set."""
+        from kardbrd_agent.mcp_proxy import ProxySessionRegistry
+
+        registry = ProxySessionRegistry()
+        assert registry.labels_modified is False
+
+
+class TestProxySessionLabels:
+    """Tests for label tracking in ProxySession."""
+
+    def test_update_card_with_label_ids_sets_labels_modified(self):
+        """Test update_card with label_ids sets labels_modified flag."""
+        from kardbrd_agent.mcp_proxy import ProxySession
+
+        session = ProxySession()
+        session.record_tool_call(
+            "update_card", {"card_id": "abc", "label_ids": ["label1", "label2"]}
+        )
+
+        assert session.card_updated is True
+        assert session.labels_modified is True
+
+    def test_update_card_without_label_ids_no_labels_modified(self):
+        """Test update_card without label_ids does not set labels_modified."""
+        from kardbrd_agent.mcp_proxy import ProxySession
+
+        session = ProxySession()
+        session.record_tool_call("update_card", {"card_id": "abc", "title": "New"})
+
+        assert session.card_updated is True
+        assert session.labels_modified is False
+
+    def test_update_card_with_empty_label_ids_sets_labels_modified(self):
+        """Test update_card with empty label_ids (clear labels) sets labels_modified."""
+        from kardbrd_agent.mcp_proxy import ProxySession
+
+        session = ProxySession()
+        session.record_tool_call("update_card", {"card_id": "abc", "label_ids": []})
+
+        assert session.card_updated is True
+        assert session.labels_modified is True
+
+    def test_get_board_labels_tracked_in_tools_called(self):
+        """Test get_board_labels is tracked in tools_called list."""
+        from kardbrd_agent.mcp_proxy import ProxySession
+
+        session = ProxySession()
+        session.record_tool_call("get_board_labels", {"board_id": "board1"})
+
+        assert "get_board_labels" in session.tools_called
+        assert session.labels_modified is False  # Reading labels doesn't modify them

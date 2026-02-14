@@ -120,6 +120,56 @@ class TestClaudeExecutor:
         assert "xyz789" in prompt
         assert "add_comment" in prompt
 
+    def test_build_prompt_with_board_id_includes_label_instructions(self):
+        """Test building prompt with board_id includes label instructions."""
+        executor = ClaudeExecutor()
+
+        prompt = executor.build_prompt(
+            card_id="abc123",
+            card_markdown="# Card Title\n\nDescription here",
+            command="fix bug",
+            comment_content="@coder fix bug",
+            author_name="Paul",
+            board_id="board456",
+        )
+
+        assert "get_board_labels" in prompt
+        assert "board456" in prompt
+        assert "label_ids" in prompt
+        assert "full replace" in prompt
+
+    def test_build_prompt_without_board_id_no_label_instructions(self):
+        """Test building prompt without board_id omits label instructions."""
+        executor = ClaudeExecutor()
+
+        prompt = executor.build_prompt(
+            card_id="abc123",
+            card_markdown="# Card Title\n\nDescription here",
+            command="fix bug",
+            comment_content="@coder fix bug",
+            author_name="Paul",
+        )
+
+        assert "get_board_labels" not in prompt
+        assert "label_ids" not in prompt
+
+    def test_build_prompt_skill_with_board_id_includes_label_instructions(self):
+        """Test skill command prompt with board_id includes label instructions."""
+        executor = ClaudeExecutor()
+
+        prompt = executor.build_prompt(
+            card_id="abc123",
+            card_markdown="# Card Title\n\nDescription here",
+            command="/kp",
+            comment_content="@coder /kp",
+            author_name="Paul",
+            board_id="board456",
+        )
+
+        assert "/kp" in prompt
+        assert "get_board_labels" in prompt
+        assert "board456" in prompt
+
     def test_parse_output_success(self):
         """Test parsing successful Claude output."""
         executor = ClaudeExecutor()
