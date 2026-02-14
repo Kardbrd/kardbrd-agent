@@ -410,13 +410,17 @@ class ProxyManager:
                 command = self.executor.extract_command(content, self.mention_keyword)
                 logger.info(f"Extracted command: {command[:50]}...")
 
-                # Build prompt
+                # Build prompt (include board_id for label operations)
+                board_id = (
+                    self._subscription_info.get("board_id") if self._subscription_info else None
+                )
                 prompt = self.executor.build_prompt(
                     card_id=card_id,
                     card_markdown=card_markdown,
                     command=command,
                     comment_content=content,
                     author_name=author_name,
+                    board_id=board_id,
                 )
 
                 # Execute Claude in worktree directory
