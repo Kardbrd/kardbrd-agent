@@ -129,6 +129,8 @@ class ClaudeExecutor:
         # Add MCP config if created
         if mcp_config_path:
             cmd.extend(["--mcp-config", str(mcp_config_path)])
+            # Only use our kardbrd MCP server, ignore all others (e.g. claude.ai MCP)
+            cmd.append("--strict-mcp-config")
 
         logger.info(f"Spawning Claude in {working_dir}")
         logger.debug(f"Prompt length: {len(prompt)} chars")

@@ -319,6 +319,79 @@ class TestClaudeExecutorWithMcp:
         assert executor.bot_token is None
 
 
+class TestStrictMcpConfig:
+    """Tests for --strict-mcp-config flag."""
+
+    @pytest.mark.asyncio
+    async def test_execute_includes_strict_mcp_config_when_credentials_set(self):
+        """When MCP credentials are provided, --strict-mcp-config should be in the command."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        executor = ClaudeExecutor(
+            cwd="/tmp",
+            timeout=60,
+            api_url="http://localhost:8000",
+            bot_token="test-token",
+        )
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_process = MagicMock()
+            mock_process.communicate = AsyncMock(return_value=(b"", b""))
+            mock_process.returncode = 0
+            mock_exec.return_value = mock_process
+
+            await executor.execute("test prompt")
+
+            # Get the positional args passed to create_subprocess_exec
+            call_args = mock_exec.call_args[0]
+            assert "--strict-mcp-config" in call_args
+            assert "--mcp-config" in call_args
+
+    @pytest.mark.asyncio
+    async def test_execute_no_strict_mcp_config_without_credentials(self):
+        """Without MCP credentials, --strict-mcp-config should NOT be in the command."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        executor = ClaudeExecutor(cwd="/tmp", timeout=60)
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_process = MagicMock()
+            mock_process.communicate = AsyncMock(return_value=(b"", b""))
+            mock_process.returncode = 0
+            mock_exec.return_value = mock_process
+
+            await executor.execute("test prompt")
+
+            call_args = mock_exec.call_args[0]
+            assert "--strict-mcp-config" not in call_args
+            assert "--mcp-config" not in call_args
+
+    @pytest.mark.asyncio
+    async def test_strict_mcp_config_comes_after_mcp_config(self):
+        """--strict-mcp-config should appear after --mcp-config in the command."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        executor = ClaudeExecutor(
+            cwd="/tmp",
+            timeout=60,
+            api_url="http://localhost:8000",
+            bot_token="test-token",
+        )
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_process = MagicMock()
+            mock_process.communicate = AsyncMock(return_value=(b"", b""))
+            mock_process.returncode = 0
+            mock_exec.return_value = mock_process
+
+            await executor.execute("test prompt")
+
+            call_args = list(mock_exec.call_args[0])
+            mcp_config_idx = call_args.index("--mcp-config")
+            strict_idx = call_args.index("--strict-mcp-config")
+            assert strict_idx > mcp_config_idx
+
+
 class TestClaudeExecutorCwd:
     """Tests for cwd parameter in executor."""
 
