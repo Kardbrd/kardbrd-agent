@@ -93,6 +93,7 @@ class ClaudeExecutor:
         prompt: str,
         resume_session_id: str | None = None,
         cwd: Path | None = None,
+        model: str | None = None,
     ) -> ClaudeResult:
         """
         Execute Claude CLI with the given prompt.
@@ -101,6 +102,7 @@ class ClaudeExecutor:
             prompt: The prompt to send to Claude
             resume_session_id: Optional session ID to resume a previous conversation
             cwd: Optional working directory override (uses default if not specified)
+            model: Optional Claude model ID (e.g. "claude-haiku-4-5-20251001")
 
         Returns:
             ClaudeResult with the execution outcome
@@ -121,6 +123,10 @@ class ClaudeExecutor:
             "--verbose",
             "--dangerously-skip-permissions",
         ]
+
+        # Add model flag if specified
+        if model:
+            cmd.extend(["--model", model])
 
         # Add resume flag if resuming a session
         if resume_session_id:

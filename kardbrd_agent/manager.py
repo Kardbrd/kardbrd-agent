@@ -9,6 +9,7 @@ from pathlib import Path
 from kardbrd_client import DirectoryStateManager, KardbrdClient, WebSocketAgentConnection
 
 from .executor import ClaudeExecutor
+from .rules import Rule, RuleEngine
 from .worktree import WorktreeManager
 
 logger = logging.getLogger("kardbrd_agent")
@@ -51,6 +52,7 @@ class ProxyManager:
         max_concurrent: int = 3,
         worktrees_dir: str | Path | None = None,
         setup_command: str | None = None,
+        rule_engine: RuleEngine | None = None,
     ):
         """
         Initialize the proxy manager.
@@ -63,6 +65,7 @@ class ProxyManager:
             max_concurrent: Maximum number of concurrent Claude sessions
             worktrees_dir: Optional directory for worktrees (defaults to cwd parent)
             setup_command: Shell command to run in worktrees after creation (e.g. "npm install")
+            rule_engine: Optional rule engine loaded from kardbrd.yml
         """
         self.state_manager = state_manager
         self.mention_keyword = mention_keyword.lower()
@@ -71,6 +74,7 @@ class ProxyManager:
         self.max_concurrent = max_concurrent
         self.worktrees_dir = Path(worktrees_dir) if worktrees_dir else None
         self.setup_command = setup_command
+        self.rule_engine = rule_engine or RuleEngine()
 
         # Will be initialized when subscription is loaded
         self.connection: WebSocketAgentConnection | None = None
@@ -189,6 +193,9 @@ class ProxyManager:
         """
         Handle incoming board events from WebSocket.
 
+        Routes events through the built-in handlers first (mentions, reactions,
+        card-moved-to-done), then checks kardbrd.yml rules for additional actions.
+
         Args:
             message: The WebSocket message containing the event
         """
@@ -208,6 +215,9 @@ class ProxyManager:
             await self._handle_card_moved(message)
         else:
             logger.debug(f"Ignoring event type: {event_type}")
+
+        # Check kardbrd.yml rules for matching automation
+        await self._check_rules(event_type, message)
 
     async def _handle_comment_created(self, message: dict) -> None:
         """Handle new comment events."""
@@ -291,8 +301,10 @@ class ProxyManager:
             author_name=author_name,
         )
 
-    def _add_reaction(self, card_id: str, comment_id: str, emoji: str) -> None:
+    def _add_reaction(self, card_id: str, comment_id: str | None, emoji: str) -> None:
         """Add emoji reaction to a comment (best effort, no raise on failure)."""
+        if not comment_id:
+            return
         try:
             self.client.toggle_reaction(card_id, comment_id, emoji)
             logger.debug(f"Added {emoji} reaction to comment {comment_id}")
@@ -476,7 +488,7 @@ class ProxyManager:
     async def _resume_to_publish(
         self,
         card_id: str,
-        comment_id: str,
+        comment_id: str | None,
         session_id: str,
         author_name: str,
         worktree_path: Path | None = None,
@@ -488,7 +500,7 @@ class ProxyManager:
 
         Args:
             card_id: The card ID to post to
-            comment_id: The original comment ID (for reactions)
+            comment_id: The original comment ID (for reactions), or None for rule triggers
             session_id: The Claude session ID to resume
             author_name: Name of the original requester
             worktree_path: Optional worktree path to run Claude in
@@ -564,6 +576,117 @@ DO NOT do any new work - just publish what you already did."""
 
         # Remove from active sessions but preserve worktree
         del self._active_sessions[card_id]
+
+    async def _check_rules(self, event_type: str, message: dict) -> None:
+        """
+        Check kardbrd.yml rules against an incoming event and process matches.
+
+        Args:
+            event_type: The WebSocket event type
+            message: The full event message
+        """
+        if not self.rule_engine.rules:
+            return
+
+        matched_rules = self.rule_engine.match(event_type, message)
+        if not matched_rules:
+            return
+
+        card_id = message.get("card_id")
+        if not card_id:
+            return
+
+        for rule in matched_rules:
+            logger.info(f"Rule matched: '{rule.name}' for card {card_id}")
+            # Skip if card is already being processed
+            if card_id in self._active_sessions:
+                logger.warning(f"Card {card_id} already processing, skipping rule '{rule.name}'")
+                continue
+            await self._process_rule(card_id=card_id, rule=rule, message=message)
+
+    async def _process_rule(self, card_id: str, rule: Rule, message: dict) -> None:
+        """
+        Process a matched kardbrd.yml rule by spawning Claude.
+
+        Unlike _process_mention, this handles events without a triggering comment
+        (e.g. card_moved, card_created). The action from the rule is used as the
+        command/prompt.
+
+        Args:
+            card_id: The card ID to act on
+            rule: The matched Rule object
+            message: The full WebSocket message
+        """
+        async with self._semaphore:
+            self._processing = True
+            session: ActiveSession | None = None
+
+            try:
+                worktree_path = self.worktree_manager.create_worktree(card_id)
+                logger.info(f"Rule '{rule.name}': using worktree {worktree_path}")
+
+                session = ActiveSession(card_id=card_id, worktree_path=worktree_path)
+                self._active_sessions[card_id] = session
+
+                card_markdown = self.client.get_card_markdown(card_id)
+
+                board_id = (
+                    self._subscription_info.get("board_id") if self._subscription_info else None
+                )
+
+                # Build prompt using the rule's action
+                prompt = self.executor.build_prompt(
+                    card_id=card_id,
+                    card_markdown=card_markdown,
+                    command=rule.action,
+                    comment_content=f"[Automation: {rule.name}]",
+                    author_name="automation",
+                    board_id=board_id,
+                )
+
+                logger.info(f"Rule '{rule.name}': spawning Claude in {worktree_path}")
+                result = await self.executor.execute(
+                    prompt,
+                    cwd=worktree_path,
+                    model=rule.model_id,
+                )
+
+                if session:
+                    session.session_id = result.session_id
+
+                if result.success:
+                    logger.info(f"Rule '{rule.name}': Claude completed successfully")
+                    if not self._has_recent_bot_comment(card_id) and result.session_id:
+                        await self._resume_to_publish(
+                            card_id=card_id,
+                            comment_id=None,
+                            session_id=result.session_id,
+                            author_name="automation",
+                            worktree_path=worktree_path,
+                        )
+                else:
+                    logger.error(f"Rule '{rule.name}': Claude failed: {result.error}")
+                    error_comment = (
+                        f"**Automation Error** ({rule.name})\n\n```\n{result.error}\n```"
+                    )
+                    self.client.add_comment(card_id, error_comment)
+
+            except Exception:
+                import traceback
+
+                logger.exception(f"Error processing rule '{rule.name}'")
+                tb = traceback.format_exc()
+                try:
+                    self.client.add_comment(
+                        card_id,
+                        f"**Automation Error** ({rule.name})\n\n```\n{tb}\n```",
+                    )
+                except Exception:
+                    logger.error("Failed to post error comment for rule")
+
+            finally:
+                self._processing = False
+                self._active_sessions.pop(card_id, None)
 
     async def _handle_card_moved(self, message: dict) -> None:
         """

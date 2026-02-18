@@ -20,6 +20,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .manager import ProxyManager
+from .rules import RuleEngine, load_rules
 
 configure_logging()
 logger = logging.getLogger("kardbrd_agent.cli")
@@ -142,6 +143,13 @@ def start(
         envvar="AGENT_SETUP_CMD",
         help="Setup command to run in worktrees after creation (e.g. 'npm install', 'uv sync')",
     ),
+    rules_file: Path = typer.Option(
+        None,
+        "--rules",
+        "-r",
+        envvar="AGENT_RULES_FILE",
+        help="Path to kardbrd.yml rules file (defaults to <cwd>/kardbrd.yml)",
+    ),
 ):
     """Start the proxy manager and listen for @mentions.
 
@@ -182,6 +190,21 @@ def start(
         console.print(f"  Agent: @{sub.agent_name}")
         console.print(f"  API: {sub.api_url}")
 
+    # Load kardbrd.yml rules
+    rule_engine = RuleEngine()
+    rules_path = rules_file or (cwd or Path.cwd()) / "kardbrd.yml"
+    if rules_path.exists():
+        try:
+            rule_engine = load_rules(rules_path)
+            console.print(f"\nRules: loaded {len(rule_engine.rules)} from {rules_path}")
+            for rule in rule_engine.rules:
+                console.print(f"  - {rule.name} ({', '.join(rule.events)} → {rule.action[:40]})")
+        except Exception as e:
+            console.print(f"\n[red]Error loading rules: {e}[/red]")
+            sys.exit(1)
+    else:
+        console.print(f"\nRules: [dim]no kardbrd.yml found at {rules_path}[/dim]")
+
     console.print("\n[green]Starting...[/green]\n")
 
     # Create and run the proxy manager
@@ -192,6 +215,7 @@ def start(
         max_concurrent=max_concurrent,
         worktrees_dir=worktrees_dir,
         setup_command=setup_cmd,
+        rule_engine=rule_engine,
     )
 
     try:

@@ -392,6 +392,72 @@ class TestStrictMcpConfig:
             assert strict_idx > mcp_config_idx
 
 
+class TestModelFlag:
+    """Tests for --model flag in executor."""
+
+    @pytest.mark.asyncio
+    async def test_execute_includes_model_flag(self):
+        """Test that --model flag is included when model is specified."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        executor = ClaudeExecutor(cwd="/tmp", timeout=60)
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_process = MagicMock()
+            mock_process.communicate = AsyncMock(return_value=(b"", b""))
+            mock_process.returncode = 0
+            mock_exec.return_value = mock_process
+
+            await executor.execute("test prompt", model="claude-haiku-4-5-20251001")
+
+            call_args = list(mock_exec.call_args[0])
+            assert "--model" in call_args
+            model_idx = call_args.index("--model")
+            assert call_args[model_idx + 1] == "claude-haiku-4-5-20251001"
+
+    @pytest.mark.asyncio
+    async def test_execute_no_model_flag_by_default(self):
+        """Test that --model flag is NOT included when model is None."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        executor = ClaudeExecutor(cwd="/tmp", timeout=60)
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_process = MagicMock()
+            mock_process.communicate = AsyncMock(return_value=(b"", b""))
+            mock_process.returncode = 0
+            mock_exec.return_value = mock_process
+
+            await executor.execute("test prompt")
+
+            call_args = list(mock_exec.call_args[0])
+            assert "--model" not in call_args
+
+    @pytest.mark.asyncio
+    async def test_model_flag_comes_before_resume(self):
+        """Test --model appears before --resume in the command."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        executor = ClaudeExecutor(cwd="/tmp", timeout=60)
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_process = MagicMock()
+            mock_process.communicate = AsyncMock(return_value=(b"", b""))
+            mock_process.returncode = 0
+            mock_exec.return_value = mock_process
+
+            await executor.execute(
+                "test prompt",
+                model="claude-haiku-4-5-20251001",
+                resume_session_id="session-123",
+            )
+
+            call_args = list(mock_exec.call_args[0])
+            model_idx = call_args.index("--model")
+            resume_idx = call_args.index("--resume")
+            assert model_idx < resume_idx
+
+
 class TestClaudeExecutorCwd:
     """Tests for cwd parameter in executor."""
 
