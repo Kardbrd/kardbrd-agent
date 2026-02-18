@@ -116,7 +116,7 @@ class RuleEngine:
 
         if rule.title is not None:
             card_title = message.get("card_title", "")
-            if card_title != rule.title:
+            if card_title.lower() != rule.title.lower():
                 return False
 
         if rule.label is not None:

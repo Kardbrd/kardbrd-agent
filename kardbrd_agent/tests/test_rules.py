@@ -150,6 +150,25 @@ class TestRuleEngine:
         )
         assert len(matches) == 1
 
+    def test_match_title_case_insensitive(self):
+        """Test title matching is case insensitive."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="deploy",
+                    events=["card_created"],
+                    action="deploy",
+                    title="Deploy",
+                ),
+            ]
+        )
+        for card_title in ["Deploy", "deploy", "DEPLOY", "dEpLoY"]:
+            matches = engine.match(
+                "card_created",
+                {"card_id": "abc", "card_title": card_title},
+            )
+            assert len(matches) == 1, f"Should match '{card_title}'"
+
     def test_no_match_title_substring(self):
         """Test no match when title is only a substring (exact match required)."""
         engine = RuleEngine(
