@@ -1,9 +1,13 @@
 """Tests for the kardbrd.yml rule engine."""
 
+import time
+
 import pytest
 
 from kardbrd_agent.rules import (
+    KNOWN_EVENTS,
     MODEL_MAP,
+    ReloadableRuleEngine,
     Rule,
     RuleEngine,
     load_rules,
@@ -128,24 +132,52 @@ class TestRuleEngine:
         assert len(engine.match("card_created", {"card_id": "a"})) == 1
         assert len(engine.match("comment_created", {"card_id": "a"})) == 0
 
-    def test_match_title_condition(self):
-        """Test matching by card title substring."""
+    def test_match_title_exact(self):
+        """Test matching by exact card title."""
         engine = RuleEngine(
             rules=[
-                Rule(name="box", events=["card_created"], action="deploy", title="📦"),
+                Rule(
+                    name="box",
+                    events=["card_created"],
+                    action="deploy",
+                    title="📦",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_created",
+            {"card_id": "abc", "card_title": "📦"},
+        )
+        assert len(matches) == 1
+
+    def test_no_match_title_substring(self):
+        """Test no match when title is only a substring (exact match required)."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="box",
+                    events=["card_created"],
+                    action="deploy",
+                    title="📦",
+                ),
             ]
         )
         matches = engine.match(
             "card_created",
             {"card_id": "abc", "card_title": "📦 Release v2.0"},
         )
-        assert len(matches) == 1
+        assert len(matches) == 0
 
-    def test_no_match_title_missing(self):
-        """Test no match when title doesn't contain pattern."""
+    def test_no_match_title_different(self):
+        """Test no match when title doesn't match."""
         engine = RuleEngine(
             rules=[
-                Rule(name="box", events=["card_created"], action="deploy", title="📦"),
+                Rule(
+                    name="box",
+                    events=["card_created"],
+                    action="deploy",
+                    title="📦",
+                ),
             ]
         )
         matches = engine.match(
@@ -217,15 +249,79 @@ class TestRuleEngine:
         )
         assert len(matches) == 1
 
-    def test_event_map_label_added(self):
-        """Test 'label_added' maps to 'label_updated' event type."""
+    def test_event_label_added_direct_match(self):
+        """Test 'label_added' matches directly (no mapping)."""
         engine = RuleEngine(
             rules=[
                 Rule(name="label", events=["label_added"], action="/ke"),
             ]
         )
-        matches = engine.match("label_updated", {"card_id": "abc"})
+        # Direct match
+        matches = engine.match("label_added", {"card_id": "abc"})
         assert len(matches) == 1
+        # Should NOT match label_removed
+        matches = engine.match("label_removed", {"card_id": "abc"})
+        assert len(matches) == 0
+
+    def test_match_label_condition(self):
+        """Test matching by label name on label_added event."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="bug label",
+                    events=["label_added"],
+                    action="/ke",
+                    label="Bug",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "label_added",
+            {
+                "card_id": "abc",
+                "label_id": "lbl1",
+                "label_name": "Bug",
+                "label_color": "red",
+                "board_id": "board1",
+            },
+        )
+        assert len(matches) == 1
+
+    def test_label_condition_case_insensitive(self):
+        """Test label matching is case-insensitive."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="bug label",
+                    events=["label_added"],
+                    action="/ke",
+                    label="bug",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "label_added",
+            {"card_id": "abc", "label_name": "Bug"},
+        )
+        assert len(matches) == 1
+
+    def test_no_match_wrong_label(self):
+        """Test no match when label name doesn't match."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="bug label",
+                    events=["label_added"],
+                    action="/ke",
+                    label="Bug",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "label_added",
+            {"card_id": "abc", "label_name": "Feature"},
+        )
+        assert len(matches) == 0
 
     def test_empty_rules_no_matches(self):
         """Test empty rule engine returns no matches."""
@@ -373,6 +469,428 @@ class TestLoadRules:
         assert len(engine.rules) == 4
         assert engine.rules[0].events == ["card_created", "card_moved"]
         assert engine.rules[1].model == "haiku"
-        assert engine.rules[1].title == "📦"
+        assert engine.rules[1].title == "\U0001f4e6"
         assert engine.rules[2].list == "in progress"
         assert engine.rules[3].events == ["label_added"]
+
+
+class TestKnownEvents:
+    """Tests for KNOWN_EVENTS and event validation."""
+
+    def test_known_events_has_24_events(self):
+        """Test KNOWN_EVENTS contains all 24 events from the spec."""
+        assert len(KNOWN_EVENTS) == 24
+
+    @pytest.mark.parametrize(
+        "event",
+        [
+            "card_created",
+            "card_moved",
+            "card_archived",
+            "card_unarchived",
+            "card_deleted",
+            "comment_created",
+            "comment_deleted",
+            "reaction_added",
+            "checklist_created",
+            "checklist_deleted",
+            "todo_item_created",
+            "todo_item_completed",
+            "todo_item_reopened",
+            "todo_item_deleted",
+            "todo_item_assigned",
+            "todo_item_unassigned",
+            "attachment_created",
+            "attachment_deleted",
+            "card_link_created",
+            "card_link_deleted",
+            "label_added",
+            "label_removed",
+            "list_created",
+            "list_deleted",
+        ],
+    )
+    def test_known_event(self, event):
+        """Test each spec event is in KNOWN_EVENTS."""
+        assert event in KNOWN_EVENTS
+
+    def test_parse_warns_on_unknown_event(self, caplog):
+        """Test parse_rules warns on unknown event names."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="kardbrd_agent"):
+            parse_rules(
+                [
+                    {
+                        "name": "test",
+                        "event": "made_up_event",
+                        "action": "/ke",
+                    }
+                ]
+            )
+        assert "unknown event 'made_up_event'" in caplog.text
+
+    def test_parse_no_warning_on_known_event(self, caplog):
+        """Test parse_rules does not warn on known event names."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="kardbrd_agent"):
+            parse_rules(
+                [
+                    {
+                        "name": "test",
+                        "event": "card_moved",
+                        "action": "/ke",
+                    }
+                ]
+            )
+        assert "unknown event" not in caplog.text
+
+
+class TestEventMatching:
+    """Tests for direct event matching across all spec event types."""
+
+    @pytest.mark.parametrize(
+        "event_type",
+        [
+            "card_created",
+            "card_moved",
+            "card_archived",
+            "card_unarchived",
+            "card_deleted",
+            "comment_created",
+            "comment_deleted",
+            "reaction_added",
+            "checklist_created",
+            "checklist_deleted",
+            "todo_item_created",
+            "todo_item_completed",
+            "todo_item_reopened",
+            "todo_item_deleted",
+            "todo_item_assigned",
+            "todo_item_unassigned",
+            "attachment_created",
+            "attachment_deleted",
+            "card_link_created",
+            "card_link_deleted",
+            "label_added",
+            "label_removed",
+            "list_created",
+            "list_deleted",
+        ],
+    )
+    def test_rule_matches_own_event_type(self, event_type):
+        """Test a rule with a given event matches that event directly."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="test",
+                    events=[event_type],
+                    action="do stuff",
+                ),
+            ]
+        )
+        matches = engine.match(event_type, {"card_id": "abc"})
+        assert len(matches) == 1
+
+    def test_label_added_does_not_match_label_removed(self):
+        """Test label_added rule does NOT match label_removed event."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="label",
+                    events=["label_added"],
+                    action="/ke",
+                ),
+            ]
+        )
+        matches = engine.match("label_removed", {"card_id": "abc"})
+        assert len(matches) == 0
+
+    def test_card_archived_does_not_match_card_created(self):
+        """Test card_archived rule does NOT match card_created event."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="archive",
+                    events=["card_archived"],
+                    action="cleanup",
+                ),
+            ]
+        )
+        matches = engine.match("card_created", {"card_id": "abc"})
+        assert len(matches) == 0
+
+
+class TestSpecEventPayloads:
+    """Tests matching with realistic event payloads from the spec."""
+
+    def test_card_created_payload(self):
+        """Test matching card_created with full spec payload."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="new card",
+                    events=["card_created"],
+                    action="/ke",
+                    list="Backlog",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_created",
+            {
+                "event_type": "card_created",
+                "card_id": "01JMDC3X7K9QZJVW2T5BHFN8R4",
+                "card_title": "Implement dark mode",
+                "list_id": "01JM9F2A5P3NXQK7D8HMCY6W1B",
+                "list_name": "Backlog",
+                "board_id": "eykqek0W",
+            },
+        )
+        assert len(matches) == 1
+
+    def test_comment_created_payload(self):
+        """Test matching comment_created with full spec payload."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="mention",
+                    events=["comment_created"],
+                    action="respond",
+                    content_contains="@MBPBot",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "comment_created",
+            {
+                "event_type": "comment_created",
+                "card_id": "01JMDC3X7K9QZJVW2T5BHFN8R4",
+                "comment_id": "01JMDG7Y8L0RASMT3U6CJPQ9W5",
+                "content": "@MBPBot please review this card",
+                "author_id": "01JM5K2B3N4PXQR7D8HMFY6W1A",
+                "author_name": "Paul",
+                "created_at": "2026-02-18T14:30:00.000000+00:00",
+                "board_id": "eykqek0W",
+            },
+        )
+        assert len(matches) == 1
+
+    def test_label_added_payload(self):
+        """Test matching label_added with full spec payload."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="bug label",
+                    events=["label_added"],
+                    action="/ke",
+                    label="Bug",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "label_added",
+            {
+                "event_type": "label_added",
+                "label_id": "01JMDL1D3R5WFXSZ8A1HPUT2V0",
+                "label_name": "Bug",
+                "label_color": "red",
+                "card_id": "01JMDC3X7K9QZJVW2T5BHFN8R4",
+                "board_id": "eykqek0W",
+            },
+        )
+        assert len(matches) == 1
+
+    def test_reaction_added_payload_no_board_id(self):
+        """Test reaction_added has no board_id per spec."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="react",
+                    events=["reaction_added"],
+                    action="acknowledge",
+                ),
+            ]
+        )
+        # reaction_added does NOT include board_id per spec
+        matches = engine.match(
+            "reaction_added",
+            {
+                "event_type": "reaction_added",
+                "card_id": "01JMDC3X7K9QZJVW2T5BHFN8R4",
+                "comment_id": "01JMDG7Y8L0RASMT3U6CJPQ9W5",
+                "emoji": "\U0001f44d",
+                "user_id": "01JM5K2B3N4PXQR7D8HMFY6W1A",
+                "user_name": "Paul",
+            },
+        )
+        assert len(matches) == 1
+
+    def test_card_moved_payload(self):
+        """Test matching card_moved with full spec payload."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="in progress",
+                    events=["card_moved"],
+                    action="implement",
+                    list="In Progress",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {
+                "event_type": "card_moved",
+                "card_id": "01JMDC3X7K9QZJVW2T5BHFN8R4",
+                "card_title": "Implement dark mode",
+                "list_id": "01JM9F4B6Q4RYSL8E9JNDZ7W2C",
+                "list_name": "In Progress",
+                "board_id": "eykqek0W",
+            },
+        )
+        assert len(matches) == 1
+
+    def test_todo_item_completed_payload(self):
+        """Test matching todo_item_completed event."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="todo done",
+                    events=["todo_item_completed"],
+                    action="check progress",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "todo_item_completed",
+            {
+                "event_type": "todo_item_completed",
+                "todo_item_id": "01JMDH8A0N2TCUPW5X8ELQR9S7",
+                "todo_item_title": "Write unit tests",
+                "card_id": "01JMDC3X7K9QZJVW2T5BHFN8R4",
+                "board_id": "eykqek0W",
+            },
+        )
+        assert len(matches) == 1
+
+    def test_attachment_created_payload(self):
+        """Test matching attachment_created event."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="new attachment",
+                    events=["attachment_created"],
+                    action="process attachment",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "attachment_created",
+            {
+                "event_type": "attachment_created",
+                "attachment_id": "01JMDJ9B1P3UDVQX6Y9FMRS0T8",
+                "filename": "implementation-plan.md",
+                "card_id": "01JMDC3X7K9QZJVW2T5BHFN8R4",
+                "board_id": "eykqek0W",
+            },
+        )
+        assert len(matches) == 1
+
+
+class TestReloadableRuleEngine:
+    """Tests for ReloadableRuleEngine hot reload."""
+
+    def test_initial_load(self, tmp_path):
+        """Test initial load reads rules from file."""
+        rules_file = tmp_path / "kardbrd.yml"
+        rules_file.write_text("- name: test\n  event: card_moved\n  action: /ke\n")
+        engine = ReloadableRuleEngine(rules_file)
+        assert len(engine.rules) == 1
+        assert engine.rules[0].name == "test"
+
+    def test_match_delegates_to_engine(self, tmp_path):
+        """Test match() works through ReloadableRuleEngine."""
+        rules_file = tmp_path / "kardbrd.yml"
+        rules_file.write_text("- name: test\n  event: card_moved\n  list: Ideas\n  action: /ke\n")
+        engine = ReloadableRuleEngine(rules_file)
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Ideas"},
+        )
+        assert len(matches) == 1
+
+    def test_reload_on_file_change(self, tmp_path):
+        """Test rules are reloaded when file changes."""
+        rules_file = tmp_path / "kardbrd.yml"
+        rules_file.write_text("- name: rule1\n  event: card_moved\n  action: /ke\n")
+        engine = ReloadableRuleEngine(rules_file, reload_interval=0)
+        assert len(engine.rules) == 1
+
+        # Modify the file
+        time.sleep(0.05)  # Ensure mtime changes
+        rules_file.write_text(
+            "- name: rule1\n"
+            "  event: card_moved\n"
+            "  action: /ke\n"
+            "- name: rule2\n"
+            "  event: card_created\n"
+            "  action: /kp\n"
+        )
+
+        # Access rules — should trigger reload
+        assert len(engine.rules) == 2
+
+    def test_no_reload_within_interval(self, tmp_path):
+        """Test rules are NOT reloaded within the reload interval."""
+        rules_file = tmp_path / "kardbrd.yml"
+        rules_file.write_text("- name: rule1\n  event: card_moved\n  action: /ke\n")
+        # Use a very long interval
+        engine = ReloadableRuleEngine(rules_file, reload_interval=9999)
+        assert len(engine.rules) == 1
+
+        # Modify the file
+        time.sleep(0.05)
+        rules_file.write_text(
+            "- name: rule1\n"
+            "  event: card_moved\n"
+            "  action: /ke\n"
+            "- name: rule2\n"
+            "  event: card_created\n"
+            "  action: /kp\n"
+        )
+
+        # Should NOT reload yet (interval hasn't passed)
+        assert len(engine.rules) == 1
+
+    def test_survives_invalid_yaml_on_reload(self, tmp_path):
+        """Test engine keeps old rules when reload encounters bad YAML."""
+        rules_file = tmp_path / "kardbrd.yml"
+        rules_file.write_text("- name: rule1\n  event: card_moved\n  action: /ke\n")
+        engine = ReloadableRuleEngine(rules_file, reload_interval=0)
+        assert len(engine.rules) == 1
+
+        # Write invalid YAML
+        time.sleep(0.05)
+        rules_file.write_text("this: is not a list\n")
+
+        # Should keep old rules
+        assert len(engine.rules) == 1
+
+    def test_missing_file_on_init(self, tmp_path):
+        """Test engine starts empty if file doesn't exist."""
+        engine = ReloadableRuleEngine(tmp_path / "missing.yml", reload_interval=0)
+        assert len(engine.rules) == 0
+
+    def test_file_appears_after_init(self, tmp_path):
+        """Test engine picks up file that appears after init."""
+        rules_file = tmp_path / "kardbrd.yml"
+        engine = ReloadableRuleEngine(rules_file, reload_interval=0)
+        assert len(engine.rules) == 0
+
+        # Create the file
+        rules_file.write_text("- name: rule1\n  event: card_moved\n  action: /ke\n")
+
+        # Should pick it up on next access
+        assert len(engine.rules) == 1

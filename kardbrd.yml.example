@@ -1,0 +1,142 @@
+# kardbrd.yml — Declarative board automation rules
+#
+# Place this file at the root of your repository (next to CLAUDE.md).
+# The agent loads it on startup and hot-reloads every 60 seconds.
+#
+# Each rule connects:
+#   1. An EVENT on the board (WebSocket event type)
+#   2. Optional CONDITIONS that narrow the match
+#   3. An ACTION — a prompt or skill command sent to Claude
+#   4. An optional MODEL override (haiku, sonnet, opus)
+#
+# ── Schema ──────────────────────────────────────────────────────────
+#
+#   - name: "Human-readable rule name"        # required
+#     event: card_moved, card_created         # required, comma-separated
+#     list: "Ideas"                           # condition: list name (case-insensitive)
+#     title: "📦"                             # condition: exact card title match
+#     label: "Bug"                            # condition: label name (case-insensitive)
+#     content_contains: "@claude"             # condition: comment text (case-insensitive)
+#     model: haiku                            # optional: haiku | sonnet | opus
+#     action: /ke                             # required: skill or prompt
+#
+# ── Available Events (24 total) ─────────────────────────────────────
+#
+# Card events:
+#   card_created        — New card added to a list
+#   card_moved          — Card moved to a different list
+#   card_archived       — Card archived
+#   card_unarchived     — Archived card restored
+#   card_deleted        — Card permanently deleted
+#
+# Comment events:
+#   comment_created     — New comment posted (bot comments excluded)
+#   comment_deleted     — Comment deleted
+#
+# Reaction events:
+#   reaction_added      — Emoji reaction added to a comment
+#
+# Checklist events:
+#   checklist_created   — New checklist added to a card
+#   checklist_deleted   — Checklist removed from a card
+#
+# Todo item events:
+#   todo_item_created   — Todo item added to a checklist
+#   todo_item_completed — Todo item marked as done
+#   todo_item_reopened  — Completed todo item marked incomplete
+#   todo_item_deleted   — Todo item removed
+#   todo_item_assigned  — User assigned to a todo item
+#   todo_item_unassigned — User removed from a todo item
+#
+# Attachment events:
+#   attachment_created  — File attached to a card
+#   attachment_deleted  — Attachment removed from a card
+#
+# Link events:
+#   card_link_created   — External URL added to a card
+#   card_link_deleted   — Link removed from a card
+#
+# Label events:
+#   label_added         — Label applied to a card
+#   label_removed       — Label removed from a card
+#
+# List events:
+#   list_created        — New list added to the board
+#   list_deleted        — List removed from the board
+#
+# ── Condition Fields ────────────────────────────────────────────────
+#
+#   list:              Matches the destination list name (card_created,
+#                      card_moved). Case-insensitive.
+#   title:             Matches the card title exactly.
+#   label:             Matches the label name (label_added, label_removed).
+#                      Case-insensitive.
+#   content_contains:  Matches substring in comment text
+#                      (comment_created). Case-insensitive.
+#
+# ── Notes ───────────────────────────────────────────────────────────
+#
+# - Rules are checked AFTER built-in handlers (@mention, retry, stop,
+#   done-cleanup). Both can fire on the same event.
+# - All matching rules fire — if two rules match, both spawn separate
+#   Claude sessions.
+# - Per-card deduplication prevents two sessions for the same card.
+# - The file is hot-reloaded every 60 seconds; changes take effect
+#   without restarting the agent.
+# - Model names resolve to latest versions:
+#     haiku  → claude-haiku-4-5-20251001
+#     sonnet → claude-sonnet-4-5-20250929
+#     opus   → claude-opus-4-6
+#
+# ── Examples ────────────────────────────────────────────────────────
+---
+
+# When a card lands in the Ideas list, explore it immediately
+- name: Explore ideas
+  event: card_created, card_moved
+  list: Ideas
+  action: /ke
+
+# Cards titled exactly "📦" trigger a deploy pipeline
+- name: Box card ships
+  event: card_created
+  model: haiku
+  title: "📦"
+  action: |
+    Run `make test-all`, publish the report on the card,
+    then run `make prod-deploy` if everything is green.
+
+# Moving a card to "In Progress" starts implementation
+- name: In progress starts coding
+  event: card_moved
+  list: In Progress
+  action: |
+    Implement the card in code and report what you did back
+    to the card. Don't forget to commit your changes.
+
+# Adding the "exploration" label triggers deep exploration
+- name: Exploration label
+  event: label_added
+  label: exploration
+  action: /ke
+
+# Respond to comments that mention @claude
+- name: Respond to mentions
+  event: comment_created
+  content_contains: "@claude"
+  action: respond to the comment on this card
+
+# Archive event cleanup
+- name: Clean up on archive
+  event: card_archived
+  model: haiku
+  action: |
+    Post a summary of the card's status as a final comment.
+
+# New checklist triggers a plan review
+- name: Review new checklists
+  event: checklist_created
+  model: sonnet
+  action: |
+    Review the new checklist on this card. Check if the items
+    are actionable and well-defined. Post suggestions as a comment.

@@ -1,6 +1,7 @@
 """Rule engine for kardbrd.yml automation workflows."""
 
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -15,15 +16,45 @@ MODEL_MAP = {
     "haiku": "claude-haiku-4-5-20251001",
 }
 
-# Map kardbrd.yml event names to WebSocket event_type values
-EVENT_MAP = {
-    "card_moved": "card_moved",
-    "card_created": "card_created",
-    "comment_created": "comment_created",
-    "label_added": "label_updated",
-    "label_updated": "label_updated",
-    "reaction_added": "reaction_added",
-}
+# All known WebSocket event types from the server spec.
+# Used for validation only — rules match event names directly.
+KNOWN_EVENTS = frozenset(
+    {
+        # Card events
+        "card_created",
+        "card_moved",
+        "card_archived",
+        "card_unarchived",
+        "card_deleted",
+        # Comment events
+        "comment_created",
+        "comment_deleted",
+        # Reaction events
+        "reaction_added",
+        # Checklist events
+        "checklist_created",
+        "checklist_deleted",
+        # Todo item events
+        "todo_item_created",
+        "todo_item_completed",
+        "todo_item_reopened",
+        "todo_item_deleted",
+        "todo_item_assigned",
+        "todo_item_unassigned",
+        # Attachment events
+        "attachment_created",
+        "attachment_deleted",
+        # Link events
+        "card_link_created",
+        "card_link_deleted",
+        # Label events
+        "label_added",
+        "label_removed",
+        # List events
+        "list_created",
+        "list_deleted",
+    }
+)
 
 
 @dataclass
@@ -85,7 +116,12 @@ class RuleEngine:
 
         if rule.title is not None:
             card_title = message.get("card_title", "")
-            if rule.title not in card_title:
+            if card_title != rule.title:
+                return False
+
+        if rule.label is not None:
+            label_name = message.get("label_name", "")
+            if label_name.lower() != rule.label.lower():
                 return False
 
         if rule.content_contains is not None:
@@ -97,11 +133,7 @@ class RuleEngine:
 
     def _event_matches(self, rule: Rule, event_type: str) -> bool:
         """Check if the event type matches any of the rule's events."""
-        for rule_event in rule.events:
-            mapped = EVENT_MAP.get(rule_event, rule_event)
-            if mapped == event_type:
-                return True
-        return False
+        return event_type in rule.events
 
 
 def parse_rules(data: list[dict]) -> list[Rule]:
@@ -133,6 +165,14 @@ def parse_rules(data: list[dict]) -> list[Rule]:
 
         # Parse comma-separated events
         events = [e.strip() for e in event_str.split(",")]
+
+        # Warn on unknown event names
+        for ev in events:
+            if ev not in KNOWN_EVENTS:
+                logger.warning(
+                    f"Rule '{name}': unknown event '{ev}', "
+                    f"expected one of the known WebSocket events"
+                )
 
         # Validate model if provided
         model = entry.get("model")
@@ -185,3 +225,54 @@ def load_rules(path: Path) -> RuleEngine:
     rules = parse_rules(data)
     logger.info(f"Loaded {len(rules)} rules from {path}")
     return RuleEngine(rules=rules)
+
+
+class ReloadableRuleEngine:
+    """
+    Wraps a RuleEngine and hot-reloads kardbrd.yml when the file changes.
+
+    Checks the file's mtime every `reload_interval` seconds (default 60).
+    On error during reload, the previous rules remain active.
+    """
+
+    def __init__(self, path: Path, reload_interval: float = 60.0):
+        self._path = path
+        self._reload_interval = reload_interval
+        self._engine = RuleEngine()
+        self._last_mtime: float = 0.0
+        self._last_check: float = 0.0
+        # Initial load
+        self._try_reload()
+
+    @property
+    def rules(self) -> list[Rule]:
+        """Return the current rules, reloading if needed."""
+        self._maybe_reload()
+        return self._engine.rules
+
+    def match(self, event_type: str, message: dict) -> list[Rule]:
+        """Match an event against the current rules, reloading if needed."""
+        self._maybe_reload()
+        return self._engine.match(event_type, message)
+
+    def _maybe_reload(self) -> None:
+        """Check if enough time has passed and reload if file changed."""
+        now = time.monotonic()
+        if now - self._last_check < self._reload_interval:
+            return
+        self._last_check = now
+        self._try_reload()
+
+    def _try_reload(self) -> None:
+        """Reload rules from disk if the file's mtime has changed."""
+        try:
+            if not self._path.exists():
+                return
+            mtime = self._path.stat().st_mtime
+            if mtime == self._last_mtime:
+                return
+            self._last_mtime = mtime
+            self._engine = load_rules(self._path)
+            logger.info(f"Hot-reloaded {len(self._engine.rules)} rules from {self._path}")
+        except Exception:
+            logger.exception(f"Failed to reload rules from {self._path}")
