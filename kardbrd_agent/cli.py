@@ -142,18 +142,6 @@ def start(
         envvar="AGENT_SETUP_CMD",
         help="Setup command to run in worktrees after creation (e.g. 'npm install', 'uv sync')",
     ),
-    test_cmd: str = typer.Option(
-        None,
-        "--test-cmd",
-        envvar="AGENT_TEST_CMD",
-        help="Test command for merge workflow (default: make test)",
-    ),
-    merge_queue_list: str = typer.Option(
-        None,
-        "--merge-queue-list",
-        envvar="AGENT_MERGE_QUEUE_LIST",
-        help="List name that triggers merge workflow (disabled if not set)",
-    ),
 ):
     """Start the proxy manager and listen for @mentions.
 
@@ -185,11 +173,6 @@ def start(
     config_table.add_row("MCP", "kardbrd-mcp (stdio per session)")
 
     config_table.add_row("Setup command", setup_cmd or "[dim]none (skip)[/dim]")
-    if merge_queue_list:
-        config_table.add_row("Merge queue list", merge_queue_list)
-        config_table.add_row("Test command", test_cmd or "make test")
-    else:
-        config_table.add_row("Merge queue", "[dim]disabled[/dim]")
 
     console.print(config_table)
 
@@ -209,8 +192,6 @@ def start(
         max_concurrent=max_concurrent,
         worktrees_dir=worktrees_dir,
         setup_command=setup_cmd,
-        test_command=test_cmd,
-        merge_queue_list=merge_queue_list,
     )
 
     try:

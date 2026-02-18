@@ -2,7 +2,7 @@
 
 from datetime import UTC
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -339,25 +339,11 @@ class TestProxyManagerConfig:
         manager = ProxyManager(state_manager, setup_command="npm install")
         assert manager.setup_command == "npm install"
 
-    def test_test_command_in_constructor(self):
-        """Test test_command is set via constructor."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager, test_command="make test-all")
-        assert manager.test_command == "make test-all"
-
-    def test_merge_queue_list_in_constructor(self):
-        """Test merge_queue_list is set via constructor."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager, merge_queue_list="Ready to Ship")
-        assert manager.merge_queue_list == "Ready to Ship"
-
     def test_defaults_are_none(self):
         """Test new config params default to None."""
         state_manager = MagicMock()
         manager = ProxyManager(state_manager)
         assert manager.setup_command is None
-        assert manager.test_command is None
-        assert manager.merge_queue_list is None
 
 
 class TestProxyManagerCardMoved:
@@ -433,198 +419,6 @@ class TestProxyManagerCardMoved:
 
         mock_process.kill.assert_called_once()
         assert "abc12345" not in manager._active_sessions
-
-
-class TestProxyManagerMergeQueue:
-    """Tests for merge queue workflow triggering (via constructor config)."""
-
-    @pytest.mark.asyncio
-    async def test_handle_card_moved_to_merge_queue_triggers_workflow(self):
-        """Test merge workflow is triggered when card moved to Merge Queue."""
-        state_manager = MagicMock()
-        manager = ProxyManager(
-            state_manager, merge_queue_list="merge queue", test_command="make test"
-        )
-        manager.worktree_manager = MagicMock()
-        manager._trigger_merge_workflow = AsyncMock()
-
-        await manager._handle_card_moved(
-            {
-                "card_id": "abc12345",
-                "list_name": "Merge Queue",
-            }
-        )
-
-        manager._trigger_merge_workflow.assert_called_once_with("abc12345", "make test")
-        manager.worktree_manager.remove_worktree.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_handle_card_moved_to_merge_queue_case_insensitive(self):
-        """Test merge queue detection is case insensitive."""
-        state_manager = MagicMock()
-        manager = ProxyManager(
-            state_manager, merge_queue_list="merge queue", test_command="make test"
-        )
-        manager.worktree_manager = MagicMock()
-        manager._trigger_merge_workflow = AsyncMock()
-
-        for list_name in ["Merge Queue", "MERGE QUEUE", "merge queue", "Ready for Merge Queue"]:
-            manager._trigger_merge_workflow.reset_mock()
-
-            await manager._handle_card_moved(
-                {
-                    "card_id": "abc12345",
-                    "list_name": list_name,
-                }
-            )
-
-            manager._trigger_merge_workflow.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_handle_card_moved_to_custom_merge_queue(self):
-        """Test custom merge queue list name is respected."""
-        state_manager = MagicMock()
-        manager = ProxyManager(
-            state_manager, merge_queue_list="Ready to Ship", test_command="make test"
-        )
-        manager.worktree_manager = MagicMock()
-        manager._trigger_merge_workflow = AsyncMock()
-
-        await manager._handle_card_moved(
-            {
-                "card_id": "abc12345",
-                "list_name": "Ready to Ship",
-            }
-        )
-
-        manager._trigger_merge_workflow.assert_called_once_with("abc12345", "make test")
-
-    @pytest.mark.asyncio
-    async def test_handle_card_moved_default_queue_not_triggered_by_custom(self):
-        """Test default 'merge queue' is not triggered when custom is set."""
-        state_manager = MagicMock()
-        manager = ProxyManager(
-            state_manager, merge_queue_list="Ready to Ship", test_command="make test"
-        )
-        manager.worktree_manager = MagicMock()
-        manager._trigger_merge_workflow = AsyncMock()
-
-        await manager._handle_card_moved(
-            {
-                "card_id": "abc12345",
-                "list_name": "Merge Queue",
-            }
-        )
-
-        manager._trigger_merge_workflow.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_handle_card_moved_no_merge_config_does_nothing(self):
-        """Test no action when no merge queue configured."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager)  # No merge_queue_list
-        manager.worktree_manager = MagicMock()
-        manager._trigger_merge_workflow = AsyncMock()
-
-        await manager._handle_card_moved(
-            {
-                "card_id": "abc12345",
-                "list_name": "Merge Queue",
-            }
-        )
-
-        manager._trigger_merge_workflow.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_handle_card_moved_uses_default_test_command(self):
-        """Test default test command (make test) when test_command not set."""
-        state_manager = MagicMock()
-        manager = ProxyManager(
-            state_manager,
-            merge_queue_list="merge queue",  # No test_command
-        )
-        manager.worktree_manager = MagicMock()
-        manager._trigger_merge_workflow = AsyncMock()
-
-        await manager._handle_card_moved(
-            {
-                "card_id": "abc12345",
-                "list_name": "Merge Queue",
-            }
-        )
-
-        manager._trigger_merge_workflow.assert_called_once_with("abc12345", "make test")
-
-    @pytest.mark.asyncio
-    async def test_trigger_merge_workflow_creates_workflow(self):
-        """Test merge workflow is created with correct parameters."""
-        from kardbrd_agent.merge_workflow import MergeStatus
-
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager)
-        manager.client = MagicMock()
-        manager.client.get_card.return_value = {"title": "Test Card Title"}
-        manager.executor = MagicMock()
-        manager.cwd = Path("/tmp/repo")
-
-        with patch("kardbrd_agent.merge_workflow.MergeWorkflow") as MockWorkflow:
-            mock_workflow_instance = MagicMock()
-            mock_workflow_instance.run = AsyncMock(return_value=MergeStatus.MERGED)
-            MockWorkflow.return_value = mock_workflow_instance
-
-            await manager._trigger_merge_workflow("abc12345", "make test-all")
-
-            MockWorkflow.assert_called_once_with(
-                card_id="abc12345",
-                card_title="Test Card Title",
-                main_repo_path=Path("/tmp/repo"),
-                client=manager.client,
-                executor=manager.executor,
-                test_command="make test-all",
-            )
-            mock_workflow_instance.run.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_trigger_merge_workflow_handles_card_fetch_error(self):
-        """Test merge workflow handles card fetch failure gracefully."""
-        from kardbrd_agent.merge_workflow import MergeStatus
-
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager)
-        manager.client = MagicMock()
-        manager.client.get_card.side_effect = Exception("API error")
-        manager.executor = MagicMock()
-        manager.cwd = Path("/tmp/repo")
-
-        with patch("kardbrd_agent.merge_workflow.MergeWorkflow") as MockWorkflow:
-            mock_workflow_instance = MagicMock()
-            mock_workflow_instance.run = AsyncMock(return_value=MergeStatus.MERGED)
-            MockWorkflow.return_value = mock_workflow_instance
-
-            # Should not raise - uses fallback title
-            await manager._trigger_merge_workflow("abc12345", "make test")
-
-            MockWorkflow.assert_called_once()
-            call_kwargs = MockWorkflow.call_args[1]
-            assert call_kwargs["card_title"] == "Card abc12345"
-
-    @pytest.mark.asyncio
-    async def test_trigger_merge_workflow_handles_workflow_exception(self):
-        """Test merge workflow handles workflow execution failure."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager)
-        manager.client = MagicMock()
-        manager.client.get_card.return_value = {"title": "Test Card"}
-        manager.executor = MagicMock()
-        manager.cwd = Path("/tmp/repo")
-
-        with patch("kardbrd_agent.merge_workflow.MergeWorkflow") as MockWorkflow:
-            mock_workflow_instance = MagicMock()
-            mock_workflow_instance.run = AsyncMock(side_effect=Exception("Workflow failed"))
-            MockWorkflow.return_value = mock_workflow_instance
-
-            # Should not raise - exception is caught and logged
-            await manager._trigger_merge_workflow("abc12345", "make test")
 
 
 class TestStopReaction:

@@ -20,11 +20,6 @@ STOP_EMOJI = "🛑"
 # Emojis to clear before retrying
 COMPLETION_EMOJIS = ("✅", "🛑")
 
-# Default name for the merge queue list
-DEFAULT_MERGE_QUEUE_LIST = "merge queue"
-# Default test command
-DEFAULT_TEST_COMMAND = "make test"
-
 
 @dataclass
 class ActiveSession:
@@ -56,8 +51,6 @@ class ProxyManager:
         max_concurrent: int = 3,
         worktrees_dir: str | Path | None = None,
         setup_command: str | None = None,
-        test_command: str | None = None,
-        merge_queue_list: str | None = None,
     ):
         """
         Initialize the proxy manager.
@@ -70,8 +63,6 @@ class ProxyManager:
             max_concurrent: Maximum number of concurrent Claude sessions
             worktrees_dir: Optional directory for worktrees (defaults to cwd parent)
             setup_command: Shell command to run in worktrees after creation (e.g. "npm install")
-            test_command: Command to run tests during merge workflow
-            merge_queue_list: List name that triggers merge workflow
         """
         self.state_manager = state_manager
         self.mention_keyword = mention_keyword.lower()
@@ -80,8 +71,6 @@ class ProxyManager:
         self.max_concurrent = max_concurrent
         self.worktrees_dir = Path(worktrees_dir) if worktrees_dir else None
         self.setup_command = setup_command
-        self.test_command = test_command
-        self.merge_queue_list = merge_queue_list
 
         # Will be initialized when subscription is loaded
         self.connection: WebSocketAgentConnection | None = None
@@ -580,8 +569,7 @@ DO NOT do any new work - just publish what you already did."""
         """
         Handle card_moved events.
 
-        - Cleans up worktree when card is moved to Done list.
-        - Triggers merge workflow when card is moved to Merge Queue list.
+        Cleans up worktree when card is moved to Done list.
 
         Args:
             message: The WebSocket message containing the event
@@ -593,55 +581,8 @@ DO NOT do any new work - just publish what you already did."""
         if "done" in list_name:
             logger.info(f"Card {card_id} moved to Done, cleaning up worktree")
             await self._cleanup_worktree(card_id)
-            return
-
-        # Check if merge queue is configured
-        if not self.merge_queue_list:
-            logger.debug("No merge queue configured, ignoring card move")
-            return
-
-        # Check if moved to merge queue list (case-insensitive substring match)
-        merge_queue_list = self.merge_queue_list.lower()
-        if merge_queue_list in list_name:
-            logger.info(f"Card {card_id} moved to Merge Queue, starting merge workflow")
-            test_command = self.test_command or DEFAULT_TEST_COMMAND
-            await self._trigger_merge_workflow(card_id, test_command)
         else:
             logger.info(f"Card {card_id} moved to '{list_name}' - no action needed")
-
-    async def _trigger_merge_workflow(self, card_id: str, test_command: str) -> None:
-        """
-        Trigger the merge workflow for a card.
-
-        Args:
-            card_id: The card ID to merge
-            test_command: Command to run tests during merge
-        """
-        from .merge_workflow import MergeWorkflow
-
-        # Get card title for commit message
-        try:
-            card = self.client.get_card(card_id)
-            card_title = card.get("title", f"Card {card_id}")
-        except Exception as e:
-            logger.error(f"Failed to get card {card_id}: {e}")
-            card_title = f"Card {card_id}"
-
-        # Create and run merge workflow
-        workflow = MergeWorkflow(
-            card_id=card_id,
-            card_title=card_title,
-            main_repo_path=self.cwd,
-            client=self.client,
-            executor=self.executor,
-            test_command=test_command,
-        )
-
-        try:
-            status = await workflow.run()
-            logger.info(f"Merge workflow completed for card {card_id}: {status.value}")
-        except Exception as e:
-            logger.exception(f"Merge workflow failed for card {card_id}: {e}")
 
     async def _cleanup_worktree(self, card_id: str) -> None:
         """
