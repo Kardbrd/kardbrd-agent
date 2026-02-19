@@ -14,13 +14,6 @@ from .worktree import WorktreeManager
 
 logger = logging.getLogger("kardbrd_agent")
 
-# Emoji for triggering a retry of a previous @mention
-RETRY_EMOJI = "🔄"
-# Emoji for stopping an active session (user reacts on their triggering comment)
-STOP_EMOJI = "🛑"
-# Emojis to clear before retrying
-COMPLETION_EMOJIS = ("✅", "🛑")
-
 
 @dataclass
 class ActiveSession:
@@ -249,57 +242,10 @@ class ProxyManager:
         )
 
     async def _handle_reaction_added(self, message: dict) -> None:
-        """Handle reaction events - check for retry or stop emoji."""
-        emoji = message.get("emoji")
-        card_id = message.get("card_id")
-        comment_id = message.get("comment_id")
-
-        if emoji == STOP_EMOJI:
-            await self._handle_stop_reaction(card_id, comment_id)
-            return
-
-        if emoji != RETRY_EMOJI:
-            logger.info(f"Ignoring non-actionable emoji: {emoji}")
-            return
-
-        user_name = message.get("user_name", "Unknown")
-
-        logger.info(f"Retry requested by {user_name} on comment {comment_id}")
-
-        # Fetch the comment to check if it contains @mention
-        try:
-            comment = self.client.get_comment(card_id, comment_id)
-        except Exception as e:
-            logger.error(f"Failed to fetch comment for retry: {e}")
-            return
-
-        content = comment.get("content", "")
-        author = comment.get("author", {})
-        author_name = author.get("display_name", "Unknown")
-
-        # Check for @mention
-        if self.mention_keyword not in content.lower():
-            logger.debug(f"Retry ignored: no {self.mention_keyword} in comment")
-            return
-
-        # Check if already processing
-        if self._processing:
-            logger.warning("Already processing a request, skipping retry")
-            return
-
-        # Clear old completion reactions before retrying
-        for old_emoji in COMPLETION_EMOJIS:
-            self._remove_reaction(card_id, comment_id, old_emoji)
-
-        logger.info(f"Retrying {self.mention_keyword} mention by {author_name} on card {card_id}")
-
-        # Process the mention
-        await self._process_mention(
-            card_id=card_id,
-            comment_id=comment_id,
-            content=content,
-            author_name=author_name,
-        )
+        """Handle reaction events - delegates to rule engine via _check_rules."""
+        # Reactions are handled entirely through kardbrd.yml rules.
+        # This method is kept for logging only; _check_rules does the dispatch.
+        pass
 
     def _add_reaction(self, card_id: str, comment_id: str | None, emoji: str) -> None:
         """Add emoji reaction to a comment (best effort, no raise on failure)."""
@@ -611,6 +557,13 @@ DO NOT do any new work - just publish what you already did."""
 
         for rule in matched_rules:
             logger.info(f"Rule matched: '{rule.name}' for card {card_id}")
+
+            # Stop rules execute deterministic functions (kill active session)
+            if rule.is_stop:
+                comment_id = message.get("comment_id")
+                await self._handle_stop_reaction(card_id, comment_id)
+                continue
+
             # Skip if card is already being processed
             if card_id in self._active_sessions:
                 logger.warning(f"Card {card_id} already processing, skipping rule '{rule.name}'")
