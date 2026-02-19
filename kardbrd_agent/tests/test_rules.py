@@ -6,7 +6,9 @@ import pytest
 
 from kardbrd_agent.rules import (
     KNOWN_EVENTS,
+    KNOWN_FIELDS,
     MODEL_MAP,
+    STOP_ACTION,
     ReloadableRuleEngine,
     Rule,
     RuleEngine,
@@ -67,6 +69,26 @@ class TestRule:
         """Test model_id passes through unknown model strings."""
         rule = Rule(name="t", events=["card_moved"], action="a", model="claude-custom-123")
         assert rule.model_id == "claude-custom-123"
+
+    def test_emoji_field_default_none(self):
+        """Test emoji defaults to None."""
+        rule = Rule(name="t", events=["reaction_added"], action="a")
+        assert rule.emoji is None
+
+    def test_emoji_field_set(self):
+        """Test emoji can be set on a rule."""
+        rule = Rule(name="t", events=["reaction_added"], action="ship", emoji="📦")
+        assert rule.emoji == "📦"
+
+    def test_is_stop_true_for_stop_action(self):
+        """Test is_stop returns True for __stop__ action."""
+        rule = Rule(name="stop", events=["reaction_added"], action=STOP_ACTION, emoji="🛑")
+        assert rule.is_stop is True
+
+    def test_is_stop_false_for_normal_action(self):
+        """Test is_stop returns False for normal actions."""
+        rule = Rule(name="ship", events=["reaction_added"], action="/ship", emoji="📦")
+        assert rule.is_stop is False
 
 
 class TestRuleEngine:
@@ -349,6 +371,110 @@ class TestRuleEngine:
         engine = RuleEngine()
         assert engine.match("card_moved", {"card_id": "abc"}) == []
 
+    def test_match_emoji_condition(self):
+        """Test matching reaction_added by emoji."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="ship",
+                    events=["reaction_added"],
+                    action="ship the card",
+                    emoji="📦",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "reaction_added",
+            {"card_id": "abc", "emoji": "📦", "comment_id": "c1"},
+        )
+        assert len(matches) == 1
+        assert matches[0].name == "ship"
+
+    def test_no_match_wrong_emoji(self):
+        """Test no match when emoji doesn't match."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="ship",
+                    events=["reaction_added"],
+                    action="ship the card",
+                    emoji="📦",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "reaction_added",
+            {"card_id": "abc", "emoji": "👍", "comment_id": "c1"},
+        )
+        assert len(matches) == 0
+
+    def test_match_emoji_exact_unicode(self):
+        """Test emoji matching is exact (no normalization)."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="stop",
+                    events=["reaction_added"],
+                    action=STOP_ACTION,
+                    emoji="🛑",
+                ),
+            ]
+        )
+        # Match
+        matches = engine.match(
+            "reaction_added",
+            {"card_id": "abc", "emoji": "🛑"},
+        )
+        assert len(matches) == 1
+
+        # No match — different emoji
+        matches = engine.match(
+            "reaction_added",
+            {"card_id": "abc", "emoji": "⛔"},
+        )
+        assert len(matches) == 0
+
+    def test_reaction_rule_without_emoji_matches_all(self):
+        """Test a reaction_added rule with no emoji condition matches all reactions."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="any reaction",
+                    events=["reaction_added"],
+                    action="log it",
+                ),
+            ]
+        )
+        for emoji in ["📦", "🛑", "👍", "🔄"]:
+            matches = engine.match(
+                "reaction_added",
+                {"card_id": "abc", "emoji": emoji},
+            )
+            assert len(matches) == 1, f"Should match {emoji}"
+
+    def test_multiple_emoji_rules_match_independently(self):
+        """Test multiple rules with different emojis match independently."""
+        engine = RuleEngine(
+            rules=[
+                Rule(name="ship", events=["reaction_added"], action="ship", emoji="📦"),
+                Rule(name="stop", events=["reaction_added"], action=STOP_ACTION, emoji="🛑"),
+                Rule(name="review", events=["reaction_added"], action="/kr", emoji="🔄"),
+            ]
+        )
+        # Only the ship rule matches
+        matches = engine.match("reaction_added", {"card_id": "abc", "emoji": "📦"})
+        assert len(matches) == 1
+        assert matches[0].name == "ship"
+
+        # Only the stop rule matches
+        matches = engine.match("reaction_added", {"card_id": "abc", "emoji": "🛑"})
+        assert len(matches) == 1
+        assert matches[0].name == "stop"
+
+        # Unregistered emoji matches nothing
+        matches = engine.match("reaction_added", {"card_id": "abc", "emoji": "😀"})
+        assert len(matches) == 0
+
 
 class TestExcludeLabel:
     """Tests for exclude_label condition."""
@@ -552,6 +678,34 @@ class TestParseRules:
         rules = parse_rules(data)
         assert rules[0].exclude_label == "Agent"
 
+    def test_parse_with_emoji(self):
+        """Test parsing rules with emoji field."""
+        data = [
+            {
+                "name": "ship reaction",
+                "event": "reaction_added",
+                "action": "ship the card",
+                "emoji": "📦",
+            }
+        ]
+        rules = parse_rules(data)
+        assert rules[0].emoji == "📦"
+        assert rules[0].events == ["reaction_added"]
+
+    def test_parse_stop_rule(self):
+        """Test parsing a stop rule with __stop__ action."""
+        data = [
+            {
+                "name": "stop agent",
+                "event": "reaction_added",
+                "action": "__stop__",
+                "emoji": "🛑",
+            }
+        ]
+        rules = parse_rules(data)
+        assert rules[0].is_stop is True
+        assert rules[0].emoji == "🛑"
+
     def test_parse_missing_name_raises(self):
         """Test that missing name raises ValueError."""
         with pytest.raises(ValueError, match="missing 'name'"):
@@ -657,6 +811,57 @@ class TestLoadRules:
         assert engine.rules[1].title == "\U0001f4e6"
         assert engine.rules[2].list == "in progress"
         assert engine.rules[3].events == ["label_added"]
+
+    def test_load_reaction_rules_yaml(self, tmp_path):
+        """Test loading reaction-based rules from kardbrd.yml."""
+        rules_file = tmp_path / "kardbrd.yml"
+        rules_file.write_text(
+            "- name: Ship via reaction\n"
+            "  event: reaction_added\n"
+            '  emoji: "\U0001f4e6"\n'
+            "  model: sonnet\n"
+            "  action: Ship this card\n"
+            "\n"
+            "- name: Stop agent\n"
+            "  event: reaction_added\n"
+            '  emoji: "\U0001f6d1"\n'
+            "  action: __stop__\n"
+        )
+        engine = load_rules(rules_file)
+        assert len(engine.rules) == 2
+        assert engine.rules[0].emoji == "\U0001f4e6"
+        assert engine.rules[0].model == "sonnet"
+        assert not engine.rules[0].is_stop
+        assert engine.rules[1].emoji == "\U0001f6d1"
+        assert engine.rules[1].is_stop
+
+
+class TestKnownFields:
+    """Tests for KNOWN_FIELDS validation."""
+
+    def test_emoji_is_known_field(self):
+        """Test emoji is in KNOWN_FIELDS."""
+        assert "emoji" in KNOWN_FIELDS
+
+    def test_exclude_label_is_known_field(self):
+        """Test exclude_label is in KNOWN_FIELDS."""
+        assert "exclude_label" in KNOWN_FIELDS
+
+    def test_all_rule_fields_are_known(self):
+        """Test all Rule dataclass condition fields are in KNOWN_FIELDS."""
+        expected_fields = {
+            "name",
+            "event",
+            "action",
+            "model",
+            "list",
+            "title",
+            "label",
+            "content_contains",
+            "exclude_label",
+            "emoji",
+        }
+        assert expected_fields == KNOWN_FIELDS
 
 
 class TestKnownEvents:
