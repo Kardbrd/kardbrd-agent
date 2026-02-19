@@ -9,6 +9,11 @@ import yaml
 
 logger = logging.getLogger("kardbrd_agent")
 
+# Reserved action keyword for deterministic stop behavior.
+# When a rule uses this action, the agent kills the active session
+# instead of spawning Claude.
+STOP_ACTION = "__stop__"
+
 # Map of model short names to Claude CLI model identifiers
 MODEL_MAP = {
     "opus": "claude-opus-4-6",
@@ -56,6 +61,23 @@ KNOWN_EVENTS = frozenset(
     }
 )
 
+# All known fields in a rule entry
+KNOWN_FIELDS = frozenset(
+    {
+        "name",
+        "event",
+        "action",
+        "model",
+        "list",
+        "title",
+        "label",
+        "content_contains",
+        "require_label",
+        "emoji",
+        "require_user",
+    }
+)
+
 
 @dataclass
 class Rule:
@@ -71,6 +93,13 @@ class Rule:
     label: str | None = None
     content_contains: str | None = None
     require_label: str | None = None
+    emoji: str | None = None
+    require_user: str | None = None
+
+    @property
+    def is_stop(self) -> bool:
+        """True if this rule triggers the deterministic stop action."""
+        return self.action == STOP_ACTION
 
     @property
     def model_id(self) -> str | None:
@@ -135,6 +164,16 @@ class RuleEngine:
             if rule.require_label.lower() not in [lbl.lower() for lbl in card_labels]:
                 return False
 
+        if rule.emoji is not None:
+            msg_emoji = message.get("emoji", "")
+            if msg_emoji != rule.emoji:
+                return False
+
+        if rule.require_user is not None:
+            user_id = message.get("user_id", "")
+            if user_id != rule.require_user:
+                return False
+
         return True
 
     def _event_matches(self, rule: Rule, event_type: str) -> bool:
@@ -197,6 +236,8 @@ def parse_rules(data: list[dict]) -> list[Rule]:
             label=entry.get("label"),
             content_contains=entry.get("content_contains"),
             require_label=entry.get("require_label"),
+            emoji=entry.get("emoji"),
+            require_user=entry.get("require_user"),
         )
         rules.append(rule)
 

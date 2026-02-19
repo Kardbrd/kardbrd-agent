@@ -427,9 +427,11 @@ class TestStopReaction:
 
     @pytest.mark.asyncio
     async def test_stop_reaction_kills_process(self):
-        """Test 🛑 reaction on triggering comment kills the Claude process."""
+        """Test 🛑 stop rule via _check_rules kills the Claude process."""
         state_manager = MagicMock()
-        manager = ProxyManager(state_manager)
+        stop_rule = Rule(name="stop", events=["reaction_added"], action="__stop__", emoji="🛑")
+        engine = RuleEngine(rules=[stop_rule])
+        manager = ProxyManager(state_manager, rule_engine=engine)
         manager.client = MagicMock()
 
         mock_process = MagicMock()
@@ -440,8 +442,9 @@ class TestStopReaction:
             process=mock_process,
         )
 
-        await manager._handle_reaction_added(
-            {"emoji": "🛑", "card_id": "abc12345", "comment_id": "comm1", "user_name": "Paul"}
+        await manager._check_rules(
+            "reaction_added",
+            {"emoji": "🛑", "card_id": "abc12345", "comment_id": "comm1", "user_name": "Paul"},
         )
 
         mock_process.kill.assert_called_once()
@@ -503,9 +506,11 @@ class TestStopReaction:
 
     @pytest.mark.asyncio
     async def test_stop_reaction_routed_from_board_event(self):
-        """Test 🛑 reaction is properly routed from _handle_board_event."""
+        """Test 🛑 reaction is properly routed from _handle_board_event via rules."""
         state_manager = MagicMock()
-        manager = ProxyManager(state_manager)
+        stop_rule = Rule(name="stop", events=["reaction_added"], action="__stop__", emoji="🛑")
+        engine = RuleEngine(rules=[stop_rule])
+        manager = ProxyManager(state_manager, rule_engine=engine)
         manager.client = MagicMock()
         manager._handle_stop_reaction = AsyncMock()
 
@@ -626,125 +631,6 @@ class TestProcessingAttribute:
         await manager._process_mention("card1", "comm1", "@coder hi", "Paul")
 
         assert manager._processing is False
-
-
-class TestRetryHandler:
-    """Tests for retry emoji (🔄) handling."""
-
-    @pytest.mark.asyncio
-    async def test_retry_skipped_when_processing(self):
-        """Test retry is skipped when already processing a card."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager)
-        manager.mention_keyword = "@coder"
-        manager._processing = True  # Simulate active processing
-        manager.client = MagicMock()
-        manager.client.get_comment.return_value = {
-            "content": "@coder /kp",
-            "author": {"display_name": "Paul"},
-        }
-        manager._process_mention = AsyncMock()
-
-        await manager._handle_reaction_added(
-            {"emoji": "🔄", "card_id": "abc123", "comment_id": "comm1", "user_name": "Paul"}
-        )
-
-        manager._process_mention.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_retry_proceeds_when_not_processing(self):
-        """Test retry proceeds when not currently processing."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager)
-        manager.mention_keyword = "@coder"
-        manager._processing = False
-        manager.client = MagicMock()
-        manager.client.get_comment.return_value = {
-            "content": "@coder /kp",
-            "author": {"display_name": "Paul"},
-        }
-        manager._process_mention = AsyncMock()
-
-        await manager._handle_reaction_added(
-            {"emoji": "🔄", "card_id": "abc123", "comment_id": "comm1", "user_name": "Paul"}
-        )
-
-        manager._process_mention.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_retry_clears_completion_emojis(self):
-        """Test retry removes old ✅ and 🛑 reactions before retrying."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager)
-        manager.mention_keyword = "@coder"
-        manager._processing = False
-        manager.client = MagicMock()
-        manager.client.get_comment.return_value = {
-            "content": "@coder /kp",
-            "author": {"display_name": "Paul"},
-            "reactions": {"✅": [{"user_id": "bot"}]},
-        }
-        manager._process_mention = AsyncMock()
-
-        await manager._handle_reaction_added(
-            {"emoji": "🔄", "card_id": "abc123", "comment_id": "comm1", "user_name": "Paul"}
-        )
-
-        # Verify toggle_reaction was called to remove old emojis
-        calls = manager.client.toggle_reaction.call_args_list
-        removed_emojis = [call[0][2] for call in calls]
-        assert "✅" in removed_emojis
-
-    @pytest.mark.asyncio
-    async def test_retry_ignores_non_mention_comments(self):
-        """Test retry is ignored for comments without @mention."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager)
-        manager.mention_keyword = "@coder"
-        manager._processing = False
-        manager.client = MagicMock()
-        manager.client.get_comment.return_value = {
-            "content": "Just a regular comment",
-            "author": {"display_name": "Paul"},
-        }
-        manager._process_mention = AsyncMock()
-
-        await manager._handle_reaction_added(
-            {"emoji": "🔄", "card_id": "abc123", "comment_id": "comm1", "user_name": "Paul"}
-        )
-
-        manager._process_mention.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_retry_handles_comment_fetch_error(self):
-        """Test retry gracefully handles comment fetch failure."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager)
-        manager.mention_keyword = "@coder"
-        manager._processing = False
-        manager.client = MagicMock()
-        manager.client.get_comment.side_effect = Exception("API error")
-        manager._process_mention = AsyncMock()
-
-        # Should not raise
-        await manager._handle_reaction_added(
-            {"emoji": "🔄", "card_id": "abc123", "comment_id": "comm1", "user_name": "Paul"}
-        )
-
-        manager._process_mention.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_non_retry_emoji_ignored(self):
-        """Test non-retry emojis are ignored."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager)
-        manager._process_mention = AsyncMock()
-
-        await manager._handle_reaction_added(
-            {"emoji": "👍", "card_id": "abc123", "comment_id": "comm1", "user_name": "Paul"}
-        )
-
-        manager._process_mention.assert_not_called()
 
 
 class TestResumeToPublish:
@@ -1129,3 +1015,28 @@ class TestRuleEngineIntegration:
 
         # Should not try to add reaction (comment_id is None)
         manager.client.toggle_reaction.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_check_rules_stop_rule_kills_session(self):
+        """Test stop rule via _check_rules kills active session."""
+        state_manager = MagicMock()
+        stop_rule = Rule(name="stop", events=["reaction_added"], action="__stop__", emoji="🛑")
+        engine = RuleEngine(rules=[stop_rule])
+        manager = ProxyManager(state_manager, rule_engine=engine)
+        manager.client = MagicMock()
+
+        mock_process = MagicMock()
+        manager._active_sessions["abc12345"] = ActiveSession(
+            card_id="abc12345",
+            worktree_path=Path("/tmp/wt"),
+            comment_id="comm1",
+            process=mock_process,
+        )
+
+        await manager._check_rules(
+            "reaction_added",
+            {"emoji": "🛑", "card_id": "abc12345", "comment_id": "comm1"},
+        )
+
+        mock_process.kill.assert_called_once()
+        assert "abc12345" not in manager._active_sessions
