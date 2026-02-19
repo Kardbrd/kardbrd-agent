@@ -262,11 +262,11 @@ def parse_rules(data: list[dict]) -> list[Rule]:
         if not action:
             raise ValueError(f"Rule '{name}' is missing 'action'")
 
-        # Parse events: accept YAML lists or comma-separated strings
+        # Parse events: accept YAML lists or a single string
         if isinstance(event_raw, list):
             events = [str(e).strip() for e in event_raw]
         elif isinstance(event_raw, str):
-            events = [e.strip() for e in event_raw.split(",")]
+            events = [event_raw.strip()]
         else:
             raise ValueError(
                 f"Rule '{name}': 'event' must be a string or list, got {type(event_raw).__name__}"
@@ -436,7 +436,7 @@ def validate_rules_file(path: Path) -> ValidationResult:
             if isinstance(event_raw, list):
                 events = [str(e).strip() for e in event_raw]
             elif isinstance(event_raw, str):
-                events = [e.strip() for e in event_raw.split(",")]
+                events = [event_raw.strip()]
             else:
                 result.issues.append(
                     ValidationIssue(
@@ -455,7 +455,7 @@ def validate_rules_file(path: Path) -> ValidationResult:
                             Severity.ERROR,
                             i,
                             name,
-                            "Empty event name (trailing or double comma in event list)",
+                            "Empty event name in event list",
                         )
                     )
                 elif ev not in KNOWN_EVENTS:

@@ -642,11 +642,11 @@ class TestParseRules:
         assert rules[0].events == ["card_moved"]
         assert rules[1].events == ["comment_created"]
 
-    def test_parse_comma_separated_events(self):
-        """Test parsing comma-separated event strings."""
-        data = [{"name": "multi", "event": "card_moved, card_created", "action": "/ke"}]
+    def test_parse_string_event_is_single(self):
+        """Test a plain string event is treated as a single event (no comma splitting)."""
+        data = [{"name": "single", "event": "card_moved", "action": "/ke"}]
         rules = parse_rules(data)
-        assert rules[0].events == ["card_moved", "card_created"]
+        assert rules[0].events == ["card_moved"]
 
     def test_parse_with_conditions(self):
         """Test parsing rules with condition fields."""
@@ -807,7 +807,9 @@ class TestLoadRules:
         rules_file = tmp_path / "kardbrd.yml"
         yaml_content = (
             "- name: Explore ideas\n"
-            "  event: card_created, card_moved\n"
+            "  event:\n"
+            "    - card_created\n"
+            "    - card_moved\n"
             "  list: ideas\n"
             "  action: /ke\n"
             "\n"

@@ -12,7 +12,10 @@
 # ── Schema ──────────────────────────────────────────────────────────
 #
 #   - name: "Human-readable rule name"        # required
-#     event: card_moved, card_created         # required, comma-separated
+#     event: card_moved                       # required, string or YAML list
+#     event:                                  # multi-event example:
+#       - card_moved                          #   use a YAML list
+#       - card_created
 #     list: "Ideas"                           # condition: list name (case-insensitive)
 #     title: "📦"                             # condition: exact card title match
 #     label: "Bug"                            # condition: label name (case-insensitive)
@@ -113,7 +116,9 @@
 
 # When a card lands in the Ideas list, explore it immediately
 - name: Explore ideas
-  event: card_created, card_moved
+  event:
+    - card_created
+    - card_moved
   list: Ideas
   action: /ke
 

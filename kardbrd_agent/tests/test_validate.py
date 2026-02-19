@@ -21,7 +21,9 @@ class TestValidateRulesFile:
         f = tmp_path / "kardbrd.yml"
         f.write_text(
             "- name: rule1\n"
-            "  event: card_moved, card_created\n"
+            "  event:\n"
+            "    - card_moved\n"
+            "    - card_created\n"
             "  list: Ideas\n"
             "  action: /ke\n"
             "- name: rule2\n"
@@ -174,13 +176,14 @@ class TestValidateRulesFile:
         assert not result.is_valid
         assert any("must be a string or list" in e.message for e in result.errors)
 
-    def test_trailing_comma_in_events(self, tmp_path):
-        """Test trailing comma in event list reports error."""
+    def test_comma_in_event_string_is_unknown(self, tmp_path):
+        """Test comma-separated string is treated as a single unknown event name."""
         f = tmp_path / "kardbrd.yml"
-        f.write_text("- name: test\n  event: 'card_moved,'\n  action: /ke\n")
+        f.write_text("- name: test\n  event: 'card_moved, card_created'\n  action: /ke\n")
         result = validate_rules_file(f)
-        assert not result.is_valid
-        assert any("Empty event name" in e.message for e in result.errors)
+        assert result.is_valid  # warnings don't invalidate
+        assert len(result.warnings) == 1
+        assert "card_moved, card_created" in result.warnings[0].message
 
     def test_model_not_string_errors(self, tmp_path):
         """Test model field that isn't a string reports error."""
