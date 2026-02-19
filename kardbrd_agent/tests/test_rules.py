@@ -721,6 +721,29 @@ class TestParseRules:
         with pytest.raises(ValueError, match="missing 'action'"):
             parse_rules([{"name": "test", "event": "card_moved"}])
 
+    def test_parse_yaml_list_events(self):
+        """Test parsing YAML list events produces correct events list."""
+        data = [
+            {
+                "name": "multi",
+                "event": ["card_moved", "card_created"],
+                "action": "/ke",
+            }
+        ]
+        rules = parse_rules(data)
+        assert rules[0].events == ["card_moved", "card_created"]
+
+    def test_parse_yaml_list_single_event(self):
+        """Test parsing a single-item YAML list event."""
+        data = [{"name": "single", "event": ["card_moved"], "action": "/ke"}]
+        rules = parse_rules(data)
+        assert rules[0].events == ["card_moved"]
+
+    def test_parse_event_invalid_type_raises(self):
+        """Test that non-string, non-list event type raises ValueError."""
+        with pytest.raises(ValueError, match="must be a string or list"):
+            parse_rules([{"name": "test", "event": 123, "action": "/ke"}])
+
     def test_parse_multiline_action(self):
         """Test parsing a rule with multiline action."""
         data = [
@@ -811,6 +834,21 @@ class TestLoadRules:
         assert engine.rules[1].title == "\U0001f4e6"
         assert engine.rules[2].list == "in progress"
         assert engine.rules[3].events == ["label_added"]
+
+    def test_load_yaml_list_events(self, tmp_path):
+        """Test loading a YAML file with list-style events works end-to-end."""
+        rules_file = tmp_path / "kardbrd.yml"
+        rules_file.write_text(
+            "- name: Explore ideas\n"
+            "  event:\n"
+            "    - card_created\n"
+            "    - card_moved\n"
+            "  list: Ideas\n"
+            "  action: /ke\n"
+        )
+        engine = load_rules(rules_file)
+        assert len(engine.rules) == 1
+        assert engine.rules[0].events == ["card_created", "card_moved"]
 
     def test_load_reaction_rules_yaml(self, tmp_path):
         """Test loading reaction-based rules from kardbrd.yml."""

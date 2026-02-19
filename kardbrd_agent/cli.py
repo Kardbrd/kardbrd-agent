@@ -193,6 +193,18 @@ def start(
     # Load kardbrd.yml rules (with hot reload every 60s)
     rules_path = rules_file or (cwd or Path.cwd()) / "kardbrd.yml"
     if rules_path.exists():
+        # Validate before loading — fail fast with clear error messages
+        validation = validate_rules_file(rules_path)
+        if validation.warnings:
+            for issue in validation.warnings:
+                console.print(f"  [yellow]warning[/yellow]: {issue}")
+        if not validation.is_valid:
+            console.print("\n[red]kardbrd.yml has errors:[/red]\n")
+            for issue in validation.errors:
+                console.print(f"  [red]error[/red]: {issue}")
+            console.print(f"\n[dim]Fix the errors above in {rules_path} and restart.[/dim]")
+            sys.exit(1)
+
         try:
             rule_engine = ReloadableRuleEngine(rules_path)
             console.print(

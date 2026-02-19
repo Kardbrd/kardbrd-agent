@@ -140,13 +140,39 @@ class TestValidateRulesFile:
         assert "priority" in result.warnings[0].message
         assert "timeout" in result.warnings[0].message
 
-    def test_event_not_string_errors(self, tmp_path):
-        """Test event field that isn't a string reports error."""
+    def test_event_yaml_list_is_valid(self, tmp_path):
+        """Test event field as a YAML list is valid."""
+        f = tmp_path / "kardbrd.yml"
+        f.write_text(
+            "- name: test\n  event:\n    - card_moved\n    - card_created\n  action: /ke\n"
+        )
+        result = validate_rules_file(f)
+        assert result.is_valid
+        assert result.issues == []
+
+    def test_event_yaml_list_single_item(self, tmp_path):
+        """Test event field as a single-item YAML list is valid."""
         f = tmp_path / "kardbrd.yml"
         f.write_text("- name: test\n  event:\n    - card_moved\n  action: /ke\n")
         result = validate_rules_file(f)
+        assert result.is_valid
+
+    def test_event_yaml_list_unknown_warns(self, tmp_path):
+        """Test unknown event names inside a YAML list still produce warnings."""
+        f = tmp_path / "kardbrd.yml"
+        f.write_text("- name: test\n  event:\n    - card_moved\n    - fake_event\n  action: /ke\n")
+        result = validate_rules_file(f)
+        assert result.is_valid  # warnings don't invalidate
+        assert len(result.warnings) == 1
+        assert "fake_event" in result.warnings[0].message
+
+    def test_event_invalid_type_errors(self, tmp_path):
+        """Test non-string, non-list event type reports error."""
+        f = tmp_path / "kardbrd.yml"
+        f.write_text("- name: test\n  event: 123\n  action: /ke\n")
+        result = validate_rules_file(f)
         assert not result.is_valid
-        assert any("must be a string" in e.message for e in result.errors)
+        assert any("must be a string or list" in e.message for e in result.errors)
 
     def test_trailing_comma_in_events(self, tmp_path):
         """Test trailing comma in event list reports error."""
