@@ -1,0 +1,38 @@
+# kardbrd.yml — KABot workflow rules for kardbrd-agent repository
+#
+# All rules use require_label: Agent so KABot only acts on Agent-labeled
+# cards. Server cards (without Agent label) are left to MBPBot.
+# @mentions always work regardless of labels (built-in handler).
+---
+
+# Card lands in Ideas → deep exploration
+- name: Explore new ideas
+  event: card_created, card_moved
+  list: Ideas
+  model: opus
+  require_label: Agent
+  action: /ke
+
+# Card moves to Plans → create detailed implementation plan
+- name: Plan on move to Plans
+  event: card_moved
+  list: Plans
+  model: opus
+  require_label: Agent
+  action: /kp
+
+# Card moves to In progress → implement the plan
+- name: Implement on move to In progress
+  event: card_moved
+  list: In progress
+  model: sonnet
+  require_label: Agent
+  action: /ki
+
+# Card moves to Review → full code review
+- name: Review on move to Review
+  event: card_moved
+  list: Review
+  model: opus
+  require_label: Agent
+  action: /kr

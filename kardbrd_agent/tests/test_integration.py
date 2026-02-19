@@ -390,3 +390,124 @@ class TestDuplicateCommentPrevention:
             if "Posted via MCP" in str(call) or "Done" in str(call)
         ]
         assert len(fallback_calls) == 0, "Should not post fallback when API confirms post"
+
+
+class TestRequireLabelIntegration:
+    """Integration tests for require_label card label enrichment in _check_rules."""
+
+    @pytest.mark.asyncio
+    async def test_check_rules_fetches_card_labels(self, git_repo: Path):
+        """Test _check_rules fetches card labels from API when rules use require_label."""
+        from kardbrd_agent.rules import Rule, RuleEngine
+
+        state_manager = MagicMock()
+        rule_engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="agent only",
+                    events=["card_moved"],
+                    action="/ke",
+                    list="Ideas",
+                    require_label="Agent",
+                ),
+            ]
+        )
+        manager = ProxyManager(state_manager, cwd=git_repo, rule_engine=rule_engine)
+        manager.client = MagicMock()
+        manager.client.get_card.return_value = {
+            "labels": [{"name": "Agent"}, {"name": "Workflow"}],
+        }
+        manager.client.get_card_markdown.return_value = "# Card"
+        manager.client.toggle_reaction = MagicMock()
+        manager._has_recent_bot_comment = MagicMock(return_value=True)
+        manager.executor = MagicMock()
+        manager.executor.build_prompt.return_value = "prompt"
+        manager.executor.execute = AsyncMock(
+            return_value=ClaudeResult(success=True, result_text="Done")
+        )
+        manager.worktree_manager = MagicMock()
+        manager.worktree_manager.create_worktree.return_value = git_repo.parent / "card-test1"
+        (git_repo.parent / "card-test1").mkdir(exist_ok=True)
+
+        await manager._check_rules(
+            "card_moved",
+            {"card_id": "test1", "list_name": "Ideas"},
+        )
+
+        # Should have fetched card labels
+        manager.client.get_card.assert_called_once_with("test1")
+        # Rule should have matched and spawned Claude
+        manager.executor.execute.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_check_rules_skips_without_agent_label(self, git_repo: Path):
+        """Test _check_rules skips card when it lacks the required label."""
+        from kardbrd_agent.rules import Rule, RuleEngine
+
+        state_manager = MagicMock()
+        rule_engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="agent only",
+                    events=["card_moved"],
+                    action="/ke",
+                    list="Ideas",
+                    require_label="Agent",
+                ),
+            ]
+        )
+        manager = ProxyManager(state_manager, cwd=git_repo, rule_engine=rule_engine)
+        manager.client = MagicMock()
+        manager.client.get_card.return_value = {
+            "labels": [{"name": "Workflow"}],
+        }
+        manager.executor = MagicMock()
+        manager.executor.execute = AsyncMock()
+        manager.worktree_manager = MagicMock()
+
+        await manager._check_rules(
+            "card_moved",
+            {"card_id": "test1", "list_name": "Ideas"},
+        )
+
+        # Card fetched for label check
+        manager.client.get_card.assert_called_once_with("test1")
+        # Rule should NOT match — no "Agent" label
+        manager.executor.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_check_rules_no_api_call_without_require_label(self, git_repo: Path):
+        """Test _check_rules doesn't fetch labels when no rules use require_label."""
+        from kardbrd_agent.rules import Rule, RuleEngine
+
+        state_manager = MagicMock()
+        rule_engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="all cards",
+                    events=["card_moved"],
+                    action="/ke",
+                    list="Ideas",
+                ),
+            ]
+        )
+        manager = ProxyManager(state_manager, cwd=git_repo, rule_engine=rule_engine)
+        manager.client = MagicMock()
+        manager.client.get_card_markdown.return_value = "# Card"
+        manager._has_recent_bot_comment = MagicMock(return_value=True)
+        manager.executor = MagicMock()
+        manager.executor.build_prompt.return_value = "prompt"
+        manager.executor.execute = AsyncMock(
+            return_value=ClaudeResult(success=True, result_text="Done")
+        )
+        manager.worktree_manager = MagicMock()
+        manager.worktree_manager.create_worktree.return_value = git_repo.parent / "card-test1"
+        (git_repo.parent / "card-test1").mkdir(exist_ok=True)
+
+        await manager._check_rules(
+            "card_moved",
+            {"card_id": "test1", "list_name": "Ideas"},
+        )
+
+        # Should NOT call get_card (no require_label rules)
+        manager.client.get_card.assert_not_called()

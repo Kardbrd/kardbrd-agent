@@ -913,3 +913,200 @@ class TestReloadableRuleEngine:
 
         # Should pick it up on next access
         assert len(engine.rules) == 1
+
+
+class TestRequireLabel:
+    """Tests for the require_label condition."""
+
+    def test_require_label_matches_when_present(self):
+        """Test rule matches when card has the required label."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="agent only",
+                    events=["card_moved"],
+                    action="/ke",
+                    require_label="Agent",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Ideas", "card_labels": ["Agent", "Workflow"]},
+        )
+        assert len(matches) == 1
+
+    def test_require_label_no_match_when_missing(self):
+        """Test rule doesn't match when card lacks the required label."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="agent only",
+                    events=["card_moved"],
+                    action="/ke",
+                    require_label="Agent",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Ideas", "card_labels": ["Workflow"]},
+        )
+        assert len(matches) == 0
+
+    def test_require_label_no_match_when_card_labels_empty(self):
+        """Test rule doesn't match when card has no labels."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="agent only",
+                    events=["card_moved"],
+                    action="/ke",
+                    require_label="Agent",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Ideas", "card_labels": []},
+        )
+        assert len(matches) == 0
+
+    def test_require_label_no_match_when_card_labels_absent(self):
+        """Test rule doesn't match when card_labels key is not in message."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="agent only",
+                    events=["card_moved"],
+                    action="/ke",
+                    require_label="Agent",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Ideas"},
+        )
+        assert len(matches) == 0
+
+    def test_require_label_case_insensitive(self):
+        """Test require_label matching is case-insensitive."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="agent only",
+                    events=["card_moved"],
+                    action="/ke",
+                    require_label="agent",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "card_labels": ["Agent"]},
+        )
+        assert len(matches) == 1
+
+    def test_require_label_combined_with_list(self):
+        """Test require_label works together with list condition."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="agent ideas",
+                    events=["card_moved"],
+                    action="/ke",
+                    list="Ideas",
+                    require_label="Agent",
+                ),
+            ]
+        )
+        # Matches: right list + right label
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Ideas", "card_labels": ["Agent"]},
+        )
+        assert len(matches) == 1
+
+        # No match: right list, wrong label
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Ideas", "card_labels": ["Workflow"]},
+        )
+        assert len(matches) == 0
+
+        # No match: wrong list, right label
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Done", "card_labels": ["Agent"]},
+        )
+        assert len(matches) == 0
+
+    def test_rule_without_require_label_ignores_card_labels(self):
+        """Test rules without require_label match regardless of card labels."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="all cards",
+                    events=["card_moved"],
+                    action="/ke",
+                    list="Ideas",
+                ),
+            ]
+        )
+        # Matches without card_labels
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Ideas"},
+        )
+        assert len(matches) == 1
+
+        # Also matches with card_labels
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Ideas", "card_labels": ["Agent"]},
+        )
+        assert len(matches) == 1
+
+    def test_parse_rules_with_require_label(self):
+        """Test require_label is parsed from YAML rule data."""
+        rules = parse_rules(
+            [
+                {
+                    "name": "agent only",
+                    "event": "card_moved",
+                    "action": "/ke",
+                    "require_label": "Agent",
+                }
+            ]
+        )
+        assert len(rules) == 1
+        assert rules[0].require_label == "Agent"
+
+    def test_parse_rules_without_require_label(self):
+        """Test require_label defaults to None when not specified."""
+        rules = parse_rules(
+            [
+                {
+                    "name": "all cards",
+                    "event": "card_moved",
+                    "action": "/ke",
+                }
+            ]
+        )
+        assert len(rules) == 1
+        assert rules[0].require_label is None
+
+    def test_load_rules_with_require_label(self, tmp_path):
+        """Test loading kardbrd.yml with require_label rules."""
+        rules_file = tmp_path / "kardbrd.yml"
+        rules_file.write_text(
+            "- name: agent only\n"
+            "  event: card_moved\n"
+            "  list: Ideas\n"
+            "  require_label: Agent\n"
+            "  action: /ke\n"
+        )
+        engine = load_rules(rules_file)
+        assert len(engine.rules) == 1
+        assert engine.rules[0].require_label == "Agent"

@@ -17,6 +17,7 @@
 #     title: "📦"                             # condition: exact card title match
 #     label: "Bug"                            # condition: label name (case-insensitive)
 #     content_contains: "@claude"             # condition: comment text (case-insensitive)
+#     require_label: "Agent"                  # condition: card must have this label
 #     model: haiku                            # optional: haiku | sonnet | opus
 #     action: /ke                             # required: skill or prompt
 #
@@ -73,6 +74,8 @@
 #                      Case-insensitive.
 #   content_contains:  Matches substring in comment text
 #                      (comment_created). Case-insensitive.
+#   require_label:     Card must have this label to match.
+#                      Fetched from API at match time. Case-insensitive.
 #
 # ── Notes ───────────────────────────────────────────────────────────
 #
