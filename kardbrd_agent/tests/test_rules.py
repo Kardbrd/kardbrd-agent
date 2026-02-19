@@ -501,6 +501,304 @@ class TestExcludeLabel:
         assert rule.exclude_label is None
 
 
+class TestAssignee:
+    """Tests for assignee condition."""
+
+    def test_assignee_matches_card_assignee(self):
+        """Test rule with assignee matches when card assignee is in list."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="alice",
+                    events=["card_moved"],
+                    action="/ke",
+                    assignee=["user-alice"],
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "card_assignee_id": "user-alice"},
+        )
+        assert len(matches) == 1
+
+    def test_assignee_no_match_different_user(self):
+        """Test rule with assignee doesn't match different user."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="alice",
+                    events=["card_moved"],
+                    action="/ke",
+                    assignee=["user-alice"],
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "card_assignee_id": "user-bob"},
+        )
+        assert len(matches) == 0
+
+    def test_assignee_no_match_unassigned_card(self):
+        """Test rule with assignee doesn't match unassigned cards."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="alice",
+                    events=["card_moved"],
+                    action="/ke",
+                    assignee=["user-alice"],
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "card_assignee_id": ""},
+        )
+        assert len(matches) == 0
+
+    def test_assignee_no_match_missing_assignee_id(self):
+        """Test rule with assignee doesn't match when card_assignee_id missing."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="alice",
+                    events=["card_moved"],
+                    action="/ke",
+                    assignee=["user-alice"],
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc"},
+        )
+        assert len(matches) == 0
+
+    def test_assignee_multiple_ids_matches(self):
+        """Test rule with multiple assignee IDs matches any of them."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="team",
+                    events=["card_moved"],
+                    action="/ke",
+                    assignee=["user-alice", "user-bob"],
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "card_assignee_id": "user-bob"},
+        )
+        assert len(matches) == 1
+
+    def test_assignee_multiple_ids_no_match(self):
+        """Test rule with multiple assignee IDs doesn't match non-listed user."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="team",
+                    events=["card_moved"],
+                    action="/ke",
+                    assignee=["user-alice", "user-bob"],
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "card_assignee_id": "user-charlie"},
+        )
+        assert len(matches) == 0
+
+    def test_assignee_is_case_sensitive(self):
+        """Test assignee matching is case-sensitive (IDs are exact)."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="alice",
+                    events=["card_moved"],
+                    action="/ke",
+                    assignee=["User-Alice"],
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "card_assignee_id": "user-alice"},
+        )
+        assert len(matches) == 0
+
+    def test_assignee_combined_with_list(self):
+        """Test assignee works alongside list condition."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="alice ideas",
+                    events=["card_moved"],
+                    action="/ke",
+                    list="Ideas",
+                    assignee=["user-alice"],
+                ),
+            ]
+        )
+        # Matches: right list + right assignee
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Ideas", "card_assignee_id": "user-alice"},
+        )
+        assert len(matches) == 1
+
+        # No match: right list + wrong assignee
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Ideas", "card_assignee_id": "user-bob"},
+        )
+        assert len(matches) == 0
+
+        # No match: wrong list + right assignee
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Done", "card_assignee_id": "user-alice"},
+        )
+        assert len(matches) == 0
+
+    def test_assignee_combined_with_exclude_label(self):
+        """Test assignee works alongside exclude_label condition."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="alice no agent",
+                    events=["card_moved"],
+                    action="/ke",
+                    assignee=["user-alice"],
+                    exclude_label="Agent",
+                ),
+            ]
+        )
+        # Matches: right assignee, no excluded label
+        matches = engine.match(
+            "card_moved",
+            {
+                "card_id": "abc",
+                "card_assignee_id": "user-alice",
+                "card_labels": ["Bug"],
+            },
+        )
+        assert len(matches) == 1
+
+        # No match: right assignee, but has excluded label
+        matches = engine.match(
+            "card_moved",
+            {
+                "card_id": "abc",
+                "card_assignee_id": "user-alice",
+                "card_labels": ["Agent"],
+            },
+        )
+        assert len(matches) == 0
+
+    def test_assignee_default_none(self):
+        """Test assignee defaults to None."""
+        rule = Rule(name="test", events=["card_moved"], action="/ke")
+        assert rule.assignee is None
+
+    def test_no_assignee_matches_all_cards(self):
+        """Test rule without assignee matches any card regardless of assignment."""
+        engine = RuleEngine(
+            rules=[
+                Rule(name="all", events=["card_moved"], action="/ke"),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "card_assignee_id": "user-alice"},
+        )
+        assert len(matches) == 1
+
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc"},
+        )
+        assert len(matches) == 1
+
+
+class TestParseRulesAssignee:
+    """Tests for parsing the assignee field."""
+
+    def test_parse_assignee_yaml_list(self):
+        """Test parsing assignee as a YAML list."""
+        data = [
+            {
+                "name": "test",
+                "event": "card_moved",
+                "action": "/ke",
+                "assignee": ["user-alice", "user-bob"],
+            }
+        ]
+        rules = parse_rules(data)
+        assert rules[0].assignee == ["user-alice", "user-bob"]
+
+    def test_parse_assignee_single_item_list(self):
+        """Test parsing assignee as a single-item YAML list."""
+        data = [
+            {
+                "name": "test",
+                "event": "card_moved",
+                "action": "/ke",
+                "assignee": ["user-alice"],
+            }
+        ]
+        rules = parse_rules(data)
+        assert rules[0].assignee == ["user-alice"]
+
+    def test_parse_assignee_string_raises(self):
+        """Test parsing assignee as a string raises ValueError."""
+        data = [
+            {
+                "name": "test",
+                "event": "card_moved",
+                "action": "/ke",
+                "assignee": "user-alice, user-bob",
+            }
+        ]
+        with pytest.raises(ValueError, match="must be a YAML list"):
+            parse_rules(data)
+
+    def test_parse_assignee_none(self):
+        """Test parsing rule without assignee sets None."""
+        data = [{"name": "test", "event": "card_moved", "action": "/ke"}]
+        rules = parse_rules(data)
+        assert rules[0].assignee is None
+
+    def test_parse_assignee_strips_whitespace(self):
+        """Test parsing assignee strips whitespace from items."""
+        data = [
+            {
+                "name": "test",
+                "event": "card_moved",
+                "action": "/ke",
+                "assignee": ["  user-alice  ", "user-bob "],
+            }
+        ]
+        rules = parse_rules(data)
+        assert rules[0].assignee == ["user-alice", "user-bob"]
+
+    def test_parse_assignee_filters_empty_strings(self):
+        """Test parsing assignee filters out empty strings."""
+        data = [
+            {
+                "name": "test",
+                "event": "card_moved",
+                "action": "/ke",
+                "assignee": ["user-alice", "", "  "],
+            }
+        ]
+        rules = parse_rules(data)
+        assert rules[0].assignee == ["user-alice"]
+
+
 class TestParseRules:
     """Tests for parse_rules function."""
 

@@ -1,5 +1,7 @@
 """Rule engine for kardbrd.yml automation workflows."""
 
+from __future__ import annotations
+
 import logging
 import time
 from dataclasses import dataclass, field
@@ -59,7 +61,18 @@ KNOWN_EVENTS = frozenset(
 
 # All known fields in a rule entry
 KNOWN_FIELDS = frozenset(
-    {"name", "event", "action", "model", "list", "title", "label", "content_contains"}
+    {
+        "name",
+        "event",
+        "action",
+        "model",
+        "list",
+        "title",
+        "label",
+        "content_contains",
+        "exclude_label",
+        "assignee",
+    }
 )
 
 
@@ -122,6 +135,7 @@ class Rule:
     label: str | None = None
     content_contains: str | None = None
     exclude_label: str | None = None
+    assignee: list[str] | None = None
 
     @property
     def model_id(self) -> str | None:
@@ -187,6 +201,11 @@ class RuleEngine:
                 if lbl.lower() == rule.exclude_label.lower():
                     return False
 
+        if rule.assignee is not None:
+            card_assignee_id = message.get("card_assignee_id", "")
+            if not card_assignee_id or card_assignee_id not in rule.assignee:
+                return False
+
         return True
 
     def _event_matches(self, rule: Rule, event_type: str) -> bool:
@@ -239,6 +258,19 @@ def parse_rules(data: list[dict]) -> list[Rule]:
                 f"Rule '{name}': unknown model '{model}', expected one of {list(MODEL_MAP.keys())}"
             )
 
+        # Parse assignee — must be a YAML list of user ID strings
+        raw_assignee = entry.get("assignee")
+        if raw_assignee is not None:
+            if isinstance(raw_assignee, list):
+                assignee = [str(a).strip() for a in raw_assignee if str(a).strip()]
+            else:
+                raise ValueError(
+                    f"Rule '{name}': 'assignee' must be a YAML list, "
+                    f"got {type(raw_assignee).__name__}"
+                )
+        else:
+            assignee = None
+
         rule = Rule(
             name=name,
             events=events,
@@ -249,6 +281,7 @@ def parse_rules(data: list[dict]) -> list[Rule]:
             label=entry.get("label"),
             content_contains=entry.get("content_contains"),
             exclude_label=entry.get("exclude_label"),
+            assignee=assignee,
         )
         rules.append(rule)
 
@@ -446,6 +479,40 @@ def validate_rules_file(path: Path) -> ValidationResult:
                     f"'action' must be a string, got {type(action).__name__}",
                 )
             )
+
+        # Validate assignee is a YAML list of strings
+        raw_assignee = entry.get("assignee")
+        if raw_assignee is not None:
+            if not isinstance(raw_assignee, list):
+                result.issues.append(
+                    ValidationIssue(
+                        Severity.ERROR,
+                        i,
+                        name,
+                        f"'assignee' must be a YAML list, got {type(raw_assignee).__name__}",
+                    )
+                )
+            else:
+                for idx, item in enumerate(raw_assignee):
+                    if not isinstance(item, str):
+                        result.issues.append(
+                            ValidationIssue(
+                                Severity.ERROR,
+                                i,
+                                name,
+                                f"'assignee' list item {idx} must be a string, "
+                                f"got {type(item).__name__}",
+                            )
+                        )
+                if not raw_assignee:
+                    result.issues.append(
+                        ValidationIssue(
+                            Severity.WARNING,
+                            i,
+                            name,
+                            "'assignee' list is empty — rule will never match",
+                        )
+                    )
 
     return result
 

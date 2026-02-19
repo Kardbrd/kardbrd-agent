@@ -212,6 +212,78 @@ class TestValidateRulesFile:
         assert len(result.warnings) == 1  # unknown event
         assert len(result.errors) == 1  # missing name
 
+    def test_assignee_yaml_list_accepted(self, tmp_path):
+        """Test assignee as YAML list is accepted without errors."""
+        f = tmp_path / "kardbrd.yml"
+        f.write_text(
+            "- name: test\n"
+            "  event: card_moved\n"
+            "  action: /ke\n"
+            "  assignee:\n"
+            "    - 'user-alice'\n"
+            "    - 'user-bob'\n"
+        )
+        result = validate_rules_file(f)
+        assert result.is_valid
+        assert result.issues == []
+
+    def test_assignee_string_errors(self, tmp_path):
+        """Test assignee as a string produces error."""
+        f = tmp_path / "kardbrd.yml"
+        f.write_text(
+            "- name: test\n  event: card_moved\n  action: /ke\n  assignee: 'user-alice, user-bob'\n"
+        )
+        result = validate_rules_file(f)
+        assert not result.is_valid
+        assert any("must be a YAML list" in e.message for e in result.errors)
+
+    def test_assignee_non_string_items_error(self, tmp_path):
+        """Test assignee list with non-string items produces error."""
+        f = tmp_path / "kardbrd.yml"
+        f.write_text(
+            "- name: test\n  event: card_moved\n  action: /ke\n  assignee:\n    - 123\n    - true\n"
+        )
+        result = validate_rules_file(f)
+        assert not result.is_valid
+        assert len(result.errors) >= 2
+        assert any("item 0 must be a string" in e.message for e in result.errors)
+        assert any("item 1 must be a string" in e.message for e in result.errors)
+
+    def test_assignee_empty_list_warns(self, tmp_path):
+        """Test assignee as empty list produces warning."""
+        f = tmp_path / "kardbrd.yml"
+        f.write_text("- name: test\n  event: card_moved\n  action: /ke\n  assignee: []\n")
+        result = validate_rules_file(f)
+        assert result.is_valid  # warnings don't invalidate
+        assert len(result.warnings) == 1
+        assert "empty" in result.warnings[0].message
+
+    def test_assignee_integer_type_errors(self, tmp_path):
+        """Test assignee as integer produces error."""
+        f = tmp_path / "kardbrd.yml"
+        f.write_text("- name: test\n  event: card_moved\n  action: /ke\n  assignee: 12345\n")
+        result = validate_rules_file(f)
+        assert not result.is_valid
+        assert any("must be a YAML list" in e.message for e in result.errors)
+
+    def test_assignee_not_unknown_field(self, tmp_path):
+        """Test assignee is recognized as a known field (no warning)."""
+        f = tmp_path / "kardbrd.yml"
+        f.write_text(
+            "- name: test\n  event: card_moved\n  action: /ke\n  assignee:\n    - 'user-alice'\n"
+        )
+        result = validate_rules_file(f)
+        assert result.is_valid
+        assert not any("Unknown field" in w.message for w in result.warnings)
+
+    def test_exclude_label_not_unknown_field(self, tmp_path):
+        """Test exclude_label is recognized as a known field (no warning)."""
+        f = tmp_path / "kardbrd.yml"
+        f.write_text("- name: test\n  event: card_moved\n  action: /ke\n  exclude_label: Agent\n")
+        result = validate_rules_file(f)
+        assert result.is_valid
+        assert not any("Unknown field" in w.message for w in result.warnings)
+
     def test_validates_example_file(self):
         """Test the kardbrd.yml.example file passes validation."""
         from pathlib import Path
