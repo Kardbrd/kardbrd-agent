@@ -252,6 +252,28 @@ class TestValidateRulesFile:
         assert result.is_valid, f"Example file has errors: {result.errors}"
         assert len(result.warnings) == 0, f"Example file has warnings: {result.warnings}"
 
+    def test_validates_own_kardbrd_yml(self):
+        """Test the repo's own kardbrd.yml passes validation."""
+        from pathlib import Path
+
+        own = Path(__file__).parent.parent.parent / "kardbrd.yml"
+        if not own.exists():
+            pytest.skip("kardbrd.yml not found")
+        result = validate_rules_file(own)
+        assert result.is_valid, f"kardbrd.yml has errors: {result.errors}"
+        assert len(result.warnings) == 0, f"kardbrd.yml has warnings: {result.warnings}"
+
+    def test_validates_mbpbot_kardbrd_yml(self):
+        """Test MBPBot's kardbrd.yml fixture passes validation."""
+        from pathlib import Path
+
+        fixture = Path(__file__).parent / "fixtures" / "mbpbot_kardbrd.yml"
+        if not fixture.exists():
+            pytest.skip("mbpbot_kardbrd.yml fixture not found")
+        result = validate_rules_file(fixture)
+        assert result.is_valid, f"MBPBot kardbrd.yml has errors: {result.errors}"
+        assert len(result.warnings) == 0, f"MBPBot kardbrd.yml has warnings: {result.warnings}"
+
 
 class TestValidationResult:
     """Tests for the ValidationResult dataclass."""

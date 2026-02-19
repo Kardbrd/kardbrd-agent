@@ -852,6 +852,30 @@ class TestLoadRules:
         assert len(engine.rules) == 1
         assert engine.rules[0].events == ["card_created", "card_moved"]
 
+    def test_load_own_kardbrd_yml(self):
+        """Test the repo's own kardbrd.yml loads without errors."""
+        from pathlib import Path
+
+        own = Path(__file__).parent.parent.parent / "kardbrd.yml"
+        if not own.exists():
+            pytest.skip("kardbrd.yml not found")
+        engine = load_rules(own)
+        assert len(engine.rules) > 0, "kardbrd.yml should contain at least one rule"
+
+    def test_load_mbpbot_kardbrd_yml(self):
+        """Test MBPBot's kardbrd.yml fixture loads without errors."""
+        from pathlib import Path
+
+        fixture = Path(__file__).parent / "fixtures" / "mbpbot_kardbrd.yml"
+        if not fixture.exists():
+            pytest.skip("mbpbot_kardbrd.yml fixture not found")
+        engine = load_rules(fixture)
+        assert len(engine.rules) > 0, "MBPBot kardbrd.yml should contain at least one rule"
+        # Verify specific rules are loaded
+        rule_names = [r.name for r in engine.rules]
+        assert "Explore new cards in Ideas" in rule_names
+        assert "Box card plans deployment" in rule_names
+
     def test_load_reaction_rules_yaml(self, tmp_path):
         """Test loading reaction-based rules from kardbrd.yml."""
         rules_file = tmp_path / "kardbrd.yml"
