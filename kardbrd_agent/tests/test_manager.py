@@ -1069,3 +1069,28 @@ class TestRuleEngineIntegration:
 
         # Should not try to add reaction (comment_id is None)
         manager.client.toggle_reaction.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_check_rules_stop_rule_kills_session(self):
+        """Test stop rule via _check_rules kills active session."""
+        state_manager = MagicMock()
+        stop_rule = Rule(name="stop", events=["reaction_added"], action="__stop__", emoji="🛑")
+        engine = RuleEngine(rules=[stop_rule])
+        manager = ProxyManager(state_manager, rule_engine=engine)
+        manager.client = MagicMock()
+
+        mock_process = MagicMock()
+        manager._active_sessions["abc12345"] = ActiveSession(
+            card_id="abc12345",
+            worktree_path=Path("/tmp/wt"),
+            comment_id="comm1",
+            process=mock_process,
+        )
+
+        await manager._check_rules(
+            "reaction_added",
+            {"emoji": "🛑", "card_id": "abc12345", "comment_id": "comm1"},
+        )
+
+        mock_process.kill.assert_called_once()
+        assert "abc12345" not in manager._active_sessions

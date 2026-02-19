@@ -527,6 +527,10 @@ DO NOT do any new work - just publish what you already did."""
         """
         Check kardbrd.yml rules against an incoming event and process matches.
 
+        If any rules use ``require_label``, fetches the card's current labels
+        from the API and injects them into the message as ``card_labels`` so
+        the rule engine can filter on them.
+
         Args:
             event_type: The WebSocket event type
             message: The full event message
@@ -534,18 +538,17 @@ DO NOT do any new work - just publish what you already did."""
         if not self.rule_engine.rules:
             return
 
-        # Populate card_labels for rules that use exclude_label
-        needs_labels = any(r.exclude_label for r in self.rule_engine.rules)
-        if needs_labels and "card_labels" not in message:
-            card_id = message.get("card_id")
-            if card_id:
-                try:
-                    card = self.client.get_card(card_id)
-                    label_names = [lbl.get("name", "") for lbl in card.get("labels", [])]
-                    message["card_labels"] = label_names
-                except Exception:
-                    logger.warning(f"Failed to fetch labels for card {card_id}")
-                    message["card_labels"] = []
+        # Enrich message with card labels when rules need them (exclude_label or require_label)
+        needs_labels = any(r.exclude_label or r.require_label for r in self.rule_engine.rules)
+        card_id = message.get("card_id")
+        if needs_labels and card_id and "card_labels" not in message:
+            try:
+                card = self.client.get_card(card_id)
+                labels = card.get("labels", [])
+                message["card_labels"] = [lbl.get("name", "") for lbl in labels]
+            except Exception as e:
+                logger.warning(f"Failed to fetch card labels for {card_id}: {e}")
+                message["card_labels"] = []
 
         matched_rules = self.rule_engine.match(event_type, message)
         if not matched_rules:

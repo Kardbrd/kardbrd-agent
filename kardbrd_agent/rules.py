@@ -74,7 +74,9 @@ KNOWN_FIELDS = frozenset(
         "label",
         "content_contains",
         "exclude_label",
+        "require_label",
         "emoji",
+        "require_user",
     }
 )
 
@@ -138,7 +140,9 @@ class Rule:
     label: str | None = None
     content_contains: str | None = None
     exclude_label: str | None = None
+    require_label: str | None = None
     emoji: str | None = None
+    require_user: str | None = None
 
     @property
     def is_stop(self) -> bool:
@@ -209,9 +213,19 @@ class RuleEngine:
                 if lbl.lower() == rule.exclude_label.lower():
                     return False
 
+        if rule.require_label is not None:
+            card_labels = message.get("card_labels", [])
+            if rule.require_label.lower() not in [lbl.lower() for lbl in card_labels]:
+                return False
+
         if rule.emoji is not None:
             msg_emoji = message.get("emoji", "")
             if msg_emoji != rule.emoji:
+                return False
+
+        if rule.require_user is not None:
+            user_id = message.get("user_id", "")
+            if user_id != rule.require_user:
                 return False
 
         return True
@@ -276,7 +290,9 @@ def parse_rules(data: list[dict]) -> list[Rule]:
             label=entry.get("label"),
             content_contains=entry.get("content_contains"),
             exclude_label=entry.get("exclude_label"),
+            require_label=entry.get("require_label"),
             emoji=entry.get("emoji"),
+            require_user=entry.get("require_user"),
         )
         rules.append(rule)
 

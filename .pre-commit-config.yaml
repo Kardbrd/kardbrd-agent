@@ -35,5 +35,6 @@ repos:
         name: validate kardbrd.yml
         entry: uv run kardbrd-agent validate
         language: system
-        files: (^|/)kardbrd\.yml(\.example)?$
+        files: (^|/)kardbrd\.yml$
+        exclude: \.example$
         pass_filenames: true

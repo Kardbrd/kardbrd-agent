@@ -847,9 +847,9 @@ class TestKnownFields:
         """Test exclude_label is in KNOWN_FIELDS."""
         assert "exclude_label" in KNOWN_FIELDS
 
-    def test_all_rule_fields_are_known(self):
-        """Test all Rule dataclass condition fields are in KNOWN_FIELDS."""
-        expected_fields = {
+    def test_known_fields_includes_all_conditions(self):
+        """Test KNOWN_FIELDS includes every condition field."""
+        expected = {
             "name",
             "event",
             "action",
@@ -859,9 +859,15 @@ class TestKnownFields:
             "label",
             "content_contains",
             "exclude_label",
+            "require_label",
             "emoji",
+            "require_user",
         }
-        assert expected_fields == KNOWN_FIELDS
+        assert expected == KNOWN_FIELDS
+
+    def test_known_fields_is_frozenset(self):
+        """Test KNOWN_FIELDS is immutable."""
+        assert isinstance(KNOWN_FIELDS, frozenset)
 
 
 class TestKnownEvents:
@@ -1284,3 +1290,516 @@ class TestReloadableRuleEngine:
 
         # Should pick it up on next access
         assert len(engine.rules) == 1
+
+
+class TestRequireLabel:
+    """Tests for the require_label condition."""
+
+    def test_require_label_matches_when_present(self):
+        """Test rule matches when card has the required label."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="agent only",
+                    events=["card_moved"],
+                    action="/ke",
+                    require_label="Agent",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Ideas", "card_labels": ["Agent", "Workflow"]},
+        )
+        assert len(matches) == 1
+
+    def test_require_label_no_match_when_missing(self):
+        """Test rule doesn't match when card lacks the required label."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="agent only",
+                    events=["card_moved"],
+                    action="/ke",
+                    require_label="Agent",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Ideas", "card_labels": ["Workflow"]},
+        )
+        assert len(matches) == 0
+
+    def test_require_label_no_match_when_card_labels_empty(self):
+        """Test rule doesn't match when card has no labels."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="agent only",
+                    events=["card_moved"],
+                    action="/ke",
+                    require_label="Agent",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Ideas", "card_labels": []},
+        )
+        assert len(matches) == 0
+
+    def test_require_label_no_match_when_card_labels_absent(self):
+        """Test rule doesn't match when card_labels key is not in message."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="agent only",
+                    events=["card_moved"],
+                    action="/ke",
+                    require_label="Agent",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Ideas"},
+        )
+        assert len(matches) == 0
+
+    def test_require_label_case_insensitive(self):
+        """Test require_label matching is case-insensitive."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="agent only",
+                    events=["card_moved"],
+                    action="/ke",
+                    require_label="agent",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "card_labels": ["Agent"]},
+        )
+        assert len(matches) == 1
+
+    def test_require_label_combined_with_list(self):
+        """Test require_label works together with list condition."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="agent ideas",
+                    events=["card_moved"],
+                    action="/ke",
+                    list="Ideas",
+                    require_label="Agent",
+                ),
+            ]
+        )
+        # Matches: right list + right label
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Ideas", "card_labels": ["Agent"]},
+        )
+        assert len(matches) == 1
+
+        # No match: right list, wrong label
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Ideas", "card_labels": ["Workflow"]},
+        )
+        assert len(matches) == 0
+
+        # No match: wrong list, right label
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Done", "card_labels": ["Agent"]},
+        )
+        assert len(matches) == 0
+
+    def test_rule_without_require_label_ignores_card_labels(self):
+        """Test rules without require_label match regardless of card labels."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="all cards",
+                    events=["card_moved"],
+                    action="/ke",
+                    list="Ideas",
+                ),
+            ]
+        )
+        # Matches without card_labels
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Ideas"},
+        )
+        assert len(matches) == 1
+
+        # Also matches with card_labels
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Ideas", "card_labels": ["Agent"]},
+        )
+        assert len(matches) == 1
+
+    def test_parse_rules_with_require_label(self):
+        """Test require_label is parsed from YAML rule data."""
+        rules = parse_rules(
+            [
+                {
+                    "name": "agent only",
+                    "event": "card_moved",
+                    "action": "/ke",
+                    "require_label": "Agent",
+                }
+            ]
+        )
+        assert len(rules) == 1
+        assert rules[0].require_label == "Agent"
+
+    def test_parse_rules_without_require_label(self):
+        """Test require_label defaults to None when not specified."""
+        rules = parse_rules(
+            [
+                {
+                    "name": "all cards",
+                    "event": "card_moved",
+                    "action": "/ke",
+                }
+            ]
+        )
+        assert len(rules) == 1
+        assert rules[0].require_label is None
+
+    def test_load_rules_with_require_label(self, tmp_path):
+        """Test loading kardbrd.yml with require_label rules."""
+        rules_file = tmp_path / "kardbrd.yml"
+        rules_file.write_text(
+            "- name: agent only\n"
+            "  event: card_moved\n"
+            "  list: Ideas\n"
+            "  require_label: Agent\n"
+            "  action: /ke\n"
+        )
+        engine = load_rules(rules_file)
+        assert len(engine.rules) == 1
+        assert engine.rules[0].require_label == "Agent"
+
+
+class TestEmoji:
+    """Tests for the emoji condition."""
+
+    def test_emoji_field_default_none(self):
+        """Test emoji defaults to None."""
+        rule = Rule(name="t", events=["reaction_added"], action="a")
+        assert rule.emoji is None
+
+    def test_emoji_field_set(self):
+        """Test emoji can be set on a rule."""
+        rule = Rule(name="t", events=["reaction_added"], action="ship", emoji="📦")
+        assert rule.emoji == "📦"
+
+    def test_emoji_matches(self):
+        """Test rule matches when emoji in message matches rule emoji."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="ship",
+                    events=["reaction_added"],
+                    action="ship",
+                    emoji="📦",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "reaction_added",
+            {"card_id": "abc", "comment_id": "c1", "emoji": "📦", "user_id": "u1"},
+        )
+        assert len(matches) == 1
+
+    def test_emoji_no_match_different(self):
+        """Test rule doesn't match when emoji differs."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="ship",
+                    events=["reaction_added"],
+                    action="ship",
+                    emoji="📦",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "reaction_added",
+            {"card_id": "abc", "comment_id": "c1", "emoji": "🔄", "user_id": "u1"},
+        )
+        assert len(matches) == 0
+
+    def test_emoji_no_match_missing(self):
+        """Test rule doesn't match when emoji is missing from message."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="ship",
+                    events=["reaction_added"],
+                    action="ship",
+                    emoji="📦",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "reaction_added",
+            {"card_id": "abc", "comment_id": "c1"},
+        )
+        assert len(matches) == 0
+
+    def test_rule_without_emoji_matches_all_reactions(self):
+        """Test rule without emoji condition matches all reaction_added events."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="any reaction",
+                    events=["reaction_added"],
+                    action="log",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "reaction_added",
+            {"card_id": "abc", "emoji": "🎉"},
+        )
+        assert len(matches) == 1
+
+    def test_multiple_emoji_rules(self):
+        """Test different emoji rules match their respective reactions."""
+        engine = RuleEngine(
+            rules=[
+                Rule(name="ship", events=["reaction_added"], action="ship", emoji="📦"),
+                Rule(name="stop", events=["reaction_added"], action="__stop__", emoji="🛑"),
+                Rule(name="review", events=["reaction_added"], action="/kr", emoji="🔄"),
+            ]
+        )
+        matches = engine.match("reaction_added", {"card_id": "abc", "emoji": "🛑"})
+        assert len(matches) == 1
+        assert matches[0].name == "stop"
+
+    def test_parse_emoji_from_yaml(self):
+        """Test emoji is parsed from YAML rule data."""
+        rules = parse_rules(
+            [
+                {
+                    "name": "ship",
+                    "event": "reaction_added",
+                    "emoji": "📦",
+                    "action": "ship it",
+                }
+            ]
+        )
+        assert len(rules) == 1
+        assert rules[0].emoji == "📦"
+
+
+class TestIsStop:
+    """Tests for the is_stop property and STOP_ACTION."""
+
+    def test_is_stop_true(self):
+        """Test is_stop returns True for __stop__ action."""
+        rule = Rule(name="stop", events=["reaction_added"], action=STOP_ACTION, emoji="🛑")
+        assert rule.is_stop is True
+
+    def test_is_stop_false_for_normal_action(self):
+        """Test is_stop returns False for normal actions."""
+        rule = Rule(name="ship", events=["reaction_added"], action="/ki", emoji="📦")
+        assert rule.is_stop is False
+
+    def test_is_stop_false_for_similar_string(self):
+        """Test is_stop is exact match, not substring."""
+        rule = Rule(name="t", events=["reaction_added"], action="__stop__extra")
+        assert rule.is_stop is False
+
+    def test_stop_action_constant(self):
+        """Test STOP_ACTION constant value."""
+        assert STOP_ACTION == "__stop__"
+
+
+class TestRequireUser:
+    """Tests for the require_user condition."""
+
+    def test_require_user_matches(self):
+        """Test rule matches when user_id matches require_user."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="paul only",
+                    events=["reaction_added"],
+                    action="ship",
+                    emoji="✅",
+                    require_user="E21K9jmv",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "reaction_added",
+            {"card_id": "abc", "emoji": "✅", "user_id": "E21K9jmv"},
+        )
+        assert len(matches) == 1
+
+    def test_require_user_no_match_wrong_user(self):
+        """Test rule doesn't match when user_id differs."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="paul only",
+                    events=["reaction_added"],
+                    action="ship",
+                    emoji="✅",
+                    require_user="E21K9jmv",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "reaction_added",
+            {"card_id": "abc", "emoji": "✅", "user_id": "kw4DANjz"},
+        )
+        assert len(matches) == 0
+
+    def test_require_user_no_match_missing_user_id(self):
+        """Test rule doesn't match when user_id is absent from message."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="paul only",
+                    events=["reaction_added"],
+                    action="ship",
+                    require_user="E21K9jmv",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "reaction_added",
+            {"card_id": "abc", "emoji": "✅"},
+        )
+        assert len(matches) == 0
+
+    def test_require_user_exact_match(self):
+        """Test require_user is exact match (not case-insensitive like labels)."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="paul only",
+                    events=["reaction_added"],
+                    action="ship",
+                    require_user="E21K9jmv",
+                ),
+            ]
+        )
+        # User IDs are case-sensitive — lowercase should NOT match
+        matches = engine.match(
+            "reaction_added",
+            {"card_id": "abc", "user_id": "e21k9jmv"},
+        )
+        assert len(matches) == 0
+
+    def test_require_user_combined_with_emoji_and_label(self):
+        """Test require_user works with emoji and require_label conditions."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="ship approval",
+                    events=["reaction_added"],
+                    action="ship",
+                    emoji="✅",
+                    require_label="Agent",
+                    require_user="E21K9jmv",
+                ),
+            ]
+        )
+        # All conditions met
+        matches = engine.match(
+            "reaction_added",
+            {
+                "card_id": "abc",
+                "emoji": "✅",
+                "user_id": "E21K9jmv",
+                "card_labels": ["Agent", "Workflow"],
+            },
+        )
+        assert len(matches) == 1
+
+        # Wrong user
+        matches = engine.match(
+            "reaction_added",
+            {
+                "card_id": "abc",
+                "emoji": "✅",
+                "user_id": "kw4DANjz",
+                "card_labels": ["Agent"],
+            },
+        )
+        assert len(matches) == 0
+
+        # Wrong emoji
+        matches = engine.match(
+            "reaction_added",
+            {
+                "card_id": "abc",
+                "emoji": "📦",
+                "user_id": "E21K9jmv",
+                "card_labels": ["Agent"],
+            },
+        )
+        assert len(matches) == 0
+
+        # Missing required label
+        matches = engine.match(
+            "reaction_added",
+            {
+                "card_id": "abc",
+                "emoji": "✅",
+                "user_id": "E21K9jmv",
+                "card_labels": ["Workflow"],
+            },
+        )
+        assert len(matches) == 0
+
+    def test_rule_without_require_user_matches_any_user(self):
+        """Test rules without require_user match regardless of user_id."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="anyone",
+                    events=["reaction_added"],
+                    action="stop",
+                    emoji="🛑",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "reaction_added",
+            {"card_id": "abc", "emoji": "🛑", "user_id": "anyone123"},
+        )
+        assert len(matches) == 1
+
+    def test_parse_require_user_from_yaml(self):
+        """Test require_user is parsed from YAML rule data."""
+        rules = parse_rules(
+            [
+                {
+                    "name": "paul ship",
+                    "event": "reaction_added",
+                    "emoji": "✅",
+                    "require_user": "E21K9jmv",
+                    "action": "ship",
+                }
+            ]
+        )
+        assert len(rules) == 1
+        assert rules[0].require_user == "E21K9jmv"
+
+    def test_parse_without_require_user(self):
+        """Test require_user defaults to None when not specified."""
+        rules = parse_rules([{"name": "t", "event": "card_moved", "action": "/ke"}])
+        assert rules[0].require_user is None

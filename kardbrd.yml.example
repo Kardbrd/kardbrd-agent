@@ -18,8 +18,12 @@
 #     label: "Bug"                            # condition: label name (case-insensitive)
 #     content_contains: "@claude"             # condition: comment text (case-insensitive)
 #     exclude_label: "Agent"                  # condition: skip if card has this label
+#     require_label: "Agent"                  # condition: card must have this label
+#     emoji: "✅"                             # condition: reaction emoji (exact match)
+#     require_user: "abc123"                  # condition: user ID who triggered the event
 #     model: haiku                            # optional: haiku | sonnet | opus
 #     action: /ke                             # required: skill or prompt
+#     action: __stop__                        # reserved: kills active session (no Claude spawn)
 #
 # ── Available Events (24 total) ─────────────────────────────────────
 #
@@ -76,11 +80,24 @@
 #                      (comment_created). Case-insensitive.
 #   exclude_label:     Rejects the match if the card has this label.
 #                      Case-insensitive. Fetches card labels from API.
+#   require_label:     Card must have this label to match.
+#                      Fetched from API at match time. Case-insensitive.
+#   emoji:             Matches the emoji in a reaction_added event.
+#                      Exact string match (server normalizes Unicode).
+#   require_user:      Matches the user_id of who triggered the event.
+#                      Exact string match. Use to restrict who can
+#                      trigger sensitive actions (e.g., deploy).
+#
+# ── Reserved Actions ──────────────────────────────────────────────
+#
+#   __stop__           Kills the active Claude session for the card.
+#                      Executes deterministically (no Claude spawn).
+#                      Typically used with emoji: "🛑" reactions.
 #
 # ── Notes ───────────────────────────────────────────────────────────
 #
-# - Rules are checked AFTER built-in handlers (@mention, retry, stop,
-#   done-cleanup). Both can fire on the same event.
+# - Rules are checked AFTER built-in handlers (@mention, done-cleanup).
+#   Reactions (🛑 stop, 🔄 retry, etc.) are handled entirely via rules.
 # - All matching rules fire — if two rules match, both spawn separate
 #   Claude sessions.
 # - Per-card deduplication prevents two sessions for the same card.
@@ -150,3 +167,27 @@
   action: |
     Review the new checklist on this card. Check if the items
     are actionable and well-defined. Post suggestions as a comment.
+
+# ── Reaction-based rules ──────────────────────────────────────────
+
+# Stop active agent session (deterministic, no Claude spawn)
+- name: Stop agent
+  event: reaction_added
+  emoji: "🛑"
+  action: __stop__
+
+# Ship card when operator approves the review with ✅
+- name: Ship on approval
+  event: reaction_added
+  emoji: "✅"
+  require_user: "abc123"
+  model: sonnet
+  action: |
+    The operator approved the review. Merge the PR to main.
+
+# Re-run review via 🔄 reaction
+- name: Re-run review
+  event: reaction_added
+  emoji: "🔄"
+  model: opus
+  action: /kr
