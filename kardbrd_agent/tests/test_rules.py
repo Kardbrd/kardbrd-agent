@@ -38,12 +38,14 @@ class TestRule:
             title="📦",
             label="exploration",
             content_contains="@claude",
+            exclude_label="Agent",
         )
         assert rule.model == "haiku"
         assert rule.list == "In Progress"
         assert rule.title == "📦"
         assert rule.label == "exploration"
         assert rule.content_contains == "@claude"
+        assert rule.exclude_label == "Agent"
 
     def test_model_id_resolves_short_names(self):
         """Test model_id resolves haiku/sonnet/opus to full IDs."""
@@ -348,6 +350,157 @@ class TestRuleEngine:
         assert engine.match("card_moved", {"card_id": "abc"}) == []
 
 
+class TestExcludeLabel:
+    """Tests for exclude_label condition."""
+
+    def test_exclude_label_skips_card_with_label(self):
+        """Test rule with exclude_label skips cards that have the excluded label."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="auto",
+                    events=["card_moved"],
+                    action="/ke",
+                    list="Ideas",
+                    exclude_label="Agent",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {
+                "card_id": "abc",
+                "list_name": "Ideas",
+                "card_labels": ["Agent", "Bug"],
+            },
+        )
+        assert len(matches) == 0
+
+    def test_exclude_label_matches_card_without_label(self):
+        """Test rule with exclude_label matches cards that don't have the excluded label."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="auto",
+                    events=["card_moved"],
+                    action="/ke",
+                    list="Ideas",
+                    exclude_label="Agent",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {
+                "card_id": "abc",
+                "list_name": "Ideas",
+                "card_labels": ["Bug", "Feature"],
+            },
+        )
+        assert len(matches) == 1
+
+    def test_exclude_label_case_insensitive(self):
+        """Test exclude_label matching is case-insensitive."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="auto",
+                    events=["card_moved"],
+                    action="/ke",
+                    exclude_label="agent",
+                ),
+            ]
+        )
+        # "Agent" on card should match "agent" in rule (case-insensitive)
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "card_labels": ["Agent"]},
+        )
+        assert len(matches) == 0
+
+        # Reverse: "AGENT" on card should match "agent" in rule
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "card_labels": ["AGENT"]},
+        )
+        assert len(matches) == 0
+
+    def test_exclude_label_with_empty_card_labels(self):
+        """Test exclude_label matches when card has no labels."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="auto",
+                    events=["card_moved"],
+                    action="/ke",
+                    exclude_label="Agent",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "card_labels": []},
+        )
+        assert len(matches) == 1
+
+    def test_exclude_label_with_missing_card_labels(self):
+        """Test exclude_label matches when card_labels is not in message."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="auto",
+                    events=["card_moved"],
+                    action="/ke",
+                    exclude_label="Agent",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc"},
+        )
+        assert len(matches) == 1
+
+    def test_exclude_label_combined_with_list_condition(self):
+        """Test exclude_label works alongside other conditions."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="auto",
+                    events=["card_moved"],
+                    action="/ke",
+                    list="Ideas",
+                    exclude_label="Agent",
+                ),
+            ]
+        )
+        # Matches: right list, no excluded label
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Ideas", "card_labels": ["Bug"]},
+        )
+        assert len(matches) == 1
+
+        # No match: right list, but has excluded label
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Ideas", "card_labels": ["Agent"]},
+        )
+        assert len(matches) == 0
+
+        # No match: wrong list, no excluded label
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "list_name": "Done", "card_labels": ["Bug"]},
+        )
+        assert len(matches) == 0
+
+    def test_exclude_label_default_none(self):
+        """Test exclude_label defaults to None."""
+        rule = Rule(name="test", events=["card_moved"], action="/ke")
+        assert rule.exclude_label is None
+
+
 class TestParseRules:
     """Tests for parse_rules function."""
 
@@ -385,6 +538,19 @@ class TestParseRules:
         assert rules[0].list == "Ideas"
         assert rules[0].title == "📦"
         assert rules[0].model == "haiku"
+
+    def test_parse_with_exclude_label(self):
+        """Test parsing rules with exclude_label field."""
+        data = [
+            {
+                "name": "test",
+                "event": "card_moved",
+                "action": "/ke",
+                "exclude_label": "Agent",
+            }
+        ]
+        rules = parse_rules(data)
+        assert rules[0].exclude_label == "Agent"
 
     def test_parse_missing_name_raises(self):
         """Test that missing name raises ValueError."""

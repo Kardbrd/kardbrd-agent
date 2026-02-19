@@ -588,6 +588,19 @@ DO NOT do any new work - just publish what you already did."""
         if not self.rule_engine.rules:
             return
 
+        # Populate card_labels for rules that use exclude_label
+        needs_labels = any(r.exclude_label for r in self.rule_engine.rules)
+        if needs_labels and "card_labels" not in message:
+            card_id = message.get("card_id")
+            if card_id:
+                try:
+                    card = self.client.get_card(card_id)
+                    label_names = [lbl.get("name", "") for lbl in card.get("labels", [])]
+                    message["card_labels"] = label_names
+                except Exception:
+                    logger.warning(f"Failed to fetch labels for card {card_id}")
+                    message["card_labels"] = []
+
         matched_rules = self.rule_engine.match(event_type, message)
         if not matched_rules:
             return
