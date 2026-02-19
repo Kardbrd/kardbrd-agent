@@ -2,12 +2,13 @@
 
 from datetime import UTC
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from kardbrd_agent.executor import ClaudeResult
 from kardbrd_agent.manager import ActiveSession, ProxyManager
+from kardbrd_agent.rules import Rule, RuleEngine
 
 
 class TestProxyManager:
@@ -339,25 +340,11 @@ class TestProxyManagerConfig:
         manager = ProxyManager(state_manager, setup_command="npm install")
         assert manager.setup_command == "npm install"
 
-    def test_test_command_in_constructor(self):
-        """Test test_command is set via constructor."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager, test_command="make test-all")
-        assert manager.test_command == "make test-all"
-
-    def test_merge_queue_list_in_constructor(self):
-        """Test merge_queue_list is set via constructor."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager, merge_queue_list="Ready to Ship")
-        assert manager.merge_queue_list == "Ready to Ship"
-
     def test_defaults_are_none(self):
         """Test new config params default to None."""
         state_manager = MagicMock()
         manager = ProxyManager(state_manager)
         assert manager.setup_command is None
-        assert manager.test_command is None
-        assert manager.merge_queue_list is None
 
 
 class TestProxyManagerCardMoved:
@@ -433,198 +420,6 @@ class TestProxyManagerCardMoved:
 
         mock_process.kill.assert_called_once()
         assert "abc12345" not in manager._active_sessions
-
-
-class TestProxyManagerMergeQueue:
-    """Tests for merge queue workflow triggering (via constructor config)."""
-
-    @pytest.mark.asyncio
-    async def test_handle_card_moved_to_merge_queue_triggers_workflow(self):
-        """Test merge workflow is triggered when card moved to Merge Queue."""
-        state_manager = MagicMock()
-        manager = ProxyManager(
-            state_manager, merge_queue_list="merge queue", test_command="make test"
-        )
-        manager.worktree_manager = MagicMock()
-        manager._trigger_merge_workflow = AsyncMock()
-
-        await manager._handle_card_moved(
-            {
-                "card_id": "abc12345",
-                "list_name": "Merge Queue",
-            }
-        )
-
-        manager._trigger_merge_workflow.assert_called_once_with("abc12345", "make test")
-        manager.worktree_manager.remove_worktree.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_handle_card_moved_to_merge_queue_case_insensitive(self):
-        """Test merge queue detection is case insensitive."""
-        state_manager = MagicMock()
-        manager = ProxyManager(
-            state_manager, merge_queue_list="merge queue", test_command="make test"
-        )
-        manager.worktree_manager = MagicMock()
-        manager._trigger_merge_workflow = AsyncMock()
-
-        for list_name in ["Merge Queue", "MERGE QUEUE", "merge queue", "Ready for Merge Queue"]:
-            manager._trigger_merge_workflow.reset_mock()
-
-            await manager._handle_card_moved(
-                {
-                    "card_id": "abc12345",
-                    "list_name": list_name,
-                }
-            )
-
-            manager._trigger_merge_workflow.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_handle_card_moved_to_custom_merge_queue(self):
-        """Test custom merge queue list name is respected."""
-        state_manager = MagicMock()
-        manager = ProxyManager(
-            state_manager, merge_queue_list="Ready to Ship", test_command="make test"
-        )
-        manager.worktree_manager = MagicMock()
-        manager._trigger_merge_workflow = AsyncMock()
-
-        await manager._handle_card_moved(
-            {
-                "card_id": "abc12345",
-                "list_name": "Ready to Ship",
-            }
-        )
-
-        manager._trigger_merge_workflow.assert_called_once_with("abc12345", "make test")
-
-    @pytest.mark.asyncio
-    async def test_handle_card_moved_default_queue_not_triggered_by_custom(self):
-        """Test default 'merge queue' is not triggered when custom is set."""
-        state_manager = MagicMock()
-        manager = ProxyManager(
-            state_manager, merge_queue_list="Ready to Ship", test_command="make test"
-        )
-        manager.worktree_manager = MagicMock()
-        manager._trigger_merge_workflow = AsyncMock()
-
-        await manager._handle_card_moved(
-            {
-                "card_id": "abc12345",
-                "list_name": "Merge Queue",
-            }
-        )
-
-        manager._trigger_merge_workflow.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_handle_card_moved_no_merge_config_does_nothing(self):
-        """Test no action when no merge queue configured."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager)  # No merge_queue_list
-        manager.worktree_manager = MagicMock()
-        manager._trigger_merge_workflow = AsyncMock()
-
-        await manager._handle_card_moved(
-            {
-                "card_id": "abc12345",
-                "list_name": "Merge Queue",
-            }
-        )
-
-        manager._trigger_merge_workflow.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_handle_card_moved_uses_default_test_command(self):
-        """Test default test command (make test) when test_command not set."""
-        state_manager = MagicMock()
-        manager = ProxyManager(
-            state_manager,
-            merge_queue_list="merge queue",  # No test_command
-        )
-        manager.worktree_manager = MagicMock()
-        manager._trigger_merge_workflow = AsyncMock()
-
-        await manager._handle_card_moved(
-            {
-                "card_id": "abc12345",
-                "list_name": "Merge Queue",
-            }
-        )
-
-        manager._trigger_merge_workflow.assert_called_once_with("abc12345", "make test")
-
-    @pytest.mark.asyncio
-    async def test_trigger_merge_workflow_creates_workflow(self):
-        """Test merge workflow is created with correct parameters."""
-        from kardbrd_agent.merge_workflow import MergeStatus
-
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager)
-        manager.client = MagicMock()
-        manager.client.get_card.return_value = {"title": "Test Card Title"}
-        manager.executor = MagicMock()
-        manager.cwd = Path("/tmp/repo")
-
-        with patch("kardbrd_agent.merge_workflow.MergeWorkflow") as MockWorkflow:
-            mock_workflow_instance = MagicMock()
-            mock_workflow_instance.run = AsyncMock(return_value=MergeStatus.MERGED)
-            MockWorkflow.return_value = mock_workflow_instance
-
-            await manager._trigger_merge_workflow("abc12345", "make test-all")
-
-            MockWorkflow.assert_called_once_with(
-                card_id="abc12345",
-                card_title="Test Card Title",
-                main_repo_path=Path("/tmp/repo"),
-                client=manager.client,
-                executor=manager.executor,
-                test_command="make test-all",
-            )
-            mock_workflow_instance.run.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_trigger_merge_workflow_handles_card_fetch_error(self):
-        """Test merge workflow handles card fetch failure gracefully."""
-        from kardbrd_agent.merge_workflow import MergeStatus
-
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager)
-        manager.client = MagicMock()
-        manager.client.get_card.side_effect = Exception("API error")
-        manager.executor = MagicMock()
-        manager.cwd = Path("/tmp/repo")
-
-        with patch("kardbrd_agent.merge_workflow.MergeWorkflow") as MockWorkflow:
-            mock_workflow_instance = MagicMock()
-            mock_workflow_instance.run = AsyncMock(return_value=MergeStatus.MERGED)
-            MockWorkflow.return_value = mock_workflow_instance
-
-            # Should not raise - uses fallback title
-            await manager._trigger_merge_workflow("abc12345", "make test")
-
-            MockWorkflow.assert_called_once()
-            call_kwargs = MockWorkflow.call_args[1]
-            assert call_kwargs["card_title"] == "Card abc12345"
-
-    @pytest.mark.asyncio
-    async def test_trigger_merge_workflow_handles_workflow_exception(self):
-        """Test merge workflow handles workflow execution failure."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager)
-        manager.client = MagicMock()
-        manager.client.get_card.return_value = {"title": "Test Card"}
-        manager.executor = MagicMock()
-        manager.cwd = Path("/tmp/repo")
-
-        with patch("kardbrd_agent.merge_workflow.MergeWorkflow") as MockWorkflow:
-            mock_workflow_instance = MagicMock()
-            mock_workflow_instance.run = AsyncMock(side_effect=Exception("Workflow failed"))
-            MockWorkflow.return_value = mock_workflow_instance
-
-            # Should not raise - exception is caught and logged
-            await manager._trigger_merge_workflow("abc12345", "make test")
 
 
 class TestStopReaction:
@@ -1146,3 +941,191 @@ class TestFallbackCommentGuard:
         manager.client.add_comment.assert_called_once()
         assert "Some result" in manager.client.add_comment.call_args[0][1]
         assert "@Paul" in manager.client.add_comment.call_args[0][1]
+
+
+class TestRuleEngineIntegration:
+    """Tests for kardbrd.yml rule engine integration in ProxyManager."""
+
+    def test_init_default_empty_rule_engine(self):
+        """Test ProxyManager creates an empty RuleEngine by default."""
+        state_manager = MagicMock()
+        manager = ProxyManager(state_manager)
+        assert isinstance(manager.rule_engine, RuleEngine)
+        assert len(manager.rule_engine.rules) == 0
+
+    def test_init_accepts_rule_engine(self):
+        """Test ProxyManager accepts a custom RuleEngine."""
+        state_manager = MagicMock()
+        engine = RuleEngine(rules=[Rule(name="test", events=["card_moved"], action="/ke")])
+        manager = ProxyManager(state_manager, rule_engine=engine)
+        assert len(manager.rule_engine.rules) == 1
+
+    @pytest.mark.asyncio
+    async def test_check_rules_called_on_board_event(self):
+        """Test _check_rules is called for every board event."""
+        state_manager = MagicMock()
+        manager = ProxyManager(state_manager)
+        manager.mention_keyword = "@coder"
+        manager._check_rules = AsyncMock()
+
+        await manager._handle_board_event(
+            {
+                "event_type": "card_moved",
+                "card_id": "abc123",
+                "list_name": "Ideas",
+            }
+        )
+
+        manager._check_rules.assert_called_once_with(
+            "card_moved",
+            {
+                "event_type": "card_moved",
+                "card_id": "abc123",
+                "list_name": "Ideas",
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_check_rules_no_rules_noop(self):
+        """Test _check_rules does nothing with no rules."""
+        state_manager = MagicMock()
+        manager = ProxyManager(state_manager)
+        manager._process_rule = AsyncMock()
+
+        await manager._check_rules("card_moved", {"card_id": "abc123"})
+
+        manager._process_rule.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_check_rules_triggers_matching_rule(self):
+        """Test matching rule triggers _process_rule."""
+        state_manager = MagicMock()
+        rule = Rule(name="ideas", events=["card_moved"], action="/ke", list="Ideas")
+        engine = RuleEngine(rules=[rule])
+        manager = ProxyManager(state_manager, rule_engine=engine)
+        manager._process_rule = AsyncMock()
+
+        message = {"card_id": "abc123", "list_name": "Ideas"}
+        await manager._check_rules("card_moved", message)
+
+        manager._process_rule.assert_called_once_with(card_id="abc123", rule=rule, message=message)
+
+    @pytest.mark.asyncio
+    async def test_check_rules_skips_active_card(self):
+        """Test rules are skipped if card is already being processed."""
+        state_manager = MagicMock()
+        rule = Rule(name="ideas", events=["card_moved"], action="/ke", list="Ideas")
+        engine = RuleEngine(rules=[rule])
+        manager = ProxyManager(state_manager, rule_engine=engine)
+        manager._process_rule = AsyncMock()
+        manager._active_sessions["abc123"] = ActiveSession(
+            card_id="abc123", worktree_path=Path("/tmp")
+        )
+
+        await manager._check_rules("card_moved", {"card_id": "abc123", "list_name": "Ideas"})
+
+        manager._process_rule.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_process_rule_spawns_claude(self):
+        """Test _process_rule creates worktree and spawns Claude."""
+        state_manager = MagicMock()
+        rule = Rule(name="ideas", events=["card_moved"], action="/ke", model="haiku")
+        manager = ProxyManager(state_manager)
+
+        manager.client = MagicMock()
+        manager.client.get_card_markdown.return_value = "# Card"
+        manager.executor = MagicMock()
+        manager.executor.build_prompt.return_value = "prompt"
+        manager.executor.execute = AsyncMock(
+            return_value=ClaudeResult(success=True, result_text="Done")
+        )
+        manager.worktree_manager = MagicMock()
+        manager.worktree_manager.create_worktree.return_value = Path("/tmp/card-abc12345")
+        manager._has_recent_bot_comment = MagicMock(return_value=True)
+
+        await manager._process_rule("abc12345", rule, {"card_id": "abc12345"})
+
+        manager.worktree_manager.create_worktree.assert_called_once_with("abc12345")
+        manager.executor.execute.assert_called_once()
+        call_kwargs = manager.executor.execute.call_args[1]
+        assert call_kwargs["model"] == "claude-haiku-4-5-20251001"
+
+    @pytest.mark.asyncio
+    async def test_process_rule_cleans_up_session(self):
+        """Test _process_rule cleans up active session after completion."""
+        state_manager = MagicMock()
+        rule = Rule(name="ideas", events=["card_moved"], action="/ke")
+        manager = ProxyManager(state_manager)
+
+        manager.client = MagicMock()
+        manager.client.get_card_markdown.return_value = "# Card"
+        manager.executor = MagicMock()
+        manager.executor.build_prompt.return_value = "prompt"
+        manager.executor.execute = AsyncMock(
+            return_value=ClaudeResult(success=True, result_text="Done")
+        )
+        manager.worktree_manager = MagicMock()
+        manager.worktree_manager.create_worktree.return_value = Path("/tmp/wt")
+        manager._has_recent_bot_comment = MagicMock(return_value=True)
+
+        await manager._process_rule("abc12345", rule, {"card_id": "abc12345"})
+
+        assert "abc12345" not in manager._active_sessions
+
+    @pytest.mark.asyncio
+    async def test_process_rule_posts_error_on_failure(self):
+        """Test _process_rule posts error comment when Claude fails."""
+        state_manager = MagicMock()
+        rule = Rule(name="ideas", events=["card_moved"], action="/ke")
+        manager = ProxyManager(state_manager)
+
+        manager.client = MagicMock()
+        manager.client.get_card_markdown.return_value = "# Card"
+        manager.executor = MagicMock()
+        manager.executor.build_prompt.return_value = "prompt"
+        manager.executor.execute = AsyncMock(
+            return_value=ClaudeResult(success=False, result_text="", error="Model error")
+        )
+        manager.worktree_manager = MagicMock()
+        manager.worktree_manager.create_worktree.return_value = Path("/tmp/wt")
+
+        await manager._process_rule("abc12345", rule, {"card_id": "abc12345"})
+
+        manager.client.add_comment.assert_called_once()
+        comment = manager.client.add_comment.call_args[0][1]
+        assert "Automation Error" in comment
+        assert "ideas" in comment
+
+    @pytest.mark.asyncio
+    async def test_add_reaction_skips_none_comment_id(self):
+        """Test _add_reaction is a no-op when comment_id is None."""
+        state_manager = MagicMock()
+        manager = ProxyManager(state_manager)
+        manager.client = MagicMock()
+
+        manager._add_reaction("card123", None, "✅")
+
+        manager.client.toggle_reaction.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_resume_to_publish_handles_none_comment_id(self):
+        """Test _resume_to_publish works with comment_id=None (rule triggers)."""
+        state_manager = MagicMock()
+        manager = ProxyManager(state_manager)
+        manager.client = MagicMock()
+        manager.executor = MagicMock()
+        manager.executor.execute = AsyncMock(
+            return_value=ClaudeResult(success=True, result_text="Done")
+        )
+        manager._has_recent_bot_comment = MagicMock(return_value=True)
+
+        await manager._resume_to_publish(
+            card_id="card123",
+            comment_id=None,
+            session_id="session-abc",
+            author_name="automation",
+        )
+
+        # Should not try to add reaction (comment_id is None)
+        manager.client.toggle_reaction.assert_not_called()

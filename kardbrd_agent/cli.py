@@ -20,6 +20,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .manager import ProxyManager
+from .rules import ReloadableRuleEngine, RuleEngine
 
 configure_logging()
 logger = logging.getLogger("kardbrd_agent.cli")
@@ -142,17 +143,12 @@ def start(
         envvar="AGENT_SETUP_CMD",
         help="Setup command to run in worktrees after creation (e.g. 'npm install', 'uv sync')",
     ),
-    test_cmd: str = typer.Option(
+    rules_file: Path = typer.Option(
         None,
-        "--test-cmd",
-        envvar="AGENT_TEST_CMD",
-        help="Test command for merge workflow (default: make test)",
-    ),
-    merge_queue_list: str = typer.Option(
-        None,
-        "--merge-queue-list",
-        envvar="AGENT_MERGE_QUEUE_LIST",
-        help="List name that triggers merge workflow (disabled if not set)",
+        "--rules",
+        "-r",
+        envvar="AGENT_RULES_FILE",
+        help="Path to kardbrd.yml rules file (defaults to <cwd>/kardbrd.yml)",
     ),
 ):
     """Start the proxy manager and listen for @mentions.
@@ -185,11 +181,6 @@ def start(
     config_table.add_row("MCP", "kardbrd-mcp (stdio per session)")
 
     config_table.add_row("Setup command", setup_cmd or "[dim]none (skip)[/dim]")
-    if merge_queue_list:
-        config_table.add_row("Merge queue list", merge_queue_list)
-        config_table.add_row("Test command", test_cmd or "make test")
-    else:
-        config_table.add_row("Merge queue", "[dim]disabled[/dim]")
 
     console.print(config_table)
 
@@ -198,6 +189,24 @@ def start(
         console.print(f"\nBoard: {board_id}")
         console.print(f"  Agent: @{sub.agent_name}")
         console.print(f"  API: {sub.api_url}")
+
+    # Load kardbrd.yml rules (with hot reload every 60s)
+    rules_path = rules_file or (cwd or Path.cwd()) / "kardbrd.yml"
+    if rules_path.exists():
+        try:
+            rule_engine = ReloadableRuleEngine(rules_path)
+            console.print(
+                f"\nRules: loaded {len(rule_engine.rules)} from {rules_path} (hot reload: 60s)"
+            )
+            for rule in rule_engine.rules:
+                events = ", ".join(rule.events)
+                console.print(f"  - {rule.name} ({events} → {rule.action[:40]})")
+        except Exception as e:
+            console.print(f"\n[red]Error loading rules: {e}[/red]")
+            sys.exit(1)
+    else:
+        rule_engine = RuleEngine()
+        console.print(f"\nRules: [dim]no kardbrd.yml found at {rules_path}[/dim]")
 
     console.print("\n[green]Starting...[/green]\n")
 
@@ -209,8 +218,7 @@ def start(
         max_concurrent=max_concurrent,
         worktrees_dir=worktrees_dir,
         setup_command=setup_cmd,
-        test_command=test_cmd,
-        merge_queue_list=merge_queue_list,
+        rule_engine=rule_engine,
     )
 
     try:
