@@ -70,6 +70,7 @@ class Rule:
     title: str | None = None
     label: str | None = None
     content_contains: str | None = None
+    exclude_label: str | None = None
 
     @property
     def model_id(self) -> str | None:
@@ -128,6 +129,12 @@ class RuleEngine:
             content = message.get("content", "")
             if rule.content_contains.lower() not in content.lower():
                 return False
+
+        if rule.exclude_label is not None:
+            card_labels = message.get("card_labels", [])
+            for lbl in card_labels:
+                if lbl.lower() == rule.exclude_label.lower():
+                    return False
 
         return True
 
@@ -190,6 +197,7 @@ def parse_rules(data: list[dict]) -> list[Rule]:
             title=entry.get("title"),
             label=entry.get("label"),
             content_contains=entry.get("content_contains"),
+            exclude_label=entry.get("exclude_label"),
         )
         rules.append(rule)
 

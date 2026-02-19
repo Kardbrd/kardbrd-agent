@@ -17,6 +17,7 @@
 #     title: "📦"                             # condition: exact card title match
 #     label: "Bug"                            # condition: label name (case-insensitive)
 #     content_contains: "@claude"             # condition: comment text (case-insensitive)
+#     exclude_label: "Agent"                  # condition: skip if card has this label
 #     model: haiku                            # optional: haiku | sonnet | opus
 #     action: /ke                             # required: skill or prompt
 #
@@ -73,6 +74,8 @@
 #                      Case-insensitive.
 #   content_contains:  Matches substring in comment text
 #                      (comment_created). Case-insensitive.
+#   exclude_label:     Rejects the match if the card has this label.
+#                      Case-insensitive. Fetches card labels from API.
 #
 # ── Notes ───────────────────────────────────────────────────────────
 #
@@ -125,6 +128,13 @@
   event: comment_created
   content_contains: "@claude"
   action: respond to the comment on this card
+
+# Automate cards in Ideas, but skip cards labeled "Agent"
+- name: Explore non-agent ideas
+  event: card_moved
+  list: Ideas
+  exclude_label: Agent
+  action: /ke
 
 # Archive event cleanup
 - name: Clean up on archive
