@@ -20,7 +20,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .manager import ProxyManager
-from .rules import ReloadableRuleEngine, RuleEngine
+from .rules import ReloadableRuleEngine, RuleEngine, Severity, validate_rules_file
 
 configure_logging()
 logger = logging.getLogger("kardbrd_agent.cli")
@@ -298,6 +298,52 @@ def unsub(
         console.print(f"[green]Removed {removed_count} subscription(s)[/green]\n")
     else:
         console.print("No subscriptions found to remove\n")
+
+
+@app.command()
+def validate(
+    rules_file: Path = typer.Argument(
+        None,
+        help="Path to kardbrd.yml file (defaults to ./kardbrd.yml)",
+    ),
+):
+    """Validate a kardbrd.yml rules file.
+
+    Checks YAML syntax, schema structure, required fields, event names,
+    and model names. Reports all issues with severity levels.
+    """
+    path = rules_file or Path.cwd() / "kardbrd.yml"
+    console.print(f"\nValidating [bold]{path}[/bold]\n")
+
+    result = validate_rules_file(path)
+
+    if not result.issues:
+        console.print("[green]Valid[/green] — no issues found\n")
+        sys.exit(0)
+
+    # Print all issues grouped by severity
+    for issue in result.issues:
+        if issue.severity == Severity.ERROR:
+            console.print(f"  [red]error[/red]: {issue}")
+        else:
+            console.print(f"  [yellow]warning[/yellow]: {issue}")
+
+    console.print()
+
+    error_count = len(result.errors)
+    warning_count = len(result.warnings)
+    parts = []
+    if error_count:
+        parts.append(f"{error_count} error(s)")
+    if warning_count:
+        parts.append(f"{warning_count} warning(s)")
+
+    if result.is_valid:
+        console.print(f"[green]Valid[/green] with {', '.join(parts)}\n")
+        sys.exit(0)
+    else:
+        console.print(f"[red]Invalid[/red] — {', '.join(parts)}\n")
+        sys.exit(1)
 
 
 def main():
