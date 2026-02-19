@@ -3,6 +3,7 @@
 import logging
 import time
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 
 import yaml
@@ -55,6 +56,56 @@ KNOWN_EVENTS = frozenset(
         "list_deleted",
     }
 )
+
+# All known fields in a rule entry
+KNOWN_FIELDS = frozenset(
+    {"name", "event", "action", "model", "list", "title", "label", "content_contains"}
+)
+
+
+class Severity(Enum):
+    """Severity level for validation issues."""
+
+    ERROR = "error"
+    WARNING = "warning"
+
+
+@dataclass
+class ValidationIssue:
+    """A single validation issue found in kardbrd.yml."""
+
+    severity: Severity
+    rule_index: int | None  # None for file-level issues
+    rule_name: str | None
+    message: str
+
+    def __str__(self) -> str:
+        prefix = self.severity.value.upper()
+        if self.rule_name:
+            return f"{prefix}: Rule '{self.rule_name}': {self.message}"
+        if self.rule_index is not None:
+            return f"{prefix}: Rule {self.rule_index}: {self.message}"
+        return f"{prefix}: {self.message}"
+
+
+@dataclass
+class ValidationResult:
+    """Result of validating a kardbrd.yml file."""
+
+    issues: list[ValidationIssue] = field(default_factory=list)
+
+    @property
+    def errors(self) -> list[ValidationIssue]:
+        return [i for i in self.issues if i.severity == Severity.ERROR]
+
+    @property
+    def warnings(self) -> list[ValidationIssue]:
+        return [i for i in self.issues if i.severity == Severity.WARNING]
+
+    @property
+    def is_valid(self) -> bool:
+        """True if there are no errors (warnings are OK)."""
+        return len(self.errors) == 0
 
 
 @dataclass
@@ -233,6 +284,170 @@ def load_rules(path: Path) -> RuleEngine:
     rules = parse_rules(data)
     logger.info(f"Loaded {len(rules)} rules from {path}")
     return RuleEngine(rules=rules)
+
+
+def validate_rules_file(path: Path) -> ValidationResult:
+    """
+    Validate a kardbrd.yml file and return all issues found.
+
+    Unlike load_rules/parse_rules which raise on the first error,
+    this collects all errors and warnings for reporting.
+
+    Args:
+        path: Path to kardbrd.yml file
+
+    Returns:
+        ValidationResult with all issues found
+    """
+    result = ValidationResult()
+
+    # Check file exists
+    if not path.exists():
+        result.issues.append(ValidationIssue(Severity.ERROR, None, None, f"File not found: {path}"))
+        return result
+
+    # Check YAML is parseable
+    try:
+        with open(path) as f:
+            raw = f.read()
+    except OSError as e:
+        result.issues.append(ValidationIssue(Severity.ERROR, None, None, f"Cannot read file: {e}"))
+        return result
+
+    try:
+        data = yaml.safe_load(raw)
+    except yaml.YAMLError as e:
+        result.issues.append(
+            ValidationIssue(Severity.ERROR, None, None, f"Invalid YAML syntax: {e}")
+        )
+        return result
+
+    # Empty file is valid
+    if data is None:
+        return result
+
+    # Must be a list
+    if not isinstance(data, list):
+        result.issues.append(
+            ValidationIssue(
+                Severity.ERROR,
+                None,
+                None,
+                f"File must contain a YAML list, got {type(data).__name__}",
+            )
+        )
+        return result
+
+    # Validate each rule
+    for i, entry in enumerate(data):
+        if not isinstance(entry, dict):
+            result.issues.append(
+                ValidationIssue(
+                    Severity.ERROR,
+                    i,
+                    None,
+                    f"Rule must be a mapping, got {type(entry).__name__}",
+                )
+            )
+            continue
+
+        name = entry.get("name")
+
+        # Required fields
+        if not name:
+            result.issues.append(
+                ValidationIssue(Severity.ERROR, i, None, "Missing required field 'name'")
+            )
+        if not entry.get("event"):
+            result.issues.append(
+                ValidationIssue(Severity.ERROR, i, name, "Missing required field 'event'")
+            )
+        if not entry.get("action"):
+            result.issues.append(
+                ValidationIssue(Severity.ERROR, i, name, "Missing required field 'action'")
+            )
+
+        # Check for unknown fields
+        unknown = set(entry.keys()) - KNOWN_FIELDS
+        if unknown:
+            result.issues.append(
+                ValidationIssue(
+                    Severity.WARNING,
+                    i,
+                    name,
+                    f"Unknown field(s): {', '.join(sorted(unknown))}",
+                )
+            )
+
+        # Validate event field
+        event_str = entry.get("event")
+        if event_str:
+            if not isinstance(event_str, str):
+                result.issues.append(
+                    ValidationIssue(
+                        Severity.ERROR,
+                        i,
+                        name,
+                        f"'event' must be a string, got {type(event_str).__name__}",
+                    )
+                )
+            else:
+                events = [e.strip() for e in event_str.split(",")]
+                for ev in events:
+                    if not ev:
+                        result.issues.append(
+                            ValidationIssue(
+                                Severity.ERROR,
+                                i,
+                                name,
+                                "Empty event name (trailing or double comma in event list)",
+                            )
+                        )
+                    elif ev not in KNOWN_EVENTS:
+                        result.issues.append(
+                            ValidationIssue(
+                                Severity.WARNING,
+                                i,
+                                name,
+                                f"Unknown event '{ev}'",
+                            )
+                        )
+
+        # Validate model
+        model = entry.get("model")
+        if model:
+            if not isinstance(model, str):
+                result.issues.append(
+                    ValidationIssue(
+                        Severity.ERROR,
+                        i,
+                        name,
+                        f"'model' must be a string, got {type(model).__name__}",
+                    )
+                )
+            elif model.lower() not in MODEL_MAP:
+                result.issues.append(
+                    ValidationIssue(
+                        Severity.WARNING,
+                        i,
+                        name,
+                        f"Unknown model '{model}', expected one of: {', '.join(MODEL_MAP.keys())}",
+                    )
+                )
+
+        # Validate action is a string
+        action = entry.get("action")
+        if action and not isinstance(action, str):
+            result.issues.append(
+                ValidationIssue(
+                    Severity.ERROR,
+                    i,
+                    name,
+                    f"'action' must be a string, got {type(action).__name__}",
+                )
+            )
+
+    return result
 
 
 class ReloadableRuleEngine:
