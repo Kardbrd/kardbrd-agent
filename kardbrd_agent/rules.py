@@ -59,7 +59,17 @@ KNOWN_EVENTS = frozenset(
 
 # All known fields in a rule entry
 KNOWN_FIELDS = frozenset(
-    {"name", "event", "action", "model", "list", "title", "label", "content_contains"}
+    {
+        "name",
+        "event",
+        "action",
+        "model",
+        "list",
+        "title",
+        "label",
+        "content_contains",
+        "exclude_label",
+    }
 )
 
 
