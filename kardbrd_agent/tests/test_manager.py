@@ -2174,3 +2174,119 @@ class TestValidateBoardToken:
 
         # validate_board_token should be called before wizard and bot card
         assert call_order == ["validate", "wizard", "bot_card"]
+
+
+class TestCheckRulesAssigneeFetch:
+    """Tests for _check_rules fetching assignee data from API."""
+
+    @pytest.mark.asyncio
+    async def test_fetches_assignee_when_rules_use_assignee(self):
+        """Test _check_rules fetches card assignee from API."""
+        rule = Rule(
+            name="alice",
+            events=["card_moved"],
+            action="/ke",
+            list="Ideas",
+            assignee=["user-alice"],
+        )
+        engine = RuleEngine(rules=[rule])
+        manager = _make_manager(rule_engine=engine)
+        manager.client = MagicMock()
+        manager.client.get_card.return_value = {
+            "assignee": {"id": "user-alice", "display_name": "Alice"},
+            "labels": [],
+        }
+        manager._process_rule = AsyncMock()
+
+        message = {"card_id": "abc123", "list_name": "Ideas"}
+        await manager._check_rules("card_moved", message)
+
+        manager.client.get_card.assert_called_once_with("abc123")
+        assert message["card_assignee_id"] == "user-alice"
+        manager._process_rule.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_skips_fetch_when_no_assignee_rules(self):
+        """Test _check_rules skips API fetch when no rules use assignee."""
+        rule = Rule(name="all", events=["card_moved"], action="/ke", list="Ideas")
+        engine = RuleEngine(rules=[rule])
+        manager = _make_manager(rule_engine=engine)
+        manager.client = MagicMock()
+        manager._process_rule = AsyncMock()
+
+        message = {"card_id": "abc123", "list_name": "Ideas"}
+        await manager._check_rules("card_moved", message)
+
+        manager.client.get_card.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unassigned_card_sets_empty_string(self):
+        """Test unassigned card gets empty string for card_assignee_id."""
+        rule = Rule(
+            name="alice",
+            events=["card_moved"],
+            action="/ke",
+            assignee=["user-alice"],
+        )
+        engine = RuleEngine(rules=[rule])
+        manager = _make_manager(rule_engine=engine)
+        manager.client = MagicMock()
+        manager.client.get_card.return_value = {
+            "assignee": None,
+            "labels": [],
+        }
+        manager._process_rule = AsyncMock()
+
+        message = {"card_id": "abc123"}
+        await manager._check_rules("card_moved", message)
+
+        assert message["card_assignee_id"] == ""
+        manager._process_rule.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_api_error_defaults_empty_assignee(self):
+        """Test API error defaults to empty assignee (rule won't match)."""
+        rule = Rule(
+            name="alice",
+            events=["card_moved"],
+            action="/ke",
+            assignee=["user-alice"],
+        )
+        engine = RuleEngine(rules=[rule])
+        manager = _make_manager(rule_engine=engine)
+        manager.client = MagicMock()
+        manager.client.get_card.side_effect = Exception("API error")
+        manager._process_rule = AsyncMock()
+
+        message = {"card_id": "abc123"}
+        await manager._check_rules("card_moved", message)
+
+        assert message["card_assignee_id"] == ""
+        manager._process_rule.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_shared_api_call_for_labels_and_assignee(self):
+        """Test single API call fetches both labels and assignee."""
+        rule = Rule(
+            name="alice no agent",
+            events=["card_moved"],
+            action="/ke",
+            assignee=["user-alice"],
+            exclude_label="Agent",
+        )
+        engine = RuleEngine(rules=[rule])
+        manager = _make_manager(rule_engine=engine)
+        manager.client = MagicMock()
+        manager.client.get_card.return_value = {
+            "assignee": {"id": "user-alice", "display_name": "Alice"},
+            "labels": [{"name": "Bug", "color": "red"}],
+        }
+        manager._process_rule = AsyncMock()
+
+        message = {"card_id": "abc123"}
+        await manager._check_rules("card_moved", message)
+
+        # Only ONE API call despite needing both labels and assignee
+        manager.client.get_card.assert_called_once_with("abc123")
+        assert message["card_assignee_id"] == "user-alice"
+        assert message["card_labels"] == ["Bug"]

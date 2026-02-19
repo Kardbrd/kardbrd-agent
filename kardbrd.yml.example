@@ -46,6 +46,8 @@
 #     require_label: "Agent"                  # condition: card must have this label
 #     emoji: "✅"                             # condition: reaction emoji (exact match)
 #     require_user: "abc123"                  # condition: user ID who triggered the event
+#     assignee:                               # condition: card assignee user ID(s)
+#       - "01JM5K2B3N4PXQR7D8HMFY6W1A"       #   must be a YAML list (not a string)
 #     model: haiku                            # optional: haiku | sonnet | opus
 #     action: /ke                             # required: skill or prompt
 #     action: __stop__                        # reserved: kills active session (no Claude spawn)
@@ -152,6 +154,10 @@
 #   NOT executed on startup.
 # - Schedules reuse the same executor pipeline as rules (semaphore,
 #   worktree, per-card deduplication).
+#   assignee:          Matches the card's assignee user ID. Must be a
+#                      YAML list of user ID strings (not comma-separated).
+#                      Case-sensitive (IDs are exact). Fetches card from API.
+#                      Unassigned cards never match.
 #
 # ── Notes ───────────────────────────────────────────────────────────
 #
@@ -166,6 +172,15 @@
 #     haiku  → claude-haiku-4-5-20251001
 #     sonnet → claude-sonnet-4-5-20250929
 #     opus   → claude-opus-4-6
+#
+# ── Per-User Workflows ────────────────────────────────────────────
+#
+# The `assignee` condition enables per-user automation. Each developer
+# can define rules that fire only for cards assigned to them. This
+# makes kardbrd.yml the central place where users store and share
+# their workflows — checked into the repo, versioned with the code.
+#
+# Find user IDs from the board's member list or card API responses.
 #
 # ── Examples ────────────────────────────────────────────────────────
 ---
@@ -280,3 +295,24 @@ rules:
     emoji: "🔄"
     model: opus
     action: /kr
+
+  # ── Assignee-based rules ──────────────────────────────────────────
+
+  # Only fire for a specific developer (assignee must be a YAML list)
+  - name: Alice's auto-implement
+    event: card_moved
+    list: In Progress
+    assignee:
+      - "01JM5K2B3N4PXQR7D8HMFY6W1A"
+    action: |
+      Implement the card requirements and commit changes.
+
+  # Fire for any team lead (multiple IDs in YAML list)
+  - name: Team leads review
+    event: card_moved
+    list: Review
+    assignee:
+      - "01JM5K2B3N4PXQR7D8HMFY6W1A"
+      - "01JM8R4C6Q7SYUL9F2KNGZ3X5B"
+    action: |
+      Review the implementation on this card.
