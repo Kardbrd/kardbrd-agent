@@ -254,16 +254,23 @@ def parse_rules(data: list[dict]) -> list[Rule]:
         if not name:
             raise ValueError(f"Rule {i} is missing 'name'")
 
-        event_str = entry.get("event")
-        if not event_str:
+        event_raw = entry.get("event")
+        if not event_raw:
             raise ValueError(f"Rule '{name}' is missing 'event'")
 
         action = entry.get("action")
         if not action:
             raise ValueError(f"Rule '{name}' is missing 'action'")
 
-        # Parse comma-separated events
-        events = [e.strip() for e in event_str.split(",")]
+        # Parse events: accept YAML lists or a single string
+        if isinstance(event_raw, list):
+            events = [str(e).strip() for e in event_raw]
+        elif isinstance(event_raw, str):
+            events = [event_raw.strip()]
+        else:
+            raise ValueError(
+                f"Rule '{name}': 'event' must be a string or list, got {type(event_raw).__name__}"
+            )
 
         # Warn on unknown event names
         for ev in events:
@@ -424,38 +431,42 @@ def validate_rules_file(path: Path) -> ValidationResult:
             )
 
         # Validate event field
-        event_str = entry.get("event")
-        if event_str:
-            if not isinstance(event_str, str):
+        event_raw = entry.get("event")
+        if event_raw:
+            if isinstance(event_raw, list):
+                events = [str(e).strip() for e in event_raw]
+            elif isinstance(event_raw, str):
+                events = [event_raw.strip()]
+            else:
                 result.issues.append(
                     ValidationIssue(
                         Severity.ERROR,
                         i,
                         name,
-                        f"'event' must be a string, got {type(event_str).__name__}",
+                        f"'event' must be a string or list, got {type(event_raw).__name__}",
                     )
                 )
-            else:
-                events = [e.strip() for e in event_str.split(",")]
-                for ev in events:
-                    if not ev:
-                        result.issues.append(
-                            ValidationIssue(
-                                Severity.ERROR,
-                                i,
-                                name,
-                                "Empty event name (trailing or double comma in event list)",
-                            )
+                events = []
+
+            for ev in events:
+                if not ev:
+                    result.issues.append(
+                        ValidationIssue(
+                            Severity.ERROR,
+                            i,
+                            name,
+                            "Empty event name in event list",
                         )
-                    elif ev not in KNOWN_EVENTS:
-                        result.issues.append(
-                            ValidationIssue(
-                                Severity.WARNING,
-                                i,
-                                name,
-                                f"Unknown event '{ev}'",
-                            )
+                    )
+                elif ev not in KNOWN_EVENTS:
+                    result.issues.append(
+                        ValidationIssue(
+                            Severity.WARNING,
+                            i,
+                            name,
+                            f"Unknown event '{ev}'",
                         )
+                    )
 
         # Validate model
         model = entry.get("model")

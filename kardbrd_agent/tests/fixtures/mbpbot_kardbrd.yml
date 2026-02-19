@@ -1,0 +1,287 @@
+# kardbrd.yml — Automation rules for kbn repository
+#
+# Workflow (10-step lifecycle):
+#   1. Human creates card           => opus /ke (explore codebase)
+#   2. Human discusses exploration  => opus responds (built-in @mention)
+#   3. Human moves card to Plans    => opus /kp (create plan)
+#   4. Human reviews plan           => opus responds (built-in @mention)
+#   5. Human moves to In progress   => sonnet /ki then /kpr (implement + PR)
+#   6. /kpr moves card to Review    => opus /kr (full code review)
+#   7. Human reads review           => opus responds (built-in @mention)
+#   8. Human moves to Done          => haiku interlinks related cards
+#   9. 🧽 card appears              => haiku archives old Done cards
+#  10. 📦 card appears              => sonnet ships (merge PRs, test, deploy)
+#
+# Built-in @mention handling:
+#   Steps 2, 4, and 7 don't need rules. The kardbrd-agent has built-in
+#   support for @mentions in card comments. When a board member @mentions
+#   the agent (e.g. "@MBPBot can you also handle edge case X?"), the agent
+#   receives a `comment_created` WebSocket event and responds in-context
+#   on that card. This is the default behavior — no rule configuration
+#   needed. The agent reads the card, the comment thread, and replies.
+#
+# Label filtering:
+#   Cards with the "Agent" label are owned by KABot (kardbrd-agent repo).
+#   MBPBot handles everything else. Rules below exclude "Agent"-labeled cards
+#   to avoid MBPBot automating KABot's work on the shared board.
+#   Note: exclude_label matching is case-insensitive (e.g. "Agent" matches
+#   "agent", "AGENT", etc.).
+#
+# Error handling:
+#   Each skill (/ke, /kp, /ki, /kpr, /kr) handles its own failures:
+#   - /ke: Posts exploration findings or errors as a card comment
+#   - /kp: Posts plan or reports blockers as a card comment
+#   - /ki: Posts "Blocker" comment if stuck; does NOT move card to Review
+#          on failure — card stays in "In progress" for human intervention
+#   - /kpr: Stops on rebase conflicts or test failures; reports on card;
+#           does NOT move card to Review — card stays in "In progress"
+#   - /kr: Posts review findings or errors as a card comment
+#   If a multi-step action fails partway (e.g. /ki succeeds but /kpr fails),
+#   the card remains in its current list. The human sees the failure comment
+#   and can re-trigger manually or fix the issue and drag the card forward.
+#   The rule engine's per-card dedup (_active_sessions) prevents concurrent
+#   duplicate runs on the same card.
+---
+
+# ── Step 1: Auto-explore new cards ────────────────────────────────
+# When a card is created or moved to Ideas, explore the codebase.
+# Re-explore on card_moved handles scope changes (card dragged back).
+- name: Explore new cards in Ideas
+  event:
+    - card_created
+    - card_moved
+  list: Ideas
+  exclude_label: Agent
+  model: opus
+  action: /ke
+
+# ── Step 3: Auto-plan when card moves to Plans ──────────────────
+# Human reviews exploration, then drags card to Plans to trigger planning.
+- name: Plan cards moved to Plans
+  event: card_moved
+  list: Plans
+  exclude_label: Agent
+  model: opus
+  action: /kp
+
+# ── Step 5: Auto-implement and PR when card moves to In progress ─
+# Human reviews plan, then drags card to In progress.
+# Runs /ki to implement, then /kpr to rebase, test, and create a PR.
+# /kpr moves the card to Review on success, triggering step 6.
+# If /ki fails, the card stays in In progress with a blocker comment.
+# If /kpr fails (rebase conflict, test failure), the card also stays
+# in In progress with the failure details posted on the card.
+- name: Implement and PR cards moved to In progress
+  event: card_moved
+  list: In progress
+  exclude_label: Agent
+  model: sonnet
+  action: |
+    Run /ki to implement the card.
+    When /ki completes successfully (clean working tree, changes committed),
+    immediately run /kpr to rebase onto main, run tests, push, and create
+    a pull request. /kpr will move the card to Review on success.
+
+# ── Step 6: Auto-review when card moves to Review ───────────────
+# Triggered when /kpr moves card to Review (or when human drags it).
+# The rule engine's per-card dedup ensures this doesn't double-fire
+# if /kpr's session is still active on the card.
+- name: Review cards moved to Review
+  event: card_moved
+  list: Review
+  exclude_label: Agent
+  model: opus
+  action: /kr
+
+# ── Step 8: Interlink related cards when moved to Done ──────────
+# Human approves the review and moves card to Done.
+# Haiku finds related cards on the board and creates bidirectional links
+# to preserve the knowledge graph before the card is eventually archived.
+- name: Interlink cards moved to Done
+  event: card_moved
+  list: Done
+  exclude_label: Agent
+  model: haiku
+  action: |
+    A card was just moved to Done. Your job is to preserve its knowledge
+    in the board's knowledge graph before it eventually gets archived.
+
+    1. Read the card using /k to understand what was implemented
+    2. Read the board using /kb to see all active cards
+    3. Find cards that are related by feature area, shared dependencies,
+       or overlapping scope (search by title keywords, look at descriptions)
+    4. For each related active card found:
+       - Add a bidirectional link between the Done card and the related card
+         using mcp__kardbrd__add_link (URL: http://app.kardbrd.com/c/{card_id})
+    5. Add a brief comment on the Done card listing which cards were linked
+       and why, so the knowledge connection is documented
+
+    Focus on meaningful connections, not superficial title matches.
+    If no related cards are found, add a comment saying so.
+
+    If an error occurs while linking or reading a card, skip that card
+    and continue with the rest. Report any skipped cards in the summary.
+
+# ── Step 9: 🧽 Sponge card — archive old Done cards ────────────
+# Human creates a 🧽 card to trigger cleanup.
+# The sponge card stays in Plans with a checklist of candidates.
+# All checklist items start checked. If the human unchecks any item,
+# that card will be skipped during cleanup.
+# When the human moves the sponge card to In progress, cleanup begins.
+# After cleanup completes, the sponge card is moved to Done.
+- name: Sponge card plans cleanup
+  event: card_created
+  title: "🧽"
+  model: haiku
+  action: |
+    A sponge card was created — time to plan cleanup of the Done list.
+
+    1. Read the board using /kb
+    2. Find all cards in the Done list
+    3. For each card in Done, check when it was last updated
+       (use mcp__kardbrd__get_card to see the updated timestamp)
+    4. Identify cards that have been in Done for more than 3 days
+    5. Create a checklist on this sponge card titled "Cards to archive"
+       with one item per candidate card (use the card title as the item title)
+       — all items should start as checked (completed)
+    6. Move this sponge card to the Plans list at position 0
+    7. Add a comment on this sponge card:
+       - How many candidates were found
+       - "Uncheck any cards you want to keep. Move this card to In progress
+         to start the cleanup."
+
+    If no candidates are found, add a comment saying the Done list is clean
+    and archive this sponge card.
+
+- name: Sponge card executes cleanup
+  event: card_moved
+  title: "🧽"
+  list: In progress
+  model: haiku
+  action: |
+    The sponge card was moved to In progress — execute the cleanup.
+
+    1. Read this sponge card to find the "Cards to archive" checklist
+    2. For each CHECKED (completed) item in the checklist:
+       a. Find the corresponding card on the board by title
+       b. Find related active cards (by title keywords, feature area,
+          shared dependencies)
+       c. Create bidirectional links between related active cards
+          so knowledge is preserved even after archiving
+       d. Add an "Archived by 🧽" comment on the card
+       e. Archive the card using mcp__kardbrd__archive_card
+    3. For each UNCHECKED item, skip it (the human wants to keep it)
+    4. Add a summary comment on this sponge card:
+       - How many cards were archived
+       - How many were skipped (unchecked by human)
+       - Which knowledge links were created
+    5. Move this sponge card to the Done list
+
+    If an error occurs while archiving a card, skip it and continue.
+    Report any errors in the summary comment.
+
+# ── Step 10: 📦 Box card — ship everything in Review ────────────
+# Human creates a 📦 card to trigger the ship cycle.
+# The box card stays in Plans with a list of Review cards for deployment.
+# It runs `make test-all` as a quality gate and publishes the report.
+# When the human moves the box card to In progress, deployment begins.
+- name: Box card plans deployment
+  event: card_created
+  title: "📦"
+  model: sonnet
+  action: |
+    A box card was created — time to plan a deployment.
+
+    1. Run `gh pr list --state open --json number,title,url,headRefName`
+       to discover all open pull requests in this repository
+    2. Read the board using /kb to find cards in the Review list
+    3. Cross-reference: match open PRs to Review cards by checking
+       each card's links for matching github.com PR URLs
+    4. Update this box card's description with a deployment manifest:
+       - For each card with a matching PR: card title, PR number, PR URL
+       - Note any cards in Review without PRs (these will be skipped)
+       - Note any open PRs not linked to Review cards (informational)
+    5. Run `make test-all` as a comprehensive quality gate
+       (`make test-all` = tailwind-build + collectstatic + test + test-e2e)
+    6. Add a comment on this box card with the test results:
+       - Full test output summary
+       - Pass/fail status
+       - "Move this card to In progress to start the deployment."
+       - If tests failed: "⚠️ Tests are failing. Fix before deploying."
+    7. Move this box card to the Plans list at position 0
+
+    If no open PRs are found, add a comment saying nothing to deploy
+    and archive this box card.
+
+- name: Box card executes deployment
+  event: card_moved
+  title: "📦"
+  list: In progress
+  model: sonnet
+  action: |
+    The box card was moved to In progress — execute the deployment.
+
+    IMPORTANT: You must be on the main branch before merging PRs.
+    Run `git checkout main && git pull` first.
+
+    1. Read this box card's description to get the deployment manifest
+       (the list of cards and PRs collected during the planning phase).
+       Use ONLY the PRs listed in the manifest — do NOT re-scan the board
+       or run `gh pr list` again.
+    2. For each PR in the manifest:
+       a. Run `/ship` to merge the PR (squash merge, wait for CI)
+       b. Add a comment on the corresponding card with the merge result
+       c. If merge fails, report on this box card and skip to the next PR
+    3. After all PRs are merged:
+       a. Pull latest main: `git pull`
+       b. Run `make test` to verify main is clean (server tests only —
+          the full `make test-all` suite already ran during the planning phase)
+       c. If tests pass, run `make deploy` to deploy to production
+       d. If tests fail on main, report the failures on this box card
+          and do NOT deploy
+    4. Add a summary comment on this box card:
+       - Which PRs were merged
+       - Which PRs were skipped (and why)
+       - Whether deployment succeeded
+       - Any errors encountered
+    5. Move this box card to the Done list
+
+    If an error occurs during deployment, stop immediately. Do NOT
+    continue merging PRs. Report the error on this box card.
+
+# ── Reaction triggers: single-card actions via emoji ───────────
+# React to a bot comment with a trigger emoji to run an action
+# on that specific card. The broadcast payload includes
+# comment_author_is_bot so the agent can verify context.
+
+- name: Ship card via reaction
+  event: reaction_added
+  emoji: "📦"
+  model: sonnet
+  action: |
+    A user reacted with 📦 to a bot comment, requesting this card be shipped.
+    Read the card using /k. Find its linked PR. Run /ship to merge it.
+    If the merge succeeds, run `make test` on main, then `make deploy`.
+    Report results as a comment on this card.
+
+- name: Re-run review via reaction
+  event: reaction_added
+  emoji: "🔄"
+  model: opus
+  action: /kr
+
+- name: Approve plan via reaction
+  event: reaction_added
+  emoji: "✅"
+  model: sonnet
+  action: |
+    A user reacted with ✅ to a bot comment, approving the plan.
+    Move this card to In progress (which will trigger the implement rule).
+
+- name: Archive card via reaction
+  event: reaction_added
+  emoji: "🧽"
+  model: haiku
+  action: |
+    A user reacted with 🧽 to a bot comment, requesting this card be archived.
+    Run /kbc to curate knowledge links, then archive the card.

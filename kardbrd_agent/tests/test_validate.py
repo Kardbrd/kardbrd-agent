@@ -21,7 +21,9 @@ class TestValidateRulesFile:
         f = tmp_path / "kardbrd.yml"
         f.write_text(
             "- name: rule1\n"
-            "  event: card_moved, card_created\n"
+            "  event:\n"
+            "    - card_moved\n"
+            "    - card_created\n"
             "  list: Ideas\n"
             "  action: /ke\n"
             "- name: rule2\n"
@@ -140,21 +142,48 @@ class TestValidateRulesFile:
         assert "priority" in result.warnings[0].message
         assert "timeout" in result.warnings[0].message
 
-    def test_event_not_string_errors(self, tmp_path):
-        """Test event field that isn't a string reports error."""
+    def test_event_yaml_list_is_valid(self, tmp_path):
+        """Test event field as a YAML list is valid."""
+        f = tmp_path / "kardbrd.yml"
+        f.write_text(
+            "- name: test\n  event:\n    - card_moved\n    - card_created\n  action: /ke\n"
+        )
+        result = validate_rules_file(f)
+        assert result.is_valid
+        assert result.issues == []
+
+    def test_event_yaml_list_single_item(self, tmp_path):
+        """Test event field as a single-item YAML list is valid."""
         f = tmp_path / "kardbrd.yml"
         f.write_text("- name: test\n  event:\n    - card_moved\n  action: /ke\n")
         result = validate_rules_file(f)
-        assert not result.is_valid
-        assert any("must be a string" in e.message for e in result.errors)
+        assert result.is_valid
 
-    def test_trailing_comma_in_events(self, tmp_path):
-        """Test trailing comma in event list reports error."""
+    def test_event_yaml_list_unknown_warns(self, tmp_path):
+        """Test unknown event names inside a YAML list still produce warnings."""
         f = tmp_path / "kardbrd.yml"
-        f.write_text("- name: test\n  event: 'card_moved,'\n  action: /ke\n")
+        f.write_text("- name: test\n  event:\n    - card_moved\n    - fake_event\n  action: /ke\n")
+        result = validate_rules_file(f)
+        assert result.is_valid  # warnings don't invalidate
+        assert len(result.warnings) == 1
+        assert "fake_event" in result.warnings[0].message
+
+    def test_event_invalid_type_errors(self, tmp_path):
+        """Test non-string, non-list event type reports error."""
+        f = tmp_path / "kardbrd.yml"
+        f.write_text("- name: test\n  event: 123\n  action: /ke\n")
         result = validate_rules_file(f)
         assert not result.is_valid
-        assert any("Empty event name" in e.message for e in result.errors)
+        assert any("must be a string or list" in e.message for e in result.errors)
+
+    def test_comma_in_event_string_is_unknown(self, tmp_path):
+        """Test comma-separated string is treated as a single unknown event name."""
+        f = tmp_path / "kardbrd.yml"
+        f.write_text("- name: test\n  event: 'card_moved, card_created'\n  action: /ke\n")
+        result = validate_rules_file(f)
+        assert result.is_valid  # warnings don't invalidate
+        assert len(result.warnings) == 1
+        assert "card_moved, card_created" in result.warnings[0].message
 
     def test_model_not_string_errors(self, tmp_path):
         """Test model field that isn't a string reports error."""
@@ -222,6 +251,28 @@ class TestValidateRulesFile:
         result = validate_rules_file(example)
         assert result.is_valid, f"Example file has errors: {result.errors}"
         assert len(result.warnings) == 0, f"Example file has warnings: {result.warnings}"
+
+    def test_validates_own_kardbrd_yml(self):
+        """Test the repo's own kardbrd.yml passes validation."""
+        from pathlib import Path
+
+        own = Path(__file__).parent.parent.parent / "kardbrd.yml"
+        if not own.exists():
+            pytest.skip("kardbrd.yml not found")
+        result = validate_rules_file(own)
+        assert result.is_valid, f"kardbrd.yml has errors: {result.errors}"
+        assert len(result.warnings) == 0, f"kardbrd.yml has warnings: {result.warnings}"
+
+    def test_validates_mbpbot_kardbrd_yml(self):
+        """Test MBPBot's kardbrd.yml fixture passes validation."""
+        from pathlib import Path
+
+        fixture = Path(__file__).parent / "fixtures" / "mbpbot_kardbrd.yml"
+        if not fixture.exists():
+            pytest.skip("mbpbot_kardbrd.yml fixture not found")
+        result = validate_rules_file(fixture)
+        assert result.is_valid, f"MBPBot kardbrd.yml has errors: {result.errors}"
+        assert len(result.warnings) == 0, f"MBPBot kardbrd.yml has warnings: {result.warnings}"
 
 
 class TestValidationResult:

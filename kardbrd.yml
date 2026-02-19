@@ -18,7 +18,9 @@
 
 # Card lands in Ideas → deep exploration
 - name: Explore new ideas
-  event: card_created, card_moved
+  event:
+    - card_created
+    - card_moved
   list: Ideas
   model: opus
   require_label: Agent
