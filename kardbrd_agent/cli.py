@@ -46,7 +46,7 @@ def start(
         help="Agent name for @mentions",
     ),
     api_url: str = typer.Option(
-        "https://kardbrd.com",
+        "https://app.kardbrd.com",
         "--api-url",
         envvar="KARDBRD_URL",
         help="API base URL",
