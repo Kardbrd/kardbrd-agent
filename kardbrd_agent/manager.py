@@ -495,6 +495,16 @@ DO NOT do any new work - just publish what you already did."""
         # Remove from active sessions but preserve worktree
         del self._active_sessions[card_id]
 
+        # Post confirmation comment
+        try:
+            self.client.add_comment(
+                card_id,
+                "**Agent stopped** 🛑\n\nThe active session was terminated.",
+            )
+            logger.info(f"Posted stop confirmation to card {card_id}")
+        except Exception as e:
+            logger.warning(f"Failed to post stop confirmation: {e}")
+
     async def _check_rules(self, event_type: str, message: dict) -> None:
         """
         Check kardbrd.yml rules against an incoming event and process matches.

@@ -402,6 +402,10 @@ class TestStopReaction:
 
         mock_process.kill.assert_called_once()
         assert "abc12345" not in manager._active_sessions
+        manager.client.add_comment.assert_called_once_with(
+            "abc12345",
+            "**Agent stopped** 🛑\n\nThe active session was terminated.",
+        )
 
     @pytest.mark.asyncio
     async def test_stop_reaction_preserves_worktree(self):
@@ -432,6 +436,7 @@ class TestStopReaction:
 
         # Should not raise, session dict unchanged
         assert len(manager._active_sessions) == 0
+        manager.client.add_comment.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stop_reaction_ignores_wrong_comment(self):
@@ -453,6 +458,7 @@ class TestStopReaction:
         # Process should NOT be killed
         mock_process.kill.assert_not_called()
         assert "abc12345" in manager._active_sessions
+        manager.client.add_comment.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stop_reaction_routed_from_board_event(self):
@@ -498,6 +504,31 @@ class TestStopReaction:
 
         await manager._handle_stop_reaction("abc12345", "comm1")
 
+        assert "abc12345" not in manager._active_sessions
+        manager.client.add_comment.assert_called_once_with(
+            "abc12345",
+            "**Agent stopped** 🛑\n\nThe active session was terminated.",
+        )
+
+    @pytest.mark.asyncio
+    async def test_stop_reaction_handles_comment_failure_gracefully(self):
+        """Test 🛑 reaction continues cleanup even if comment posting fails."""
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.client.add_comment.side_effect = Exception("API error")
+
+        mock_process = MagicMock()
+        manager._active_sessions["abc12345"] = ActiveSession(
+            card_id="abc12345",
+            worktree_path=Path("/tmp/wt"),
+            comment_id="comm1",
+            process=mock_process,
+        )
+
+        # Should not raise even if comment posting fails
+        await manager._handle_stop_reaction("abc12345", "comm1")
+
+        mock_process.kill.assert_called_once()
         assert "abc12345" not in manager._active_sessions
 
     @pytest.mark.asyncio
