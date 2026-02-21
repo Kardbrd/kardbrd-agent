@@ -1,9 +1,12 @@
 """Command-line interface for the proxy manager."""
 
 import asyncio
+import atexit
 import logging
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import typer
@@ -200,9 +203,8 @@ def start(
             agent_name=board_config.agent_name,
         )
         # Create in-memory state manager with yml-derived subscription
-        import tempfile
-
         temp_state_dir = tempfile.mkdtemp(prefix="kardbrd-state-")
+        atexit.register(shutil.rmtree, temp_state_dir, ignore_errors=True)
         state_manager = DirectoryStateManager(temp_state_dir)
         state_manager.add_subscription(subscription)
     else:
