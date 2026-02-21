@@ -1,25 +1,17 @@
 """Command-line interface for the proxy manager."""
 
 import asyncio
-import atexit
 import logging
-import os
-import shutil
 import sys
-import tempfile
 from pathlib import Path
 
 import typer
-from kardbrd_client import (
-    BoardSubscription,
-    DirectoryStateManager,
-    configure_logging,
-)
+from kardbrd_client import configure_logging
 from rich.console import Console
 from rich.table import Table
 
 from .manager import ProxyManager
-from .rules import ReloadableRuleEngine, Severity, validate_rules_file
+from .rules import ReloadableRuleEngine, RuleEngine, Severity, validate_rules_file
 
 configure_logging()
 logger = logging.getLogger("kardbrd_agent.cli")
@@ -34,6 +26,31 @@ console = Console()
 
 @app.command()
 def start(
+    board_id: str = typer.Option(
+        None,
+        "--board-id",
+        envvar="KARDBRD_ID",
+        help="Board ID (bypasses subscription file when set)",
+    ),
+    bot_token: str = typer.Option(
+        None,
+        "--token",
+        envvar="KARDBRD_TOKEN",
+        help="Bot authentication token",
+    ),
+    agent_name: str = typer.Option(
+        None,
+        "--name",
+        "-n",
+        envvar="KARDBRD_AGENT",
+        help="Agent name for @mentions",
+    ),
+    api_url: str = typer.Option(
+        "https://kardbrd.com",
+        "--api-url",
+        envvar="KARDBRD_URL",
+        help="API base URL",
+    ),
     cwd: Path = typer.Option(
         None,
         "--cwd",
@@ -78,56 +95,22 @@ def start(
 ):
     """Start the proxy manager and listen for @mentions.
 
-    Requires a kardbrd.yml with board_id, agent, and rules.
-    Bot token is read from the KARDBRD_BOT_TOKEN environment variable.
+    Each Claude CLI session spawns its own kardbrd-mcp subprocess for MCP tools.
+
+    Board config comes from env vars (KARDBRD_ID, KARDBRD_TOKEN, KARDBRD_AGENT)
+    or equivalent CLI flags.
     """
-    # Load kardbrd.yml (with hot reload every 60s)
-    rules_path = rules_file or (cwd or Path.cwd()) / "kardbrd.yml"
-
-    if not rules_path.exists():
-        console.print(f"[red]Error: {rules_path} not found[/red]")
-        console.print("[dim]Create a kardbrd.yml with board_id, agent, and rules.[/dim]")
-        sys.exit(1)
-
-    # Validate before loading — fail fast with clear error messages
-    validation = validate_rules_file(rules_path)
-    if validation.warnings:
-        for issue in validation.warnings:
-            console.print(f"  [yellow]warning[/yellow]: {issue}")
-    if not validation.is_valid:
-        console.print("\n[red]kardbrd.yml has errors:[/red]\n")
-        for issue in validation.errors:
-            console.print(f"  [red]error[/red]: {issue}")
-        console.print(f"\n[dim]Fix the errors above in {rules_path} and restart.[/dim]")
-        sys.exit(1)
-
-    try:
-        rule_engine = ReloadableRuleEngine(rules_path)
-    except Exception as e:
-        console.print(f"\n[red]Error loading rules: {e}[/red]")
-        sys.exit(1)
-
-    board_config = rule_engine.config
-
-    # Read bot token from environment
-    bot_token = os.getenv("KARDBRD_BOT_TOKEN")
+    # Validate required board config
+    missing = []
+    if not board_id:
+        missing.append("KARDBRD_ID (--board-id)")
     if not bot_token:
-        console.print("[red]Error: KARDBRD_BOT_TOKEN environment variable is required[/red]")
+        missing.append("KARDBRD_TOKEN (--token)")
+    if not agent_name:
+        missing.append("KARDBRD_AGENT (--name)")
+    if missing:
+        console.print(f"[red]Error: missing required config: {', '.join(missing)}[/red]")
         sys.exit(1)
-
-    api_url = board_config.api_url or os.getenv("KARDBRD_API_URL", "http://localhost:8000")
-    subscription = BoardSubscription(
-        board_id=board_config.board_id,
-        api_url=api_url,
-        bot_token=bot_token,
-        agent_name=board_config.agent_name,
-    )
-
-    # Create in-memory state manager with yml-derived subscription
-    temp_state_dir = tempfile.mkdtemp(prefix="kardbrd-state-")
-    atexit.register(shutil.rmtree, temp_state_dir, ignore_errors=True)
-    state_manager = DirectoryStateManager(temp_state_dir)
-    state_manager.add_subscription(subscription)
 
     # Display startup info
     console.print("\n[bold]Proxy Manager[/bold]")
@@ -137,7 +120,6 @@ def start(
     config_table.add_column("Key", style="dim")
     config_table.add_column("Value")
 
-    config_table.add_row("Config source", str(rules_path))
     config_table.add_row("Working directory", str(cwd or Path.cwd()))
     if worktrees_dir:
         config_table.add_row("Worktrees directory", str(worktrees_dir))
@@ -148,22 +130,48 @@ def start(
 
     console.print(config_table)
 
-    # Display subscription info
-    console.print(f"\nBoard: {board_config.board_id}")
-    console.print(f"  Agent: @{board_config.agent_name}")
+    console.print(f"\nBoard: {board_id}")
+    console.print(f"  Agent: @{agent_name}")
     console.print(f"  API: {api_url}")
 
-    # Display rules
-    console.print(f"\nRules: loaded {len(rule_engine.rules)} from {rules_path} (hot reload: 60s)")
-    for rule in rule_engine.rules:
-        events = ", ".join(rule.events)
-        console.print(f"  - {rule.name} ({events} → {rule.action[:40]})")
+    # Load kardbrd.yml rules (with hot reload every 60s)
+    rules_path = rules_file or (cwd or Path.cwd()) / "kardbrd.yml"
+    if rules_path.exists():
+        # Validate before loading — fail fast with clear error messages
+        validation = validate_rules_file(rules_path)
+        if validation.warnings:
+            for issue in validation.warnings:
+                console.print(f"  [yellow]warning[/yellow]: {issue}")
+        if not validation.is_valid:
+            console.print("\n[red]kardbrd.yml has errors:[/red]\n")
+            for issue in validation.errors:
+                console.print(f"  [red]error[/red]: {issue}")
+            console.print(f"\n[dim]Fix the errors above in {rules_path} and restart.[/dim]")
+            sys.exit(1)
+
+        try:
+            rule_engine = ReloadableRuleEngine(rules_path)
+            console.print(
+                f"\nRules: loaded {len(rule_engine.rules)} from {rules_path} (hot reload: 60s)"
+            )
+            for rule in rule_engine.rules:
+                events = ", ".join(rule.events)
+                console.print(f"  - {rule.name} ({events} → {rule.action[:40]})")
+        except Exception as e:
+            console.print(f"\n[red]Error loading rules: {e}[/red]")
+            sys.exit(1)
+    else:
+        rule_engine = RuleEngine()
+        console.print(f"\nRules: [dim]no kardbrd.yml found at {rules_path}[/dim]")
 
     console.print("\n[green]Starting...[/green]\n")
 
     # Create and run the proxy manager
     manager = ProxyManager(
-        state_manager=state_manager,
+        board_id=board_id,
+        api_url=api_url,
+        bot_token=bot_token,
+        agent_name=agent_name,
         cwd=cwd,
         timeout=timeout,
         max_concurrent=max_concurrent,

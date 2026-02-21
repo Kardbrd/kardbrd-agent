@@ -79,8 +79,11 @@ class TestConcurrentProcessingIntegration:
     @pytest.mark.asyncio
     async def test_two_cards_processed_concurrently(self, git_repo: Path):
         """Test two cards can be processed at the same time."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager, max_concurrent=3, cwd=git_repo)
+        manager = ProxyManager(
+            board_id="board123", api_url="https://test.kardbrd.com",
+            bot_token="test-token", agent_name="coder",
+            max_concurrent=3, cwd=git_repo,
+        )
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
         manager.client.toggle_reaction = MagicMock()
@@ -124,8 +127,11 @@ class TestConcurrentProcessingIntegration:
     @pytest.mark.asyncio
     async def test_semaphore_limits_concurrency(self, git_repo: Path):
         """Test semaphore limits concurrent executions."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager, max_concurrent=1, cwd=git_repo)
+        manager = ProxyManager(
+            board_id="board123", api_url="https://test.kardbrd.com",
+            bot_token="test-token", agent_name="coder",
+            max_concurrent=1, cwd=git_repo,
+        )
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
         manager.client.toggle_reaction = MagicMock()
@@ -170,8 +176,11 @@ class TestRetryIntegration:
     @pytest.mark.asyncio
     async def test_retry_blocked_during_concurrent_processing(self, git_repo: Path):
         """Test retry is blocked when any card is being processed."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager, max_concurrent=3, cwd=git_repo)
+        manager = ProxyManager(
+            board_id="board123", api_url="https://test.kardbrd.com",
+            bot_token="test-token", agent_name="coder",
+            max_concurrent=3, cwd=git_repo,
+        )
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
         manager.client.get_comment.return_value = {
@@ -224,8 +233,11 @@ class TestApiVerificationIntegration:
     @pytest.mark.asyncio
     async def test_concurrent_cards_api_verification_independent(self, git_repo: Path):
         """Test API verification works independently for concurrent cards."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager, max_concurrent=2, cwd=git_repo)
+        manager = ProxyManager(
+            board_id="board123", api_url="https://test.kardbrd.com",
+            bot_token="test-token", agent_name="coder",
+            max_concurrent=2, cwd=git_repo,
+        )
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
         manager.client.toggle_reaction = MagicMock()
@@ -266,8 +278,10 @@ class TestApiVerificationIntegration:
     @pytest.mark.asyncio
     async def test_active_session_cleaned_up_on_success(self, git_repo: Path):
         """Test _active_sessions entry removed after successful processing."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager, cwd=git_repo)
+        manager = ProxyManager(
+            board_id="board123", api_url="https://test.kardbrd.com",
+            bot_token="test-token", agent_name="coder", cwd=git_repo,
+        )
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
         manager.client.toggle_reaction = MagicMock()
@@ -290,8 +304,10 @@ class TestApiVerificationIntegration:
     @pytest.mark.asyncio
     async def test_active_session_cleaned_up_on_error(self, git_repo: Path):
         """Test _active_sessions entry removed even after an exception."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager, cwd=git_repo)
+        manager = ProxyManager(
+            board_id="board123", api_url="https://test.kardbrd.com",
+            bot_token="test-token", agent_name="coder", cwd=git_repo,
+        )
         manager.client = MagicMock()
         manager.client.get_card_markdown.side_effect = Exception("API error")
         manager.worktree_manager = MagicMock()
@@ -305,8 +321,10 @@ class TestApiVerificationIntegration:
     @pytest.mark.asyncio
     async def test_no_session_registry_attribute(self, git_repo: Path):
         """Test ProxyManager has no session_registry attribute."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager, cwd=git_repo)
+        manager = ProxyManager(
+            board_id="board123", api_url="https://test.kardbrd.com",
+            bot_token="test-token", agent_name="coder", cwd=git_repo,
+        )
         assert not hasattr(manager, "session_registry")
 
 
@@ -316,8 +334,10 @@ class TestDuplicateCommentPrevention:
     @pytest.mark.asyncio
     async def test_no_fallback_comment_when_api_confirms_posted(self, git_repo: Path):
         """Test fallback comment not posted when API confirms bot already posted."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager, cwd=git_repo)
+        manager = ProxyManager(
+            board_id="board123", api_url="https://test.kardbrd.com",
+            bot_token="test-token", agent_name="coder", cwd=git_repo,
+        )
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
         manager.client.toggle_reaction = MagicMock()
@@ -349,8 +369,10 @@ class TestDuplicateCommentPrevention:
     @pytest.mark.asyncio
     async def test_no_fallback_when_resume_api_confirms_posted(self, git_repo: Path):
         """Test fallback skipped when API confirms bot posted after resume."""
-        state_manager = MagicMock()
-        manager = ProxyManager(state_manager, cwd=git_repo)
+        manager = ProxyManager(
+            board_id="board123", api_url="https://test.kardbrd.com",
+            bot_token="test-token", agent_name="coder", cwd=git_repo,
+        )
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
         manager.client.toggle_reaction = MagicMock()
@@ -400,7 +422,6 @@ class TestRequireLabelIntegration:
         """Test _check_rules fetches card labels from API when rules use require_label."""
         from kardbrd_agent.rules import Rule, RuleEngine
 
-        state_manager = MagicMock()
         rule_engine = RuleEngine(
             rules=[
                 Rule(
@@ -412,7 +433,11 @@ class TestRequireLabelIntegration:
                 ),
             ]
         )
-        manager = ProxyManager(state_manager, cwd=git_repo, rule_engine=rule_engine)
+        manager = ProxyManager(
+            board_id="board123", api_url="https://test.kardbrd.com",
+            bot_token="test-token", agent_name="coder",
+            cwd=git_repo, rule_engine=rule_engine,
+        )
         manager.client = MagicMock()
         manager.client.get_card.return_value = {
             "labels": [{"name": "Agent"}, {"name": "Workflow"}],
@@ -444,7 +469,6 @@ class TestRequireLabelIntegration:
         """Test _check_rules skips card when it lacks the required label."""
         from kardbrd_agent.rules import Rule, RuleEngine
 
-        state_manager = MagicMock()
         rule_engine = RuleEngine(
             rules=[
                 Rule(
@@ -456,7 +480,11 @@ class TestRequireLabelIntegration:
                 ),
             ]
         )
-        manager = ProxyManager(state_manager, cwd=git_repo, rule_engine=rule_engine)
+        manager = ProxyManager(
+            board_id="board123", api_url="https://test.kardbrd.com",
+            bot_token="test-token", agent_name="coder",
+            cwd=git_repo, rule_engine=rule_engine,
+        )
         manager.client = MagicMock()
         manager.client.get_card.return_value = {
             "labels": [{"name": "Workflow"}],
@@ -480,7 +508,6 @@ class TestRequireLabelIntegration:
         """Test _check_rules doesn't fetch labels when no rules use require_label."""
         from kardbrd_agent.rules import Rule, RuleEngine
 
-        state_manager = MagicMock()
         rule_engine = RuleEngine(
             rules=[
                 Rule(
@@ -491,7 +518,11 @@ class TestRequireLabelIntegration:
                 ),
             ]
         )
-        manager = ProxyManager(state_manager, cwd=git_repo, rule_engine=rule_engine)
+        manager = ProxyManager(
+            board_id="board123", api_url="https://test.kardbrd.com",
+            bot_token="test-token", agent_name="coder",
+            cwd=git_repo, rule_engine=rule_engine,
+        )
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
         manager._has_recent_bot_comment = MagicMock(return_value=True)

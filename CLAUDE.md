@@ -15,22 +15,22 @@ kardbrd-agent is a proxy that listens for @mentions on kardbrd board cards, spaw
 uv sync --dev
 
 # Run all tests
-pytest
+uv run pytest
 
 # Run a single test file
-pytest kardbrd_agent/tests/test_merge_workflow.py
+uv run pytest kardbrd_agent/tests/test_merge_workflow.py
 
 # Run a specific test
-pytest kardbrd_agent/tests/test_integration.py::TestConcurrentProcessingIntegration
+uv run pytest kardbrd_agent/tests/test_integration.py::TestConcurrentProcessingIntegration
 
 # Lint and format (via pre-commit)
-pre-commit run --all-files
+uv run pre-commit run --all-files
 
 # Run ruff only
-pre-commit run ruff --all-files
+uv run pre-commit run ruff --all-files
 
 # CLI entry point
-kardbrd-agent start
+uv run kardbrd-agent start
 ```
 
 ## Architecture

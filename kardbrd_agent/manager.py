@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import UTC
 from pathlib import Path
 
-from kardbrd_client import DirectoryStateManager, KardbrdClient, WebSocketAgentConnection
+from kardbrd_client import KardbrdClient, WebSocketAgentConnection
 
 from .executor import ClaudeExecutor
 from .rules import Rule, RuleEngine
@@ -38,8 +38,10 @@ class ProxyManager:
 
     def __init__(
         self,
-        state_manager: DirectoryStateManager,
-        mention_keyword: str = "@coder",
+        board_id: str,
+        api_url: str,
+        bot_token: str,
+        agent_name: str,
         cwd: str | Path | None = None,
         timeout: int = 3600,
         max_concurrent: int = 3,
@@ -47,21 +49,11 @@ class ProxyManager:
         setup_command: str | None = None,
         rule_engine: RuleEngine | None = None,
     ):
-        """
-        Initialize the proxy manager.
-
-        Args:
-            state_manager: State manager for board subscriptions
-            mention_keyword: The keyword to respond to (e.g., "@coder")
-            cwd: Working directory for Claude (defaults to current directory)
-            timeout: Maximum execution time in seconds for Claude (default 1 hour)
-            max_concurrent: Maximum number of concurrent Claude sessions
-            worktrees_dir: Optional directory for worktrees (defaults to cwd parent)
-            setup_command: Shell command to run in worktrees after creation (e.g. "npm install")
-            rule_engine: Optional rule engine loaded from kardbrd.yml
-        """
-        self.state_manager = state_manager
-        self.mention_keyword = mention_keyword.lower()
+        self.board_id = board_id
+        self.api_url = api_url
+        self.bot_token = bot_token
+        self.agent_name = agent_name
+        self.mention_keyword = f"@{agent_name}".lower()
         self.cwd = Path(cwd) if cwd else Path.cwd()
         self.timeout = timeout
         self.max_concurrent = max_concurrent
@@ -69,12 +61,11 @@ class ProxyManager:
         self.setup_command = setup_command
         self.rule_engine = rule_engine or RuleEngine()
 
-        # Will be initialized when subscription is loaded
+        # Will be initialized in start()
         self.connection: WebSocketAgentConnection | None = None
         self.client: KardbrdClient | None = None
         self.executor: ClaudeExecutor | None = None
         self.worktree_manager: WorktreeManager | None = None
-        self._subscription_info: dict | None = None  # Cached subscription info for status pings
 
         # Concurrency control: semaphore limits parallel Claude sessions
         self._semaphore = asyncio.Semaphore(max_concurrent)
@@ -87,45 +78,24 @@ class ProxyManager:
         """
         Start the proxy manager.
 
-        Loads subscription, connects to WebSocket, and begins listening
-        for @mention events. Each Claude CLI session spawns its own
-        kardbrd-mcp subprocess for MCP tools.
+        Connects to WebSocket and begins listening for @mention events.
+        Each Claude CLI session spawns its own kardbrd-mcp subprocess
+        for MCP tools.
         """
-        # Load subscription
-        subscriptions = self.state_manager.get_all_subscriptions()
-        if not subscriptions:
-            logger.error("No subscriptions found")
-            raise RuntimeError(
-                "No subscriptions configured. Use 'kardbrd-agent sub <setup-url>' to subscribe."
-            )
-
-        # Use first subscription (PoC: single board)
-        board_id = next(iter(subscriptions.keys()))
-        subscription = subscriptions[board_id]
-
-        logger.info(f"Loading subscription for board {board_id}")
-        logger.info(f"Agent name: {subscription.agent_name}")
-        logger.info(f"Mention keyword: @{subscription.agent_name}")
-
-        # Update mention keyword from subscription
-        self.mention_keyword = f"@{subscription.agent_name}".lower()
-
-        # Cache subscription info for status pings
-        self._subscription_info = {
-            "board_id": board_id,
-            "agent_name": subscription.agent_name,
-        }
+        logger.info(f"Board: {self.board_id}")
+        logger.info(f"Agent name: {self.agent_name}")
+        logger.info(f"Mention keyword: {self.mention_keyword}")
 
         # Initialize client and executor
         self.client = KardbrdClient(
-            base_url=subscription.api_url,
-            token=subscription.bot_token,
+            base_url=self.api_url,
+            token=self.bot_token,
         )
         self.executor = ClaudeExecutor(
             cwd=self.cwd,
             timeout=self.timeout,
-            api_url=subscription.api_url,
-            bot_token=subscription.bot_token,
+            api_url=self.api_url,
+            bot_token=self.bot_token,
         )
 
         # Initialize worktree manager
@@ -135,8 +105,8 @@ class ProxyManager:
 
         # Initialize WebSocket connection
         self.connection = WebSocketAgentConnection(
-            base_url=subscription.api_url,
-            token=subscription.bot_token,
+            base_url=self.api_url,
+            token=self.bot_token,
         )
 
         # Register event handler for board events
@@ -144,7 +114,7 @@ class ProxyManager:
 
         # Start listening
         self._running = True
-        logger.info(f"Starting WebSocket connection to {subscription.api_url}")
+        logger.info(f"Starting WebSocket connection to {self.api_url}")
         logger.info(f"Working directory: {self.cwd}")
         logger.info(f"Listening for {self.mention_keyword} mentions...")
 
@@ -170,12 +140,17 @@ class ProxyManager:
                 # Wait for connection to be established
                 if self.connection and self.connection.is_connected:
                     active_cards = list(self._active_sessions.keys())
+                    subscription_info = {
+                        "board_id": self.board_id,
+                        "agent_name": self.agent_name,
+                    }
                     await self.connection.send_status_ping(
-                        subscription_info=self._subscription_info,
+                        subscription_info=subscription_info,
                         active_cards=active_cards,
                     )
-                    board = self._subscription_info.get("board_id", "unknown")[:8]
-                    logger.debug(f"Status ping: board={board}, active_cards={len(active_cards)}")
+                    logger.debug(
+                        f"Status ping: board={self.board_id[:8]}, active_cards={len(active_cards)}"
+                    )
             except Exception as e:
                 logger.warning(f"Failed to send status ping: {e}")
 
@@ -358,16 +333,13 @@ class ProxyManager:
                 logger.info(f"Extracted command: {command[:50]}...")
 
                 # Build prompt (include board_id for label operations)
-                board_id = (
-                    self._subscription_info.get("board_id") if self._subscription_info else None
-                )
                 prompt = self.executor.build_prompt(
                     card_id=card_id,
                     card_markdown=card_markdown,
                     command=command,
                     comment_content=content,
                     author_name=author_name,
-                    board_id=board_id,
+                    board_id=self.board_id,
                 )
 
                 # Execute Claude in worktree directory
@@ -599,10 +571,6 @@ DO NOT do any new work - just publish what you already did."""
 
                 card_markdown = self.client.get_card_markdown(card_id)
 
-                board_id = (
-                    self._subscription_info.get("board_id") if self._subscription_info else None
-                )
-
                 # Build prompt using the rule's action
                 prompt = self.executor.build_prompt(
                     card_id=card_id,
@@ -610,7 +578,7 @@ DO NOT do any new work - just publish what you already did."""
                     command=rule.action,
                     comment_content=f"[Automation: {rule.name}]",
                     author_name="automation",
-                    board_id=board_id,
+                    board_id=self.board_id,
                 )
 
                 logger.info(f"Rule '{rule.name}': spawning Claude in {worktree_path}")
