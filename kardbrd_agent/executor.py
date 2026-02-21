@@ -59,6 +59,17 @@ class ClaudeResult:
     session_id: str | None = None
 
 
+@dataclass
+class AuthStatus:
+    """Result from checking Claude CLI authentication."""
+
+    authenticated: bool
+    error: str | None = None
+    email: str | None = None
+    auth_method: str | None = None
+    subscription_type: str | None = None
+
+
 class ClaudeExecutor:
     """
     Executes Claude CLI as a subprocess.
@@ -66,6 +77,63 @@ class ClaudeExecutor:
     Spawns `claude -p "..." --output-format=stream-json` and parses
     the streaming JSON output to extract the result.
     """
+
+    @staticmethod
+    async def check_claude_auth() -> AuthStatus:
+        """
+        Check if Claude CLI is authenticated by running `claude auth status`.
+
+        Returns:
+            AuthStatus with authentication details or error information.
+        """
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "claude",
+                "auth",
+                "status",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=10)
+
+            if process.returncode != 0:
+                error_msg = stderr.decode().strip() or stdout.decode().strip()
+                return AuthStatus(
+                    authenticated=False,
+                    error=f"claude auth status exited with code {process.returncode}: {error_msg}",
+                )
+
+            try:
+                data = json.loads(stdout.decode())
+            except json.JSONDecodeError:
+                return AuthStatus(
+                    authenticated=False,
+                    error=f"Failed to parse auth status output: {stdout.decode()[:200]}",
+                )
+
+            logged_in = data.get("loggedIn", False)
+            if not logged_in:
+                return AuthStatus(authenticated=False, error="Claude CLI is not logged in")
+
+            return AuthStatus(
+                authenticated=True,
+                email=data.get("email"),
+                auth_method=data.get("authMethod"),
+                subscription_type=data.get("subscriptionType"),
+            )
+
+        except FileNotFoundError:
+            return AuthStatus(
+                authenticated=False,
+                error="Claude CLI not found. Install: npm install -g @anthropic-ai/claude-code",
+            )
+        except TimeoutError:
+            return AuthStatus(
+                authenticated=False,
+                error="claude auth status timed out",
+            )
+        except Exception as e:
+            return AuthStatus(authenticated=False, error=str(e))
 
     def __init__(
         self,
