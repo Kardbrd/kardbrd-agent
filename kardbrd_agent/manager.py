@@ -98,6 +98,16 @@ class ProxyManager:
             bot_token=self.bot_token,
         )
 
+        # Check Claude CLI authentication
+        auth_status = await ClaudeExecutor.check_claude_auth()
+        if auth_status.authenticated:
+            logger.info(
+                f"Claude auth OK (method={auth_status.auth_method}, "
+                f"email={auth_status.email}, plan={auth_status.subscription_type})"
+            )
+        else:
+            logger.warning(f"Claude auth check failed: {auth_status.error}")
+
         # Initialize worktree manager
         self.worktree_manager = WorktreeManager(
             self.cwd, worktrees_dir=self.worktrees_dir, setup_command=self.setup_command
@@ -314,6 +324,20 @@ class ProxyManager:
             session: ActiveSession | None = None
 
             try:
+                # Check Claude CLI authentication before doing work
+                auth_status = await ClaudeExecutor.check_claude_auth()
+                if not auth_status.authenticated:
+                    logger.error(f"Claude not authenticated: {auth_status.error}")
+                    self._add_reaction(card_id, comment_id, "🛑")
+                    self.client.add_comment(
+                        card_id,
+                        f"**Claude not authenticated**\n\n"
+                        f"```\n{auth_status.error}\n```\n\n"
+                        f"Please run `claude auth login` on the host.\n\n"
+                        f"@{author_name}",
+                    )
+                    return
+
                 # Create worktree for this card
                 worktree_path = self.worktree_manager.create_worktree(card_id)
                 logger.info(f"Using worktree: {worktree_path}")
@@ -573,6 +597,18 @@ DO NOT do any new work - just publish what you already did."""
             session: ActiveSession | None = None
 
             try:
+                # Check Claude CLI authentication before doing work
+                auth_status = await ClaudeExecutor.check_claude_auth()
+                if not auth_status.authenticated:
+                    logger.error(f"Claude not authenticated: {auth_status.error}")
+                    self.client.add_comment(
+                        card_id,
+                        f"**Automation Error** ({rule.name})\n\n"
+                        f"Claude not authenticated: `{auth_status.error}`\n\n"
+                        f"Please run `claude auth login` on the host.",
+                    )
+                    return
+
                 worktree_path = self.worktree_manager.create_worktree(card_id)
                 logger.info(f"Rule '{rule.name}': using worktree {worktree_path}")
 

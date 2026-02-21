@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kardbrd_agent.executor import ClaudeResult
+from kardbrd_agent.executor import AuthStatus, ClaudeResult
 from kardbrd_agent.manager import ActiveSession, ProxyManager
 from kardbrd_agent.rules import Rule, RuleEngine
 
@@ -1043,3 +1043,99 @@ class TestRuleEngineIntegration:
 
         mock_process.kill.assert_called_once()
         assert "abc12345" not in manager._active_sessions
+
+
+class TestAuthCheckInMention:
+    """Tests for authentication check before processing mentions."""
+
+    @pytest.mark.asyncio
+    async def test_process_mention_aborts_when_not_authenticated(self, mock_claude_auth):
+        """Test that _process_mention posts error and returns when auth fails."""
+        mock_claude_auth.return_value = AuthStatus(
+            authenticated=False, error="Claude CLI is not logged in"
+        )
+
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.worktree_manager = MagicMock()
+        manager.executor = MagicMock()
+        manager.executor.execute = AsyncMock()
+
+        await manager._process_mention("card1", "comm1", "@coder hi", "Paul")
+
+        # Should NOT spawn Claude
+        manager.executor.execute.assert_not_called()
+        # Should NOT create worktree
+        manager.worktree_manager.create_worktree.assert_not_called()
+        # Should post error comment
+        manager.client.add_comment.assert_called_once()
+        comment = manager.client.add_comment.call_args[0][1]
+        assert "not authenticated" in comment.lower()
+        assert "not logged in" in comment
+        assert "@Paul" in comment
+        # Should add stop reaction
+        manager.client.toggle_reaction.assert_any_call("card1", "comm1", "🛑")
+
+    @pytest.mark.asyncio
+    async def test_process_mention_proceeds_when_authenticated(self, mock_claude_auth):
+        """Test that _process_mention proceeds normally when auth succeeds."""
+        mock_claude_auth.return_value = AuthStatus(authenticated=True, email="test@test.com")
+
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.client.get_card_markdown.return_value = "# Card"
+        manager.executor = MagicMock()
+        manager.executor.extract_command.return_value = "/kp"
+        manager.executor.build_prompt.return_value = "prompt"
+        manager.executor.execute = AsyncMock(
+            return_value=ClaudeResult(success=True, result_text="Done")
+        )
+        manager.worktree_manager = MagicMock()
+        manager.worktree_manager.create_worktree.return_value = Path("/tmp/wt")
+        manager._has_recent_bot_comment = MagicMock(return_value=True)
+
+        await manager._process_mention("card1", "comm1", "@coder hi", "Paul")
+
+        # Should proceed to execute Claude
+        manager.executor.execute.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_process_rule_aborts_when_not_authenticated(self, mock_claude_auth):
+        """Test that _process_rule posts error when auth fails."""
+        mock_claude_auth.return_value = AuthStatus(
+            authenticated=False, error="Claude CLI is not logged in"
+        )
+
+        rule = Rule(name="auto-ke", events=["card_moved"], action="/ke")
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.worktree_manager = MagicMock()
+        manager.executor = MagicMock()
+        manager.executor.execute = AsyncMock()
+
+        await manager._process_rule("card1", rule, {"card_id": "card1"})
+
+        # Should NOT spawn Claude
+        manager.executor.execute.assert_not_called()
+        # Should post error comment
+        manager.client.add_comment.assert_called_once()
+        comment = manager.client.add_comment.call_args[0][1]
+        assert "Automation Error" in comment
+        assert "auto-ke" in comment
+        assert "not logged in" in comment
+
+    @pytest.mark.asyncio
+    async def test_process_mention_clears_session_on_auth_failure(self, mock_claude_auth):
+        """Test that active session is cleaned up when auth fails."""
+        mock_claude_auth.return_value = AuthStatus(authenticated=False, error="Not logged in")
+
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.worktree_manager = MagicMock()
+        manager.executor = MagicMock()
+
+        await manager._process_mention("card1", "comm1", "@coder hi", "Paul")
+
+        # Session should be cleaned up
+        assert "card1" not in manager._active_sessions
+        assert manager._processing is False
