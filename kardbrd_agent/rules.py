@@ -80,6 +80,9 @@ KNOWN_FIELDS = frozenset(
     }
 )
 
+# Top-level config fields recognized in the dict format of kardbrd.yml
+KNOWN_CONFIG_FIELDS = frozenset({"board_id", "agent", "api_url", "rules"})
+
 
 class Severity(Enum):
     """Severity level for validation issues."""
@@ -155,6 +158,15 @@ class Rule:
         if self.model is None:
             return None
         return MODEL_MAP.get(self.model.lower(), self.model)
+
+
+@dataclass
+class BoardConfig:
+    """Top-level config from kardbrd.yml (board_id, agent, api_url)."""
+
+    board_id: str
+    agent_name: str
+    api_url: str | None = None  # Falls back to env var or default
 
 
 @dataclass
@@ -306,15 +318,20 @@ def parse_rules(data: list[dict]) -> list[Rule]:
     return rules
 
 
-def load_rules(path: Path) -> RuleEngine:
+def load_rules(path: Path) -> tuple[RuleEngine, BoardConfig | None]:
     """
-    Load kardbrd.yml from the given path and return a RuleEngine.
+    Load kardbrd.yml from the given path and return a RuleEngine and optional config.
+
+    Supports two formats:
+    - Bare list: a YAML list of rules (backwards compat, returns None config)
+    - Dict format: a YAML dict with top-level config strings (board_id, agent, api_url)
+      and a ``rules`` list
 
     Args:
         path: Path to kardbrd.yml file
 
     Returns:
-        Configured RuleEngine instance
+        Tuple of (RuleEngine, BoardConfig or None)
 
     Raises:
         FileNotFoundError: If the file doesn't exist
@@ -327,14 +344,43 @@ def load_rules(path: Path) -> RuleEngine:
         data = yaml.safe_load(f)
 
     if data is None:
-        return RuleEngine(rules=[])
+        return RuleEngine(rules=[]), None
 
-    if not isinstance(data, list):
-        raise ValueError(f"kardbrd.yml must be a YAML list, got {type(data).__name__}")
+    if isinstance(data, list):
+        rules = parse_rules(data)
+        logger.info(f"Loaded {len(rules)} rules from {path}")
+        return RuleEngine(rules=rules), None
 
-    rules = parse_rules(data)
-    logger.info(f"Loaded {len(rules)} rules from {path}")
-    return RuleEngine(rules=rules)
+    if isinstance(data, dict):
+        config = _parse_board_config(data)
+        rules_data = data.get("rules")
+        if rules_data is None:
+            rules = []
+        elif isinstance(rules_data, list):
+            rules = parse_rules(rules_data)
+        else:
+            raise ValueError(f"'rules' must be a list, got {type(rules_data).__name__}")
+        logger.info(f"Loaded {len(rules)} rules from {path}")
+        return RuleEngine(rules=rules), config
+
+    raise ValueError(f"kardbrd.yml must be a YAML list or dict, got {type(data).__name__}")
+
+
+def _parse_board_config(data: dict) -> BoardConfig | None:
+    """Extract BoardConfig from top-level dict keys, if present."""
+    board_id = data.get("board_id")
+    agent = data.get("agent")
+    if not board_id and not agent:
+        return None
+    if not board_id:
+        raise ValueError("kardbrd.yml config: 'board_id' is required when 'agent' is set")
+    if not agent:
+        raise ValueError("kardbrd.yml config: 'agent' is required when 'board_id' is set")
+    return BoardConfig(
+        board_id=str(board_id),
+        agent_name=str(agent),
+        api_url=str(data["api_url"]) if data.get("api_url") else None,
+    )
 
 
 def validate_rules_file(path: Path) -> ValidationResult:
@@ -377,20 +423,27 @@ def validate_rules_file(path: Path) -> ValidationResult:
     if data is None:
         return result
 
-    # Must be a list
-    if not isinstance(data, list):
+    # Determine format: bare list or dict with top-level config
+    if isinstance(data, dict):
+        rules_list = _validate_dict_format(data, result)
+        if rules_list is None:
+            # errors already appended
+            return result
+    elif isinstance(data, list):
+        rules_list = data
+    else:
         result.issues.append(
             ValidationIssue(
                 Severity.ERROR,
                 None,
                 None,
-                f"File must contain a YAML list, got {type(data).__name__}",
+                f"File must contain a YAML list or dict, got {type(data).__name__}",
             )
         )
         return result
 
     # Validate each rule
-    for i, entry in enumerate(data):
+    for i, entry in enumerate(rules_list):
         if not isinstance(entry, dict):
             result.issues.append(
                 ValidationIssue(
@@ -505,6 +558,57 @@ def validate_rules_file(path: Path) -> ValidationResult:
     return result
 
 
+def _validate_dict_format(data: dict, result: ValidationResult) -> list | None:
+    """Validate the dict format of kardbrd.yml and return the rules list.
+
+    Returns None if the rules list cannot be extracted (errors appended to result).
+    """
+    # Validate config fields
+    has_board_id = "board_id" in data
+    has_agent = "agent" in data
+
+    if has_board_id and not has_agent:
+        result.issues.append(
+            ValidationIssue(
+                Severity.ERROR, None, None, "Config: 'agent' is required when 'board_id' is set"
+            )
+        )
+    if has_agent and not has_board_id:
+        result.issues.append(
+            ValidationIssue(
+                Severity.ERROR, None, None, "Config: 'board_id' is required when 'agent' is set"
+            )
+        )
+
+    # Check for unknown top-level keys
+    unknown = set(data.keys()) - KNOWN_CONFIG_FIELDS
+    if unknown:
+        result.issues.append(
+            ValidationIssue(
+                Severity.WARNING,
+                None,
+                None,
+                f"Unknown top-level field(s): {', '.join(sorted(unknown))}",
+            )
+        )
+
+    # Extract rules list
+    rules_data = data.get("rules")
+    if rules_data is None:
+        return []
+    if not isinstance(rules_data, list):
+        result.issues.append(
+            ValidationIssue(
+                Severity.ERROR,
+                None,
+                None,
+                f"'rules' must be a list, got {type(rules_data).__name__}",
+            )
+        )
+        return None
+    return rules_data
+
+
 class ReloadableRuleEngine:
     """
     Wraps a RuleEngine and hot-reloads kardbrd.yml when the file changes.
@@ -517,6 +621,7 @@ class ReloadableRuleEngine:
         self._path = path
         self._reload_interval = reload_interval
         self._engine = RuleEngine()
+        self._config: BoardConfig | None = None
         self._last_mtime: float = 0.0
         self._last_check: float = 0.0
         # Initial load
@@ -527,6 +632,12 @@ class ReloadableRuleEngine:
         """Return the current rules, reloading if needed."""
         self._maybe_reload()
         return self._engine.rules
+
+    @property
+    def config(self) -> BoardConfig | None:
+        """Return the current board config, reloading if needed."""
+        self._maybe_reload()
+        return self._config
 
     def match(self, event_type: str, message: dict) -> list[Rule]:
         """Match an event against the current rules, reloading if needed."""
@@ -550,7 +661,7 @@ class ReloadableRuleEngine:
             if mtime == self._last_mtime:
                 return
             self._last_mtime = mtime
-            self._engine = load_rules(self._path)
+            self._engine, self._config = load_rules(self._path)
             logger.info(f"Hot-reloaded {len(self._engine.rules)} rules from {self._path}")
         except Exception:
             logger.exception(f"Failed to reload rules from {self._path}")

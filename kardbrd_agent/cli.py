@@ -155,43 +155,11 @@ def start(
 
     Each Claude CLI session spawns its own kardbrd-mcp subprocess for MCP tools.
     """
-    state_manager = get_state_manager()
-
-    subscriptions = state_manager.get_all_subscriptions()
-    if not subscriptions:
-        console.print("[red]Error: No subscriptions configured[/red]")
-        console.print("Use 'kardbrd-agent sub <setup-url>' to add a subscription")
-        sys.exit(1)
-
-    # Display startup info
-    console.print("\n[bold]Proxy Manager[/bold]")
-    console.print()
-
-    # Configuration section
-    config_table = Table(show_header=False, box=None, padding=(0, 2))
-    config_table.add_column("Key", style="dim")
-    config_table.add_column("Value")
-
-    config_table.add_row("Config path", str(state_manager.state_dir))
-    config_table.add_row("Working directory", str(cwd or Path.cwd()))
-    if worktrees_dir:
-        config_table.add_row("Worktrees directory", str(worktrees_dir))
-    config_table.add_row("Timeout", f"{timeout}s")
-    config_table.add_row("Max concurrent", str(max_concurrent))
-    config_table.add_row("MCP", "kardbrd-mcp (stdio per session)")
-
-    config_table.add_row("Setup command", setup_cmd or "[dim]none (skip)[/dim]")
-
-    console.print(config_table)
-
-    # Subscriptions section
-    for board_id, sub in subscriptions.items():
-        console.print(f"\nBoard: {board_id}")
-        console.print(f"  Agent: @{sub.agent_name}")
-        console.print(f"  API: {sub.api_url}")
-
     # Load kardbrd.yml rules (with hot reload every 60s)
     rules_path = rules_file or (cwd or Path.cwd()) / "kardbrd.yml"
+    rule_engine: ReloadableRuleEngine | RuleEngine
+    board_config = None
+
     if rules_path.exists():
         # Validate before loading — fail fast with clear error messages
         validation = validate_rules_file(rules_path)
@@ -207,17 +175,87 @@ def start(
 
         try:
             rule_engine = ReloadableRuleEngine(rules_path)
-            console.print(
-                f"\nRules: loaded {len(rule_engine.rules)} from {rules_path} (hot reload: 60s)"
-            )
-            for rule in rule_engine.rules:
-                events = ", ".join(rule.events)
-                console.print(f"  - {rule.name} ({events} → {rule.action[:40]})")
+            board_config = rule_engine.config
         except Exception as e:
             console.print(f"\n[red]Error loading rules: {e}[/red]")
             sys.exit(1)
     else:
         rule_engine = RuleEngine()
+
+    # Resolve connection config: kardbrd.yml config or statefile fallback
+    if board_config:
+        # Config-in-yml mode
+        bot_token = os.getenv("KARDBRD_BOT_TOKEN")
+        if not bot_token:
+            console.print("[red]Error: KARDBRD_BOT_TOKEN environment variable is required[/red]")
+            console.print(
+                "[dim]Set KARDBRD_BOT_TOKEN when using board_id/agent in kardbrd.yml[/dim]"
+            )
+            sys.exit(1)
+        api_url = board_config.api_url or os.getenv("KARDBRD_API_URL", "http://localhost:8000")
+        subscription = BoardSubscription(
+            board_id=board_config.board_id,
+            api_url=api_url,
+            bot_token=bot_token,
+            agent_name=board_config.agent_name,
+        )
+        # Create in-memory state manager with yml-derived subscription
+        import tempfile
+
+        temp_state_dir = tempfile.mkdtemp(prefix="kardbrd-state-")
+        state_manager = DirectoryStateManager(temp_state_dir)
+        state_manager.add_subscription(subscription)
+    else:
+        # Statefile fallback (existing behavior)
+        state_manager = get_state_manager()
+        subscriptions = state_manager.get_all_subscriptions()
+        if not subscriptions:
+            console.print(
+                "[red]Error: No config in kardbrd.yml and no subscriptions configured[/red]"
+            )
+            console.print(
+                "Use 'kardbrd-agent sub <setup-url>' or add board_id/agent to kardbrd.yml"
+            )
+            sys.exit(1)
+
+    # Display startup info
+    console.print("\n[bold]Proxy Manager[/bold]")
+    console.print()
+
+    config_table = Table(show_header=False, box=None, padding=(0, 2))
+    config_table.add_column("Key", style="dim")
+    config_table.add_column("Value")
+
+    if board_config:
+        config_table.add_row("Config source", str(rules_path))
+    else:
+        config_table.add_row("Config path", str(state_manager.state_dir))
+    config_table.add_row("Working directory", str(cwd or Path.cwd()))
+    if worktrees_dir:
+        config_table.add_row("Worktrees directory", str(worktrees_dir))
+    config_table.add_row("Timeout", f"{timeout}s")
+    config_table.add_row("Max concurrent", str(max_concurrent))
+    config_table.add_row("MCP", "kardbrd-mcp (stdio per session)")
+    config_table.add_row("Setup command", setup_cmd or "[dim]none (skip)[/dim]")
+
+    console.print(config_table)
+
+    # Subscriptions section
+    all_subs = state_manager.get_all_subscriptions()
+    for board_id, sub in all_subs.items():
+        console.print(f"\nBoard: {board_id}")
+        console.print(f"  Agent: @{sub.agent_name}")
+        console.print(f"  API: {sub.api_url}")
+
+    # Display rules
+    if rules_path.exists():
+        console.print(
+            f"\nRules: loaded {len(rule_engine.rules)} from {rules_path} (hot reload: 60s)"
+        )
+        for rule in rule_engine.rules:
+            events = ", ".join(rule.events)
+            console.print(f"  - {rule.name} ({events} → {rule.action[:40]})")
+    else:
         console.print(f"\nRules: [dim]no kardbrd.yml found at {rules_path}[/dim]")
 
     console.print("\n[green]Starting...[/green]\n")

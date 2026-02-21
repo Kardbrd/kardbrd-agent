@@ -3,13 +3,37 @@
 # Place this file at the root of your repository (next to CLAUDE.md).
 # The agent loads it on startup and hot-reloads every 60 seconds.
 #
+# ── Format ────────────────────────────────────────────────────────────
+#
+# Two formats are supported:
+#
+# 1. Dict format (recommended) — top-level config + rules:
+#
+#   board_id: eykqek0W                # required: your board ID
+#   agent: MBPBot                     # required: agent name for @mentions
+#   api_url: http://app.kardbrd.com   # optional: defaults to KARDBRD_API_URL env var
+#
+#   rules:
+#     - name: "Rule name"
+#       event: card_moved
+#       action: /ke
+#
+#   When using dict format, set KARDBRD_BOT_TOKEN environment variable
+#   with the bot token (no statefile needed).
+#
+# 2. Bare list format (legacy) — requires statefile from `kardbrd-agent sub`:
+#
+#   - name: "Rule name"
+#     event: card_moved
+#     action: /ke
+#
+# ── Rule Schema ───────────────────────────────────────────────────────
+#
 # Each rule connects:
 #   1. An EVENT on the board (WebSocket event type)
 #   2. Optional CONDITIONS that narrow the match
 #   3. An ACTION — a prompt or skill command sent to Claude
 #   4. An optional MODEL override (haiku, sonnet, opus)
-#
-# ── Schema ──────────────────────────────────────────────────────────
 #
 #   - name: "Human-readable rule name"        # required
 #     event: card_moved                       # required, string or YAML list
@@ -113,86 +137,90 @@
 #
 # ── Examples ────────────────────────────────────────────────────────
 ---
+board_id: eykqek0W
+agent: MyBot
+api_url: http://app.kardbrd.com
 
-# When a card lands in the Ideas list, explore it immediately
-- name: Explore ideas
-  event:
-    - card_created
-    - card_moved
-  list: Ideas
-  action: /ke
+rules:
+  # When a card lands in the Ideas list, explore it immediately
+  - name: Explore ideas
+    event:
+      - card_created
+      - card_moved
+    list: Ideas
+    action: /ke
 
-# Cards titled exactly "📦" trigger a deploy pipeline
-- name: Box card ships
-  event: card_created
-  model: haiku
-  title: "📦"
-  action: |
-    Run `make test-all`, publish the report on the card,
-    then run `make prod-deploy` if everything is green.
+  # Cards titled exactly "📦" trigger a deploy pipeline
+  - name: Box card ships
+    event: card_created
+    model: haiku
+    title: "📦"
+    action: |
+      Run `make test-all`, publish the report on the card,
+      then run `make prod-deploy` if everything is green.
 
-# Moving a card to "In Progress" starts implementation
-- name: In progress starts coding
-  event: card_moved
-  list: In Progress
-  action: |
-    Implement the card in code and report what you did back
-    to the card. Don't forget to commit your changes.
+  # Moving a card to "In Progress" starts implementation
+  - name: In progress starts coding
+    event: card_moved
+    list: In Progress
+    action: |
+      Implement the card in code and report what you did back
+      to the card. Don't forget to commit your changes.
 
-# Adding the "exploration" label triggers deep exploration
-- name: Exploration label
-  event: label_added
-  label: exploration
-  action: /ke
+  # Adding the "exploration" label triggers deep exploration
+  - name: Exploration label
+    event: label_added
+    label: exploration
+    action: /ke
 
-# Respond to comments that mention @claude
-- name: Respond to mentions
-  event: comment_created
-  content_contains: "@claude"
-  action: respond to the comment on this card
+  # Respond to comments that mention @claude
+  - name: Respond to mentions
+    event: comment_created
+    content_contains: "@claude"
+    action: respond to the comment on this card
 
-# Automate cards in Ideas, but skip cards labeled "Agent"
-- name: Explore non-agent ideas
-  event: card_moved
-  list: Ideas
-  exclude_label: Agent
-  action: /ke
+  # Automate cards in Ideas, but skip cards labeled "Agent"
+  - name: Explore non-agent ideas
+    event: card_moved
+    list: Ideas
+    exclude_label: Agent
+    action: /ke
 
-# Archive event cleanup
-- name: Clean up on archive
-  event: card_archived
-  model: haiku
-  action: |
-    Post a summary of the card's status as a final comment.
+  # Archive event cleanup
+  - name: Clean up on archive
+    event: card_archived
+    model: haiku
+    action: |
+      Post a summary of the card's status as a final comment.
 
-# New checklist triggers a plan review
-- name: Review new checklists
-  event: checklist_created
-  model: sonnet
-  action: |
-    Review the new checklist on this card. Check if the items
-    are actionable and well-defined. Post suggestions as a comment.
+  # New checklist triggers a plan review
+  - name: Review new checklists
+    event: checklist_created
+    model: sonnet
+    action: |
+      Review the new checklist on this card. Check if the items
+      are actionable and well-defined. Post suggestions as a comment.
 
-# ── Reaction-based rules ──────────────────────────────────────────
+  # ── Reaction-based rules ──────────────────────────────────────────
 
-# Stop active agent session (deterministic, no Claude spawn)
-- name: Stop agent
-  event: reaction_added
-  emoji: "🛑"
-  action: __stop__
+  # Stop active agent session (deterministic, no Claude spawn)
+  - name: Stop agent
+    event: reaction_added
+    emoji: "🛑"
+    action: __stop__
 
-# Ship card when operator approves the review with ✅
-- name: Ship on approval
-  event: reaction_added
-  emoji: "✅"
-  require_user: "abc123"
-  model: sonnet
-  action: |
-    The operator approved the review. Merge the PR to main.
+  # Ship card when operator approves the review with ✅
+  - name: Ship on approval
+    event: reaction_added
+    emoji: "✅"
+    require_user: "abc123"
+    model: sonnet
+    action: |
+      The operator approved the review. Merge the PR to main.
 
-# Re-run review via 🔄 reaction
-- name: Re-run review
-  event: reaction_added
-  emoji: "🔄"
-  model: opus
-  action: /kr
+  # Re-run review via 🔄 reaction
+  - name: Re-run review
+    event: reaction_added
+    emoji: "🔄"
+    model: opus
+    action: /kr

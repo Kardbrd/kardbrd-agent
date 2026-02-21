@@ -60,14 +60,14 @@ class TestValidateRulesFile:
         assert len(result.errors) == 1
         assert "YAML syntax" in result.errors[0].message
 
-    def test_not_a_list(self, tmp_path):
-        """Test non-list YAML reports error."""
+    def test_dict_with_unknown_keys_warns(self, tmp_path):
+        """Test dict with unknown top-level keys produces warning."""
         f = tmp_path / "kardbrd.yml"
         f.write_text("key: value\n")
         result = validate_rules_file(f)
-        assert not result.is_valid
-        assert len(result.errors) == 1
-        assert "YAML list" in result.errors[0].message
+        assert result.is_valid  # warnings don't invalidate
+        assert len(result.warnings) == 1
+        assert "key" in result.warnings[0].message
 
     def test_rule_not_a_dict(self, tmp_path):
         """Test rule that isn't a mapping reports error."""
@@ -273,6 +273,45 @@ class TestValidateRulesFile:
         result = validate_rules_file(fixture)
         assert result.is_valid, f"MBPBot kardbrd.yml has errors: {result.errors}"
         assert len(result.warnings) == 0, f"MBPBot kardbrd.yml has warnings: {result.warnings}"
+
+    def test_dict_format_valid(self, tmp_path):
+        """Test valid dict format with config and rules."""
+        f = tmp_path / "kardbrd.yml"
+        f.write_text(
+            "board_id: abc\n"
+            "agent: Bot\n"
+            "rules:\n"
+            "  - name: test\n"
+            "    event: card_moved\n"
+            "    action: /ke\n"
+        )
+        result = validate_rules_file(f)
+        assert result.is_valid
+        assert result.issues == []
+
+    def test_dict_format_config_missing_agent_errors(self, tmp_path):
+        """Test dict with board_id but no agent reports error."""
+        f = tmp_path / "kardbrd.yml"
+        f.write_text("board_id: abc\nrules: []\n")
+        result = validate_rules_file(f)
+        assert not result.is_valid
+        assert any("agent" in e.message for e in result.errors)
+
+    def test_dict_format_config_missing_board_id_errors(self, tmp_path):
+        """Test dict with agent but no board_id reports error."""
+        f = tmp_path / "kardbrd.yml"
+        f.write_text("agent: Bot\nrules: []\n")
+        result = validate_rules_file(f)
+        assert not result.is_valid
+        assert any("board_id" in e.message for e in result.errors)
+
+    def test_not_list_or_dict(self, tmp_path):
+        """Test non-list, non-dict YAML reports error."""
+        f = tmp_path / "kardbrd.yml"
+        f.write_text("42\n")
+        result = validate_rules_file(f)
+        assert not result.is_valid
+        assert any("list or dict" in e.message for e in result.errors)
 
 
 class TestValidationResult:
