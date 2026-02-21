@@ -1,9 +1,12 @@
 """Command-line interface for the proxy manager."""
 
 import asyncio
+import atexit
 import logging
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import typer
@@ -11,16 +14,12 @@ from kardbrd_client import (
     BoardSubscription,
     DirectoryStateManager,
     configure_logging,
-    display_subscription_info,
-    fetch_setup_url,
-    is_setup_url,
-    validate_manual_subscription,
 )
 from rich.console import Console
 from rich.table import Table
 
 from .manager import ProxyManager
-from .rules import ReloadableRuleEngine, RuleEngine, Severity, validate_rules_file
+from .rules import ReloadableRuleEngine, Severity, validate_rules_file
 
 configure_logging()
 logger = logging.getLogger("kardbrd_agent.cli")
@@ -31,80 +30,6 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
-
-
-def get_state_dir() -> str:
-    """Get state directory from environment or default."""
-    return os.getenv("AGENT_STATE_DIR", "state")
-
-
-def get_state_manager() -> DirectoryStateManager:
-    """Get the directory-based state manager."""
-    return DirectoryStateManager(get_state_dir())
-
-
-@app.command()
-def sub(
-    board_id_or_url: str = typer.Argument(
-        ...,
-        help="Setup URL or Board ID (UUID)",
-    ),
-    token: str = typer.Argument(
-        None,
-        help="Bot authentication token (required if using board ID)",
-    ),
-    name: str = typer.Option(
-        None,
-        "--name",
-        "-n",
-        help="Agent name for @mentions (required if using board ID)",
-    ),
-    api_url: str = typer.Option(
-        "http://localhost:8000",
-        "--api-url",
-        help="API base URL",
-    ),
-):
-    """Subscribe to a board using setup URL or manual credentials."""
-    state_manager = get_state_manager()
-
-    # Check if it's a URL or board_id
-    if is_setup_url(board_id_or_url):
-        # Fetch credentials from setup URL
-        credentials = fetch_setup_url(board_id_or_url)
-        board_id = credentials["board_id"]
-        bot_token = credentials["token"]
-        agent_name = credentials["agent_name"]
-        api_base_url = credentials["api_url"]
-    else:
-        # Manual board_id + token
-        board_id = board_id_or_url
-        bot_token = token
-        api_base_url = api_url
-        agent_name = name
-
-        # Validate manual inputs
-        validate_manual_subscription(board_id, bot_token, agent_name)
-
-    # Create subscription
-    subscription = BoardSubscription(
-        board_id=board_id,
-        api_url=api_base_url,
-        bot_token=bot_token,
-        agent_name=agent_name,
-    )
-
-    # Save subscription
-    state_manager.add_subscription(subscription)
-
-    # Display confirmation
-    display_subscription_info(
-        board_id=board_id,
-        agent_name=agent_name,
-        api_url=api_base_url,
-        token=bot_token,
-        state_file=str(state_manager.state_dir),
-    )
 
 
 @app.command()
@@ -153,72 +78,86 @@ def start(
 ):
     """Start the proxy manager and listen for @mentions.
 
-    Each Claude CLI session spawns its own kardbrd-mcp subprocess for MCP tools.
+    Requires a kardbrd.yml with board_id, agent, and rules.
+    Bot token is read from the KARDBRD_BOT_TOKEN environment variable.
     """
-    state_manager = get_state_manager()
+    # Load kardbrd.yml (with hot reload every 60s)
+    rules_path = rules_file or (cwd or Path.cwd()) / "kardbrd.yml"
 
-    subscriptions = state_manager.get_all_subscriptions()
-    if not subscriptions:
-        console.print("[red]Error: No subscriptions configured[/red]")
-        console.print("Use 'kardbrd-agent sub <setup-url>' to add a subscription")
+    if not rules_path.exists():
+        console.print(f"[red]Error: {rules_path} not found[/red]")
+        console.print("[dim]Create a kardbrd.yml with board_id, agent, and rules.[/dim]")
         sys.exit(1)
+
+    # Validate before loading — fail fast with clear error messages
+    validation = validate_rules_file(rules_path)
+    if validation.warnings:
+        for issue in validation.warnings:
+            console.print(f"  [yellow]warning[/yellow]: {issue}")
+    if not validation.is_valid:
+        console.print("\n[red]kardbrd.yml has errors:[/red]\n")
+        for issue in validation.errors:
+            console.print(f"  [red]error[/red]: {issue}")
+        console.print(f"\n[dim]Fix the errors above in {rules_path} and restart.[/dim]")
+        sys.exit(1)
+
+    try:
+        rule_engine = ReloadableRuleEngine(rules_path)
+    except Exception as e:
+        console.print(f"\n[red]Error loading rules: {e}[/red]")
+        sys.exit(1)
+
+    board_config = rule_engine.config
+
+    # Read bot token from environment
+    bot_token = os.getenv("KARDBRD_BOT_TOKEN")
+    if not bot_token:
+        console.print("[red]Error: KARDBRD_BOT_TOKEN environment variable is required[/red]")
+        sys.exit(1)
+
+    api_url = board_config.api_url or os.getenv("KARDBRD_API_URL", "http://localhost:8000")
+    subscription = BoardSubscription(
+        board_id=board_config.board_id,
+        api_url=api_url,
+        bot_token=bot_token,
+        agent_name=board_config.agent_name,
+    )
+
+    # Create in-memory state manager with yml-derived subscription
+    temp_state_dir = tempfile.mkdtemp(prefix="kardbrd-state-")
+    atexit.register(shutil.rmtree, temp_state_dir, ignore_errors=True)
+    state_manager = DirectoryStateManager(temp_state_dir)
+    state_manager.add_subscription(subscription)
 
     # Display startup info
     console.print("\n[bold]Proxy Manager[/bold]")
     console.print()
 
-    # Configuration section
     config_table = Table(show_header=False, box=None, padding=(0, 2))
     config_table.add_column("Key", style="dim")
     config_table.add_column("Value")
 
-    config_table.add_row("Config path", str(state_manager.state_dir))
+    config_table.add_row("Config source", str(rules_path))
     config_table.add_row("Working directory", str(cwd or Path.cwd()))
     if worktrees_dir:
         config_table.add_row("Worktrees directory", str(worktrees_dir))
     config_table.add_row("Timeout", f"{timeout}s")
     config_table.add_row("Max concurrent", str(max_concurrent))
     config_table.add_row("MCP", "kardbrd-mcp (stdio per session)")
-
     config_table.add_row("Setup command", setup_cmd or "[dim]none (skip)[/dim]")
 
     console.print(config_table)
 
-    # Subscriptions section
-    for board_id, sub in subscriptions.items():
-        console.print(f"\nBoard: {board_id}")
-        console.print(f"  Agent: @{sub.agent_name}")
-        console.print(f"  API: {sub.api_url}")
+    # Display subscription info
+    console.print(f"\nBoard: {board_config.board_id}")
+    console.print(f"  Agent: @{board_config.agent_name}")
+    console.print(f"  API: {api_url}")
 
-    # Load kardbrd.yml rules (with hot reload every 60s)
-    rules_path = rules_file or (cwd or Path.cwd()) / "kardbrd.yml"
-    if rules_path.exists():
-        # Validate before loading — fail fast with clear error messages
-        validation = validate_rules_file(rules_path)
-        if validation.warnings:
-            for issue in validation.warnings:
-                console.print(f"  [yellow]warning[/yellow]: {issue}")
-        if not validation.is_valid:
-            console.print("\n[red]kardbrd.yml has errors:[/red]\n")
-            for issue in validation.errors:
-                console.print(f"  [red]error[/red]: {issue}")
-            console.print(f"\n[dim]Fix the errors above in {rules_path} and restart.[/dim]")
-            sys.exit(1)
-
-        try:
-            rule_engine = ReloadableRuleEngine(rules_path)
-            console.print(
-                f"\nRules: loaded {len(rule_engine.rules)} from {rules_path} (hot reload: 60s)"
-            )
-            for rule in rule_engine.rules:
-                events = ", ".join(rule.events)
-                console.print(f"  - {rule.name} ({events} → {rule.action[:40]})")
-        except Exception as e:
-            console.print(f"\n[red]Error loading rules: {e}[/red]")
-            sys.exit(1)
-    else:
-        rule_engine = RuleEngine()
-        console.print(f"\nRules: [dim]no kardbrd.yml found at {rules_path}[/dim]")
+    # Display rules
+    console.print(f"\nRules: loaded {len(rule_engine.rules)} from {rules_path} (hot reload: 60s)")
+    for rule in rule_engine.rules:
+        events = ", ".join(rule.events)
+        console.print(f"  - {rule.name} ({events} → {rule.action[:40]})")
 
     console.print("\n[green]Starting...[/green]\n")
 
@@ -240,76 +179,6 @@ def start(
     except Exception as e:
         console.print(f"\n[red]Error: {e}[/red]")
         sys.exit(1)
-
-
-@app.command()
-def status():
-    """Show current subscription status."""
-    state_manager = get_state_manager()
-    subscriptions = state_manager.get_all_subscriptions()
-
-    if not subscriptions:
-        console.print("\n[yellow]Not subscribed to any board[/yellow]")
-        console.print("Use 'kardbrd-agent sub <setup-url>' to subscribe\n")
-        sys.exit(0)
-
-    console.print("\n[bold]Proxy Manager Status[/bold]\n")
-    console.print(f"State directory: {state_manager.state_dir}\n")
-
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Board ID")
-    table.add_column("Agent Name")
-    table.add_column("API URL")
-
-    for board_id, sub in subscriptions.items():
-        table.add_row(
-            board_id,
-            sub.agent_name,
-            sub.api_url,
-        )
-
-    console.print(table)
-    console.print(f"\nTotal: {len(subscriptions)} subscription(s)\n")
-
-
-@app.command()
-def unsub(
-    yes: bool = typer.Option(
-        False,
-        "--yes",
-        "-y",
-        help="Skip confirmation prompt",
-    ),
-):
-    """Unsubscribe from all boards."""
-    state_manager = get_state_manager()
-    subscriptions = state_manager.get_all_subscriptions()
-
-    if not subscriptions:
-        console.print("Not currently subscribed to any board")
-        sys.exit(0)
-
-    console.print(f"\nCurrently subscribed to {len(subscriptions)} board(s):")
-    for board_id, sub in subscriptions.items():
-        console.print(f"  - {board_id} ({sub.agent_name})")
-
-    # Ask for confirmation
-    if not yes:
-        response = typer.prompt("\nRemove ALL subscriptions? [y/N]", default="n")
-        if response.lower() not in ("y", "yes"):
-            console.print("Cancelled")
-            sys.exit(0)
-
-    # Remove all subscriptions
-    removed_count = 0
-    for board_id in list(subscriptions.keys()):
-        if state_manager.remove_subscription(board_id):
-            removed_count += 1
-
-    if removed_count > 0:
-        console.print(f"[green]Removed {removed_count} subscription(s)[/green]\n")
-    else:
-        console.print("No subscriptions found to remove\n")
 
 
 @app.command()
