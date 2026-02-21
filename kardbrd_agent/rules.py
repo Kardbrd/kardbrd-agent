@@ -80,7 +80,7 @@ KNOWN_FIELDS = frozenset(
     }
 )
 
-# Top-level config fields recognized in the dict format of kardbrd.yml
+# Top-level fields recognized in kardbrd.yml
 KNOWN_CONFIG_FIELDS = frozenset({"board_id", "agent", "api_url", "rules"})
 
 
@@ -318,24 +318,22 @@ def parse_rules(data: list[dict]) -> list[Rule]:
     return rules
 
 
-def load_rules(path: Path) -> tuple[RuleEngine, BoardConfig | None]:
+def load_rules(path: Path) -> tuple[RuleEngine, BoardConfig]:
     """
-    Load kardbrd.yml from the given path and return a RuleEngine and optional config.
+    Load kardbrd.yml from the given path and return a RuleEngine and config.
 
-    Supports two formats:
-    - Bare list: a YAML list of rules (backwards compat, returns None config)
-    - Dict format: a YAML dict with top-level config strings (board_id, agent, api_url)
-      and a ``rules`` list
+    The file must be a YAML dict with top-level config strings (board_id, agent,
+    optional api_url) and a ``rules`` list.
 
     Args:
         path: Path to kardbrd.yml file
 
     Returns:
-        Tuple of (RuleEngine, BoardConfig or None)
+        Tuple of (RuleEngine, BoardConfig)
 
     Raises:
         FileNotFoundError: If the file doesn't exist
-        ValueError: If the file is invalid
+        ValueError: If the file is invalid or missing required config
     """
     if not path.exists():
         raise FileNotFoundError(f"Rules file not found: {path}")
@@ -344,38 +342,37 @@ def load_rules(path: Path) -> tuple[RuleEngine, BoardConfig | None]:
         data = yaml.safe_load(f)
 
     if data is None:
-        return RuleEngine(rules=[]), None
+        raise ValueError("kardbrd.yml is empty — board_id and agent are required")
 
-    if isinstance(data, list):
-        rules = parse_rules(data)
-        logger.info(f"Loaded {len(rules)} rules from {path}")
-        return RuleEngine(rules=rules), None
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"kardbrd.yml must be a YAML dict with board_id, agent, and rules keys, "
+            f"got {type(data).__name__}"
+        )
 
-    if isinstance(data, dict):
-        config = _parse_board_config(data)
-        rules_data = data.get("rules")
-        if rules_data is None:
-            rules = []
-        elif isinstance(rules_data, list):
-            rules = parse_rules(rules_data)
-        else:
-            raise ValueError(f"'rules' must be a list, got {type(rules_data).__name__}")
-        logger.info(f"Loaded {len(rules)} rules from {path}")
-        return RuleEngine(rules=rules), config
-
-    raise ValueError(f"kardbrd.yml must be a YAML list or dict, got {type(data).__name__}")
+    config = _parse_board_config(data)
+    rules_data = data.get("rules")
+    if rules_data is None:
+        rules = []
+    elif isinstance(rules_data, list):
+        rules = parse_rules(rules_data)
+    else:
+        raise ValueError(f"'rules' must be a list, got {type(rules_data).__name__}")
+    logger.info(f"Loaded {len(rules)} rules from {path}")
+    return RuleEngine(rules=rules), config
 
 
-def _parse_board_config(data: dict) -> BoardConfig | None:
-    """Extract BoardConfig from top-level dict keys, if present."""
+def _parse_board_config(data: dict) -> BoardConfig:
+    """Extract BoardConfig from top-level dict keys.
+
+    Both board_id and agent are required.
+    """
     board_id = data.get("board_id")
     agent = data.get("agent")
-    if not board_id and not agent:
-        return None
     if not board_id:
-        raise ValueError("kardbrd.yml config: 'board_id' is required when 'agent' is set")
+        raise ValueError("kardbrd.yml: 'board_id' is required")
     if not agent:
-        raise ValueError("kardbrd.yml config: 'agent' is required when 'board_id' is set")
+        raise ValueError("kardbrd.yml: 'agent' is required")
     return BoardConfig(
         board_id=str(board_id),
         agent_name=str(agent),
@@ -419,27 +416,31 @@ def validate_rules_file(path: Path) -> ValidationResult:
         )
         return result
 
-    # Empty file is valid
+    # Empty file
     if data is None:
+        result.issues.append(
+            ValidationIssue(
+                Severity.ERROR, None, None, "File is empty — board_id and agent are required"
+            )
+        )
         return result
 
-    # Determine format: bare list or dict with top-level config
-    if isinstance(data, dict):
-        rules_list = _validate_dict_format(data, result)
-        if rules_list is None:
-            # errors already appended
-            return result
-    elif isinstance(data, list):
-        rules_list = data
-    else:
+    # Must be a dict with board_id, agent, and rules
+    if not isinstance(data, dict):
         result.issues.append(
             ValidationIssue(
                 Severity.ERROR,
                 None,
                 None,
-                f"File must contain a YAML list or dict, got {type(data).__name__}",
+                f"File must be a YAML dict with board_id, agent, and rules keys, "
+                f"got {type(data).__name__}",
             )
         )
+        return result
+
+    rules_list = _validate_dict_format(data, result)
+    if rules_list is None:
+        # errors already appended
         return result
 
     # Validate each rule
@@ -563,22 +564,11 @@ def _validate_dict_format(data: dict, result: ValidationResult) -> list | None:
 
     Returns None if the rules list cannot be extracted (errors appended to result).
     """
-    # Validate config fields
-    has_board_id = "board_id" in data
-    has_agent = "agent" in data
-
-    if has_board_id and not has_agent:
-        result.issues.append(
-            ValidationIssue(
-                Severity.ERROR, None, None, "Config: 'agent' is required when 'board_id' is set"
-            )
-        )
-    if has_agent and not has_board_id:
-        result.issues.append(
-            ValidationIssue(
-                Severity.ERROR, None, None, "Config: 'board_id' is required when 'agent' is set"
-            )
-        )
+    # Validate required config fields
+    if "board_id" not in data:
+        result.issues.append(ValidationIssue(Severity.ERROR, None, None, "'board_id' is required"))
+    if "agent" not in data:
+        result.issues.append(ValidationIssue(Severity.ERROR, None, None, "'agent' is required"))
 
     # Check for unknown top-level keys
     unknown = set(data.keys()) - KNOWN_CONFIG_FIELDS
@@ -621,7 +611,7 @@ class ReloadableRuleEngine:
         self._path = path
         self._reload_interval = reload_interval
         self._engine = RuleEngine()
-        self._config: BoardConfig | None = None
+        self._config: BoardConfig | None = None  # set by _try_reload
         self._last_mtime: float = 0.0
         self._last_check: float = 0.0
         # Initial load
@@ -634,9 +624,12 @@ class ReloadableRuleEngine:
         return self._engine.rules
 
     @property
-    def config(self) -> BoardConfig | None:
+    def config(self) -> BoardConfig:
         """Return the current board config, reloading if needed."""
         self._maybe_reload()
+        assert self._config is not None, (
+            "BoardConfig not loaded — kardbrd.yml must have board_id and agent"
+        )
         return self._config
 
     def match(self, event_type: str, message: dict) -> list[Rule]:

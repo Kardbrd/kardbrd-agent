@@ -766,72 +766,70 @@ class TestLoadRules:
         """Test loading a valid kardbrd.yml file."""
         rules_file = tmp_path / "kardbrd.yml"
         rules_file.write_text(
-            """
-- name: Auto-explore
-  event: card_moved
-  list: Ideas
-  action: /ke
-
-- name: Deploy box
-  event: card_created
-  title: "📦"
-  model: haiku
-  action: "Run make test-all"
-"""
+            "board_id: test123\n"
+            "agent: TestBot\n"
+            "rules:\n"
+            "  - name: Auto-explore\n"
+            "    event: card_moved\n"
+            "    list: Ideas\n"
+            "    action: /ke\n"
+            "  - name: Deploy box\n"
+            "    event: card_created\n"
+            '    title: "\U0001f4e6"\n'
+            "    model: haiku\n"
+            '    action: "Run make test-all"\n'
         )
         engine, config = load_rules(rules_file)
         assert len(engine.rules) == 2
         assert engine.rules[0].name == "Auto-explore"
         assert engine.rules[0].list == "Ideas"
         assert engine.rules[1].model == "haiku"
-        assert config is None
+        assert config.board_id == "test123"
 
-    def test_load_empty_yaml(self, tmp_path):
-        """Test loading an empty YAML file returns empty engine."""
+    def test_load_empty_yaml_raises(self, tmp_path):
+        """Test loading an empty YAML file raises ValueError."""
         rules_file = tmp_path / "kardbrd.yml"
         rules_file.write_text("")
-        engine, config = load_rules(rules_file)
-        assert len(engine.rules) == 0
-        assert config is None
+        with pytest.raises(ValueError, match="empty"):
+            load_rules(rules_file)
 
     def test_load_nonexistent_file_raises(self, tmp_path):
         """Test loading nonexistent file raises FileNotFoundError."""
         with pytest.raises(FileNotFoundError):
             load_rules(tmp_path / "missing.yml")
 
-    def test_load_dict_without_config_is_valid(self, tmp_path):
-        """Test loading a dict with only unknown keys returns empty engine."""
+    def test_load_bare_list_raises(self, tmp_path):
+        """Test loading a bare list raises ValueError (old format not supported)."""
         rules_file = tmp_path / "kardbrd.yml"
-        rules_file.write_text("key: value\n")
-        engine, config = load_rules(rules_file)
-        assert len(engine.rules) == 0
-        assert config is None
+        rules_file.write_text("- name: test\n  event: card_moved\n  action: /ke\n")
+        with pytest.raises(ValueError, match="dict"):
+            load_rules(rules_file)
 
     def test_load_from_card_examples(self, tmp_path):
         """Test loading the example rules from the card description."""
         rules_file = tmp_path / "kardbrd.yml"
         yaml_content = (
-            "- name: Explore ideas\n"
-            "  event:\n"
-            "    - card_created\n"
-            "    - card_moved\n"
-            "  list: ideas\n"
-            "  action: /ke\n"
-            "\n"
-            "- name: Box card ships\n"
-            "  event: card_created\n"
-            "  model: haiku\n"
-            '  title: "\U0001f4e6"\n'
-            "  action: Run tests and deploy\n"
-            "\n"
-            "- name: In progress starts coding\n"
-            "  event: card_moved\n"
-            "  list: in progress\n"
-            "  action: implement and commit\n"
-            "\n"
-            "- name: Exploration label\n"
-            "  event: label_added\n"
-            "  action: /ke\n"
+            "board_id: test123\n"
+            "agent: TestBot\n"
+            "rules:\n"
+            "  - name: Explore ideas\n"
+            "    event:\n"
+            "      - card_created\n"
+            "      - card_moved\n"
+            "    list: ideas\n"
+            "    action: /ke\n"
+            "  - name: Box card ships\n"
+            "    event: card_created\n"
+            "    model: haiku\n"
+            '    title: "\U0001f4e6"\n'
+            "    action: Run tests and deploy\n"
+            "  - name: In progress starts coding\n"
+            "    event: card_moved\n"
+            "    list: in progress\n"
+            "    action: implement and commit\n"
+            "  - name: Exploration label\n"
+            "    event: label_added\n"
+            "    action: /ke\n"
         )
         rules_file.write_text(yaml_content)
         engine, config = load_rules(rules_file)
@@ -841,23 +839,25 @@ class TestLoadRules:
         assert engine.rules[1].title == "\U0001f4e6"
         assert engine.rules[2].list == "in progress"
         assert engine.rules[3].events == ["label_added"]
-        assert config is None
+        assert config.board_id == "test123"
 
     def test_load_yaml_list_events(self, tmp_path):
         """Test loading a YAML file with list-style events works end-to-end."""
         rules_file = tmp_path / "kardbrd.yml"
         rules_file.write_text(
-            "- name: Explore ideas\n"
-            "  event:\n"
-            "    - card_created\n"
-            "    - card_moved\n"
-            "  list: Ideas\n"
-            "  action: /ke\n"
+            "board_id: test\n"
+            "agent: Bot\n"
+            "rules:\n"
+            "  - name: Explore ideas\n"
+            "    event:\n"
+            "      - card_created\n"
+            "      - card_moved\n"
+            "    list: Ideas\n"
+            "    action: /ke\n"
         )
         engine, config = load_rules(rules_file)
         assert len(engine.rules) == 1
         assert engine.rules[0].events == ["card_created", "card_moved"]
-        assert config is None
 
     def test_load_own_kardbrd_yml(self):
         """Test the repo's own kardbrd.yml loads without errors."""
@@ -868,7 +868,6 @@ class TestLoadRules:
             pytest.skip("kardbrd.yml not found")
         engine, config = load_rules(own)
         assert len(engine.rules) > 0, "kardbrd.yml should contain at least one rule"
-        assert config is not None, "kardbrd.yml should have board config"
         assert config.board_id == "0gl5MlBZ"
         assert config.agent_name == "KABot"
 
@@ -885,23 +884,25 @@ class TestLoadRules:
         rule_names = [r.name for r in engine.rules]
         assert "Explore new cards in Ideas" in rule_names
         assert "Box card plans deployment" in rule_names
-        # MBPBot fixture is bare list format, so no config
-        assert config is None
+        assert config.board_id == "0gl5MlBZ"
+        assert config.agent_name == "MBPBot"
 
     def test_load_reaction_rules_yaml(self, tmp_path):
         """Test loading reaction-based rules from kardbrd.yml."""
         rules_file = tmp_path / "kardbrd.yml"
         rules_file.write_text(
-            "- name: Ship via reaction\n"
-            "  event: reaction_added\n"
-            '  emoji: "\U0001f4e6"\n'
-            "  model: sonnet\n"
-            "  action: Ship this card\n"
-            "\n"
-            "- name: Stop agent\n"
-            "  event: reaction_added\n"
-            '  emoji: "\U0001f6d1"\n'
-            "  action: __stop__\n"
+            "board_id: test\n"
+            "agent: Bot\n"
+            "rules:\n"
+            "  - name: Ship via reaction\n"
+            "    event: reaction_added\n"
+            '    emoji: "\U0001f4e6"\n'
+            "    model: sonnet\n"
+            "    action: Ship this card\n"
+            "  - name: Stop agent\n"
+            "    event: reaction_added\n"
+            '    emoji: "\U0001f6d1"\n'
+            "    action: __stop__\n"
         )
         engine, config = load_rules(rules_file)
         assert len(engine.rules) == 2
@@ -910,7 +911,6 @@ class TestLoadRules:
         assert not engine.rules[0].is_stop
         assert engine.rules[1].emoji == "\U0001f6d1"
         assert engine.rules[1].is_stop
-        assert config is None
 
 
 class TestKnownFields:
@@ -1275,10 +1275,14 @@ class TestSpecEventPayloads:
 class TestReloadableRuleEngine:
     """Tests for ReloadableRuleEngine hot reload."""
 
+    def _write_yml(self, path, rules_yaml, board_id="test", agent="Bot"):
+        """Helper to write a valid kardbrd.yml with config."""
+        path.write_text(f"board_id: {board_id}\nagent: {agent}\nrules:\n{rules_yaml}")
+
     def test_initial_load(self, tmp_path):
         """Test initial load reads rules from file."""
         rules_file = tmp_path / "kardbrd.yml"
-        rules_file.write_text("- name: test\n  event: card_moved\n  action: /ke\n")
+        self._write_yml(rules_file, "  - name: test\n    event: card_moved\n    action: /ke\n")
         engine = ReloadableRuleEngine(rules_file)
         assert len(engine.rules) == 1
         assert engine.rules[0].name == "test"
@@ -1286,7 +1290,9 @@ class TestReloadableRuleEngine:
     def test_match_delegates_to_engine(self, tmp_path):
         """Test match() works through ReloadableRuleEngine."""
         rules_file = tmp_path / "kardbrd.yml"
-        rules_file.write_text("- name: test\n  event: card_moved\n  list: Ideas\n  action: /ke\n")
+        self._write_yml(
+            rules_file, "  - name: test\n    event: card_moved\n    list: Ideas\n    action: /ke\n"
+        )
         engine = ReloadableRuleEngine(rules_file)
         matches = engine.match(
             "card_moved",
@@ -1297,19 +1303,16 @@ class TestReloadableRuleEngine:
     def test_reload_on_file_change(self, tmp_path):
         """Test rules are reloaded when file changes."""
         rules_file = tmp_path / "kardbrd.yml"
-        rules_file.write_text("- name: rule1\n  event: card_moved\n  action: /ke\n")
+        self._write_yml(rules_file, "  - name: rule1\n    event: card_moved\n    action: /ke\n")
         engine = ReloadableRuleEngine(rules_file, reload_interval=0)
         assert len(engine.rules) == 1
 
         # Modify the file
         time.sleep(0.05)  # Ensure mtime changes
-        rules_file.write_text(
-            "- name: rule1\n"
-            "  event: card_moved\n"
-            "  action: /ke\n"
-            "- name: rule2\n"
-            "  event: card_created\n"
-            "  action: /kp\n"
+        self._write_yml(
+            rules_file,
+            "  - name: rule1\n    event: card_moved\n    action: /ke\n"
+            "  - name: rule2\n    event: card_created\n    action: /kp\n",
         )
 
         # Access rules — should trigger reload
@@ -1318,20 +1321,17 @@ class TestReloadableRuleEngine:
     def test_no_reload_within_interval(self, tmp_path):
         """Test rules are NOT reloaded within the reload interval."""
         rules_file = tmp_path / "kardbrd.yml"
-        rules_file.write_text("- name: rule1\n  event: card_moved\n  action: /ke\n")
+        self._write_yml(rules_file, "  - name: rule1\n    event: card_moved\n    action: /ke\n")
         # Use a very long interval
         engine = ReloadableRuleEngine(rules_file, reload_interval=9999)
         assert len(engine.rules) == 1
 
         # Modify the file
         time.sleep(0.05)
-        rules_file.write_text(
-            "- name: rule1\n"
-            "  event: card_moved\n"
-            "  action: /ke\n"
-            "- name: rule2\n"
-            "  event: card_created\n"
-            "  action: /kp\n"
+        self._write_yml(
+            rules_file,
+            "  - name: rule1\n    event: card_moved\n    action: /ke\n"
+            "  - name: rule2\n    event: card_created\n    action: /kp\n",
         )
 
         # Should NOT reload yet (interval hasn't passed)
@@ -1340,11 +1340,11 @@ class TestReloadableRuleEngine:
     def test_survives_invalid_yaml_on_reload(self, tmp_path):
         """Test engine keeps old rules when reload encounters bad YAML."""
         rules_file = tmp_path / "kardbrd.yml"
-        rules_file.write_text("- name: rule1\n  event: card_moved\n  action: /ke\n")
+        self._write_yml(rules_file, "  - name: rule1\n    event: card_moved\n    action: /ke\n")
         engine = ReloadableRuleEngine(rules_file, reload_interval=0)
         assert len(engine.rules) == 1
 
-        # Write config with missing required field (agent without board_id)
+        # Write file missing required field (agent without board_id)
         time.sleep(0.05)
         rules_file.write_text("agent: Bot\nrules: []\n")
 
@@ -1363,7 +1363,7 @@ class TestReloadableRuleEngine:
         assert len(engine.rules) == 0
 
         # Create the file
-        rules_file.write_text("- name: rule1\n  event: card_moved\n  action: /ke\n")
+        self._write_yml(rules_file, "  - name: rule1\n    event: card_moved\n    action: /ke\n")
 
         # Should pick it up on next access
         assert len(engine.rules) == 1
@@ -1555,16 +1555,18 @@ class TestRequireLabel:
         """Test loading kardbrd.yml with require_label rules."""
         rules_file = tmp_path / "kardbrd.yml"
         rules_file.write_text(
-            "- name: agent only\n"
-            "  event: card_moved\n"
-            "  list: Ideas\n"
-            "  require_label: Agent\n"
-            "  action: /ke\n"
+            "board_id: test\n"
+            "agent: Bot\n"
+            "rules:\n"
+            "  - name: agent only\n"
+            "    event: card_moved\n"
+            "    list: Ideas\n"
+            "    require_label: Agent\n"
+            "    action: /ke\n"
         )
         engine, config = load_rules(rules_file)
         assert len(engine.rules) == 1
         assert engine.rules[0].require_label == "Agent"
-        assert config is None
 
 
 class TestEmoji:
@@ -1904,7 +1906,7 @@ class TestBoardConfig:
 
 
 class TestLoadRulesDictFormat:
-    """Tests for loading kardbrd.yml in dict format."""
+    """Tests for loading kardbrd.yml dict format."""
 
     def test_load_dict_format_with_config(self, tmp_path):
         """Test loading dict format with top-level config and rules."""
@@ -1920,7 +1922,6 @@ class TestLoadRulesDictFormat:
         )
         engine, config = load_rules(rules_file)
         assert len(engine.rules) == 1
-        assert config is not None
         assert config.board_id == "0gl5MlBZ"
         assert config.agent_name == "TestBot"
         assert config.api_url == "http://app.kardbrd.com"
@@ -1946,40 +1947,23 @@ class TestLoadRulesDictFormat:
         assert engine.rules[0].list == "Ideas"
         assert engine.rules[1].name == "rule2"
 
-    def test_load_bare_list_backward_compat(self, tmp_path):
-        """Test bare list format still works and returns None config."""
-        rules_file = tmp_path / "kardbrd.yml"
-        rules_file.write_text("- name: test\n  event: card_moved\n  action: /ke\n")
-        engine, config = load_rules(rules_file)
-        assert len(engine.rules) == 1
-        assert config is None
-
-    def test_load_dict_without_config_key(self, tmp_path):
-        """Test dict with only rules key, no config fields."""
-        rules_file = tmp_path / "kardbrd.yml"
-        rules_file.write_text("rules:\n  - name: test\n    event: card_moved\n    action: /ke\n")
-        engine, config = load_rules(rules_file)
-        assert len(engine.rules) == 1
-        assert config is None
-
     def test_load_dict_missing_rules_key(self, tmp_path):
         """Test dict with only config, no rules key."""
         rules_file = tmp_path / "kardbrd.yml"
         rules_file.write_text("board_id: abc\nagent: Bot\n")
         engine, config = load_rules(rules_file)
         assert len(engine.rules) == 0
-        assert config is not None
         assert config.board_id == "abc"
 
     def test_load_dict_config_missing_board_id_raises(self, tmp_path):
-        """Test missing board_id when agent is set raises ValueError."""
+        """Test missing board_id raises ValueError."""
         rules_file = tmp_path / "kardbrd.yml"
         rules_file.write_text("agent: Bot\nrules: []\n")
         with pytest.raises(ValueError, match="board_id"):
             load_rules(rules_file)
 
     def test_load_dict_config_missing_agent_raises(self, tmp_path):
-        """Test missing agent when board_id is set raises ValueError."""
+        """Test missing agent raises ValueError."""
         rules_file = tmp_path / "kardbrd.yml"
         rules_file.write_text("board_id: abc\nrules: []\n")
         with pytest.raises(ValueError, match="agent"):
@@ -1990,16 +1974,14 @@ class TestLoadRulesDictFormat:
         rules_file = tmp_path / "kardbrd.yml"
         rules_file.write_text("board_id: abc\nagent: Bot\nrules: []\n")
         engine, config = load_rules(rules_file)
-        assert config is not None
         assert config.api_url is None
 
-    def test_load_empty_file_returns_none_config(self, tmp_path):
-        """Test empty file returns None config."""
+    def test_load_empty_file_raises(self, tmp_path):
+        """Test empty file raises ValueError."""
         rules_file = tmp_path / "kardbrd.yml"
         rules_file.write_text("")
-        engine, config = load_rules(rules_file)
-        assert len(engine.rules) == 0
-        assert config is None
+        with pytest.raises(ValueError, match="empty"):
+            load_rules(rules_file)
 
 
 class TestValidateDictFormat:
@@ -2054,20 +2036,20 @@ class TestValidateDictFormat:
         assert len(result.warnings) == 1
         assert "extra_field" in result.warnings[0].message
 
-    def test_validate_bare_list_still_works(self, tmp_path):
-        """Test bare list format still validates correctly."""
+    def test_validate_bare_list_errors(self, tmp_path):
+        """Test bare list format reports error (old format not supported)."""
         f = tmp_path / "kardbrd.yml"
         f.write_text("- name: test\n  event: card_moved\n  action: /ke\n")
         from kardbrd_agent.rules import validate_rules_file
 
         result = validate_rules_file(f)
-        assert result.is_valid
-        assert result.issues == []
+        assert not result.is_valid
+        assert any("dict" in e.message for e in result.errors)
 
     def test_validate_dict_rules_not_list_errors(self, tmp_path):
         """Test dict with rules as non-list reports error."""
         f = tmp_path / "kardbrd.yml"
-        f.write_text("rules: not_a_list\n")
+        f.write_text("board_id: abc\nagent: Bot\nrules: not_a_list\n")
         from kardbrd_agent.rules import validate_rules_file
 
         result = validate_rules_file(f)
@@ -2091,23 +2073,15 @@ class TestReloadableRuleEngineConfig:
     """Tests for ReloadableRuleEngine config support."""
 
     def test_config_exposed(self, tmp_path):
-        """Test engine.config returns BoardConfig for dict format."""
+        """Test engine.config returns BoardConfig."""
         rules_file = tmp_path / "kardbrd.yml"
         rules_file.write_text(
             "board_id: abc\nagent: Bot\nrules:\n"
             "  - name: test\n    event: card_moved\n    action: /ke\n"
         )
         engine = ReloadableRuleEngine(rules_file)
-        assert engine.config is not None
         assert engine.config.board_id == "abc"
         assert engine.config.agent_name == "Bot"
-
-    def test_config_none_for_bare_list(self, tmp_path):
-        """Test engine.config returns None for bare list format."""
-        rules_file = tmp_path / "kardbrd.yml"
-        rules_file.write_text("- name: test\n  event: card_moved\n  action: /ke\n")
-        engine = ReloadableRuleEngine(rules_file)
-        assert engine.config is None
 
     def test_config_reloaded_on_file_change(self, tmp_path):
         """Test config updates on hot reload."""

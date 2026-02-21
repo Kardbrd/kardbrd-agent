@@ -11,7 +11,15 @@ class TestValidateRulesFile:
     def test_valid_file(self, tmp_path):
         """Test a fully valid file produces no issues."""
         f = tmp_path / "kardbrd.yml"
-        f.write_text("- name: test\n  event: card_moved\n  list: Ideas\n  action: /ke\n")
+        f.write_text(
+            "board_id: test\n"
+            "agent: Bot\n"
+            "rules:\n"
+            "  - name: test\n"
+            "    event: card_moved\n"
+            "    list: Ideas\n"
+            "    action: /ke\n"
+        )
         result = validate_rules_file(f)
         assert result.is_valid
         assert result.issues == []
@@ -20,29 +28,32 @@ class TestValidateRulesFile:
         """Test multiple valid rules produce no issues."""
         f = tmp_path / "kardbrd.yml"
         f.write_text(
-            "- name: rule1\n"
-            "  event:\n"
-            "    - card_moved\n"
-            "    - card_created\n"
-            "  list: Ideas\n"
-            "  action: /ke\n"
-            "- name: rule2\n"
-            "  event: comment_created\n"
-            "  content_contains: '@claude'\n"
-            "  model: haiku\n"
-            "  action: respond\n"
+            "board_id: test\n"
+            "agent: Bot\n"
+            "rules:\n"
+            "  - name: rule1\n"
+            "    event:\n"
+            "      - card_moved\n"
+            "      - card_created\n"
+            "    list: Ideas\n"
+            "    action: /ke\n"
+            "  - name: rule2\n"
+            "    event: comment_created\n"
+            "    content_contains: '@claude'\n"
+            "    model: haiku\n"
+            "    action: respond\n"
         )
         result = validate_rules_file(f)
         assert result.is_valid
         assert result.issues == []
 
-    def test_empty_file_is_valid(self, tmp_path):
-        """Test empty file is valid."""
+    def test_empty_file_is_error(self, tmp_path):
+        """Test empty file reports error."""
         f = tmp_path / "kardbrd.yml"
         f.write_text("")
         result = validate_rules_file(f)
-        assert result.is_valid
-        assert result.issues == []
+        assert not result.is_valid
+        assert any("empty" in e.message for e in result.errors)
 
     def test_file_not_found(self, tmp_path):
         """Test missing file reports error."""
@@ -63,7 +74,7 @@ class TestValidateRulesFile:
     def test_dict_with_unknown_keys_warns(self, tmp_path):
         """Test dict with unknown top-level keys produces warning."""
         f = tmp_path / "kardbrd.yml"
-        f.write_text("key: value\n")
+        f.write_text("board_id: test\nagent: Bot\nkey: value\nrules: []\n")
         result = validate_rules_file(f)
         assert result.is_valid  # warnings don't invalidate
         assert len(result.warnings) == 1
@@ -72,7 +83,7 @@ class TestValidateRulesFile:
     def test_rule_not_a_dict(self, tmp_path):
         """Test rule that isn't a mapping reports error."""
         f = tmp_path / "kardbrd.yml"
-        f.write_text("- just a string\n")
+        f.write_text("board_id: test\nagent: Bot\nrules:\n  - just a string\n")
         result = validate_rules_file(f)
         assert not result.is_valid
         assert "mapping" in result.errors[0].message
@@ -80,7 +91,7 @@ class TestValidateRulesFile:
     def test_missing_name(self, tmp_path):
         """Test missing name field reports error."""
         f = tmp_path / "kardbrd.yml"
-        f.write_text("- event: card_moved\n  action: /ke\n")
+        f.write_text("board_id: test\nagent: Bot\nrules:\n  - event: card_moved\n    action: /ke\n")
         result = validate_rules_file(f)
         assert not result.is_valid
         assert any("'name'" in e.message for e in result.errors)
@@ -88,7 +99,7 @@ class TestValidateRulesFile:
     def test_missing_event(self, tmp_path):
         """Test missing event field reports error."""
         f = tmp_path / "kardbrd.yml"
-        f.write_text("- name: test\n  action: /ke\n")
+        f.write_text("board_id: test\nagent: Bot\nrules:\n  - name: test\n    action: /ke\n")
         result = validate_rules_file(f)
         assert not result.is_valid
         assert any("'event'" in e.message for e in result.errors)
@@ -96,7 +107,7 @@ class TestValidateRulesFile:
     def test_missing_action(self, tmp_path):
         """Test missing action field reports error."""
         f = tmp_path / "kardbrd.yml"
-        f.write_text("- name: test\n  event: card_moved\n")
+        f.write_text("board_id: test\nagent: Bot\nrules:\n  - name: test\n    event: card_moved\n")
         result = validate_rules_file(f)
         assert not result.is_valid
         assert any("'action'" in e.message for e in result.errors)
@@ -104,7 +115,7 @@ class TestValidateRulesFile:
     def test_multiple_missing_fields(self, tmp_path):
         """Test all missing required fields reported at once."""
         f = tmp_path / "kardbrd.yml"
-        f.write_text("- list: Ideas\n")
+        f.write_text("board_id: test\nagent: Bot\nrules:\n  - list: Ideas\n")
         result = validate_rules_file(f)
         assert not result.is_valid
         messages = [e.message for e in result.errors]
@@ -115,7 +126,10 @@ class TestValidateRulesFile:
     def test_unknown_event_warns(self, tmp_path):
         """Test unknown event produces warning, not error."""
         f = tmp_path / "kardbrd.yml"
-        f.write_text("- name: test\n  event: made_up_event\n  action: /ke\n")
+        f.write_text(
+            "board_id: test\nagent: Bot\nrules:\n"
+            "  - name: test\n    event: made_up_event\n    action: /ke\n"
+        )
         result = validate_rules_file(f)
         assert result.is_valid  # warnings don't invalidate
         assert len(result.warnings) == 1
@@ -124,7 +138,10 @@ class TestValidateRulesFile:
     def test_unknown_model_warns(self, tmp_path):
         """Test unknown model produces warning, not error."""
         f = tmp_path / "kardbrd.yml"
-        f.write_text("- name: test\n  event: card_moved\n  model: gpt4\n  action: /ke\n")
+        f.write_text(
+            "board_id: test\nagent: Bot\nrules:\n"
+            "  - name: test\n    event: card_moved\n    model: gpt4\n    action: /ke\n"
+        )
         result = validate_rules_file(f)
         assert result.is_valid
         assert len(result.warnings) == 1
@@ -134,7 +151,9 @@ class TestValidateRulesFile:
         """Test unknown fields produce warning."""
         f = tmp_path / "kardbrd.yml"
         f.write_text(
-            "- name: test\n  event: card_moved\n  action: /ke\n  priority: high\n  timeout: 30\n"
+            "board_id: test\nagent: Bot\nrules:\n"
+            "  - name: test\n    event: card_moved\n    action: /ke\n"
+            "    priority: high\n    timeout: 30\n"
         )
         result = validate_rules_file(f)
         assert result.is_valid
@@ -146,7 +165,9 @@ class TestValidateRulesFile:
         """Test event field as a YAML list is valid."""
         f = tmp_path / "kardbrd.yml"
         f.write_text(
-            "- name: test\n  event:\n    - card_moved\n    - card_created\n  action: /ke\n"
+            "board_id: test\nagent: Bot\nrules:\n"
+            "  - name: test\n    event:\n"
+            "      - card_moved\n      - card_created\n    action: /ke\n"
         )
         result = validate_rules_file(f)
         assert result.is_valid
@@ -155,14 +176,20 @@ class TestValidateRulesFile:
     def test_event_yaml_list_single_item(self, tmp_path):
         """Test event field as a single-item YAML list is valid."""
         f = tmp_path / "kardbrd.yml"
-        f.write_text("- name: test\n  event:\n    - card_moved\n  action: /ke\n")
+        f.write_text(
+            "board_id: test\nagent: Bot\nrules:\n"
+            "  - name: test\n    event:\n      - card_moved\n    action: /ke\n"
+        )
         result = validate_rules_file(f)
         assert result.is_valid
 
     def test_event_yaml_list_unknown_warns(self, tmp_path):
         """Test unknown event names inside a YAML list still produce warnings."""
         f = tmp_path / "kardbrd.yml"
-        f.write_text("- name: test\n  event:\n    - card_moved\n    - fake_event\n  action: /ke\n")
+        f.write_text(
+            "board_id: test\nagent: Bot\nrules:\n"
+            "  - name: test\n    event:\n      - card_moved\n      - fake_event\n    action: /ke\n"
+        )
         result = validate_rules_file(f)
         assert result.is_valid  # warnings don't invalidate
         assert len(result.warnings) == 1
@@ -171,7 +198,9 @@ class TestValidateRulesFile:
     def test_event_invalid_type_errors(self, tmp_path):
         """Test non-string, non-list event type reports error."""
         f = tmp_path / "kardbrd.yml"
-        f.write_text("- name: test\n  event: 123\n  action: /ke\n")
+        f.write_text(
+            "board_id: test\nagent: Bot\nrules:\n  - name: test\n    event: 123\n    action: /ke\n"
+        )
         result = validate_rules_file(f)
         assert not result.is_valid
         assert any("must be a string or list" in e.message for e in result.errors)
@@ -179,7 +208,10 @@ class TestValidateRulesFile:
     def test_comma_in_event_string_is_unknown(self, tmp_path):
         """Test comma-separated string is treated as a single unknown event name."""
         f = tmp_path / "kardbrd.yml"
-        f.write_text("- name: test\n  event: 'card_moved, card_created'\n  action: /ke\n")
+        f.write_text(
+            "board_id: test\nagent: Bot\nrules:\n"
+            "  - name: test\n    event: 'card_moved, card_created'\n    action: /ke\n"
+        )
         result = validate_rules_file(f)
         assert result.is_valid  # warnings don't invalidate
         assert len(result.warnings) == 1
@@ -188,7 +220,10 @@ class TestValidateRulesFile:
     def test_model_not_string_errors(self, tmp_path):
         """Test model field that isn't a string reports error."""
         f = tmp_path / "kardbrd.yml"
-        f.write_text("- name: test\n  event: card_moved\n  model: 123\n  action: /ke\n")
+        f.write_text(
+            "board_id: test\nagent: Bot\nrules:\n"
+            "  - name: test\n    event: card_moved\n    model: 123\n    action: /ke\n"
+        )
         result = validate_rules_file(f)
         assert not result.is_valid
         assert any("'model' must be a string" in e.message for e in result.errors)
@@ -196,7 +231,10 @@ class TestValidateRulesFile:
     def test_action_not_string_errors(self, tmp_path):
         """Test action field that isn't a string reports error."""
         f = tmp_path / "kardbrd.yml"
-        f.write_text("- name: test\n  event: card_moved\n  action: 123\n")
+        f.write_text(
+            "board_id: test\nagent: Bot\nrules:\n"
+            "  - name: test\n    event: card_moved\n    action: 123\n"
+        )
         result = validate_rules_file(f)
         assert not result.is_valid
         assert any("'action' must be a string" in e.message for e in result.errors)
@@ -205,7 +243,10 @@ class TestValidateRulesFile:
         """Test known model names don't produce warnings."""
         for model in ("haiku", "sonnet", "opus"):
             f = tmp_path / "kardbrd.yml"
-            f.write_text(f"- name: test\n  event: card_moved\n  model: {model}\n  action: /ke\n")
+            f.write_text(
+                f"board_id: test\nagent: Bot\nrules:\n"
+                f"  - name: test\n    event: card_moved\n    model: {model}\n    action: /ke\n"
+            )
             result = validate_rules_file(f)
             assert result.is_valid
             assert len(result.warnings) == 0, f"Unexpected warning for model '{model}'"
@@ -214,13 +255,14 @@ class TestValidateRulesFile:
         """Test all condition fields are accepted without warnings."""
         f = tmp_path / "kardbrd.yml"
         f.write_text(
-            "- name: test\n"
-            "  event: card_moved\n"
-            "  list: Ideas\n"
-            "  title: Test\n"
-            "  label: Bug\n"
-            "  content_contains: hello\n"
-            "  action: /ke\n"
+            "board_id: test\nagent: Bot\nrules:\n"
+            "  - name: test\n"
+            "    event: card_moved\n"
+            "    list: Ideas\n"
+            "    title: Test\n"
+            "    label: Bug\n"
+            "    content_contains: hello\n"
+            "    action: /ke\n"
         )
         result = validate_rules_file(f)
         assert result.is_valid
@@ -230,11 +272,12 @@ class TestValidateRulesFile:
         """Test issues from multiple rules are all reported."""
         f = tmp_path / "kardbrd.yml"
         f.write_text(
-            "- name: rule1\n"
-            "  event: fake_event\n"
-            "  action: /ke\n"
-            "- event: card_moved\n"
-            "  action: /kp\n"
+            "board_id: test\nagent: Bot\nrules:\n"
+            "  - name: rule1\n"
+            "    event: fake_event\n"
+            "    action: /ke\n"
+            "  - event: card_moved\n"
+            "    action: /kp\n"
         )
         result = validate_rules_file(f)
         assert not result.is_valid
@@ -305,13 +348,13 @@ class TestValidateRulesFile:
         assert not result.is_valid
         assert any("board_id" in e.message for e in result.errors)
 
-    def test_not_list_or_dict(self, tmp_path):
-        """Test non-list, non-dict YAML reports error."""
+    def test_not_dict(self, tmp_path):
+        """Test non-dict YAML reports error."""
         f = tmp_path / "kardbrd.yml"
         f.write_text("42\n")
         result = validate_rules_file(f)
         assert not result.is_valid
-        assert any("list or dict" in e.message for e in result.errors)
+        assert any("dict" in e.message for e in result.errors)
 
 
 class TestValidationResult:

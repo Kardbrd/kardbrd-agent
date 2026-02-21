@@ -5,9 +5,7 @@
 #
 # ── Format ────────────────────────────────────────────────────────────
 #
-# Two formats are supported:
-#
-# 1. Dict format (recommended) — top-level config + rules:
+# kardbrd.yml is a YAML dict with top-level config and a rules list:
 #
 #   board_id: eykqek0W                # required: your board ID
 #   agent: MBPBot                     # required: agent name for @mentions
@@ -18,14 +16,7 @@
 #       event: card_moved
 #       action: /ke
 #
-#   When using dict format, set KARDBRD_BOT_TOKEN environment variable
-#   with the bot token (no statefile needed).
-#
-# 2. Bare list format (legacy) — requires statefile from `kardbrd-agent sub`:
-#
-#   - name: "Rule name"
-#     event: card_moved
-#     action: /ke
+# Set KARDBRD_BOT_TOKEN environment variable with the bot token.
 #
 # ── Rule Schema ───────────────────────────────────────────────────────
 #
