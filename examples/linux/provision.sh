@@ -57,13 +57,11 @@ echo "Phase 2: Setting up user directories..."
 
 mkdir -p ~/.config/systemd/user
 mkdir -p ~/.config/kardbrd-agent
-mkdir -p ~/.local/share/kardbrd-agent/state
 mkdir -p ~/.local/share/kardbrd-agent/workspaces
 mkdir -p ~/.local/bin
 
 echo "  Created ~/.config/systemd/user/"
 echo "  Created ~/.config/kardbrd-agent/"
-echo "  Created ~/.local/share/kardbrd-agent/state/"
 echo "  Created ~/.local/share/kardbrd-agent/workspaces/"
 echo "  Created ~/.local/bin/"
 
@@ -136,6 +134,7 @@ echo "=== Provisioning Complete ==="
 echo ""
 echo "Next steps:"
 echo "  1. Edit ~/.config/kardbrd-agent/agent.env"
+echo "     - Set KARDBRD_ID, KARDBRD_TOKEN, KARDBRD_AGENT"
 echo "     - Set ANTHROPIC_API_KEY (or mount ~/.claude)"
 echo "     - Set GIT_AUTHOR_NAME and GIT_AUTHOR_EMAIL"
 echo ""
@@ -149,14 +148,10 @@ echo ""
 echo "  4. Clone your repo into the workspaces directory:"
 echo "     git clone git@github.com:yourorg/repo.git ~/.local/share/kardbrd-agent/workspaces/repo"
 echo ""
-echo "  5. Subscribe to a board:"
-echo "     ~/.local/bin/kardbrd-agent-shell.sh"
-echo "     kardbrd-agent sub <setup-url>"
-echo ""
-echo "  6. Enable and start the service:"
+echo "  5. Enable and start the service:"
 echo "     systemctl --user enable --now kardbrd-agent"
 echo ""
-echo "  7. Optional: enable auto-update and image cleanup:"
+echo "  6. Optional: enable auto-update and image cleanup:"
 echo "     systemctl --user enable --now kardbrd-agent-update.timer"
 echo "     systemctl --user enable --now kardbrd-agent-prune.timer"
 echo ""

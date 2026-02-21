@@ -19,7 +19,6 @@ else
     exit 1
 fi
 
-STATE_DIR="$HOME/.local/share/kardbrd-agent/state"
 WORKSPACES_DIR="$HOME/.local/share/kardbrd-agent/workspaces"
 IMAGE="kardbrd-agent"
 
@@ -37,16 +36,11 @@ fi
 # Start temporary container
 echo "Starting temporary container (using $CMD)..."
 echo ""
-echo "State directory: $STATE_DIR"
-echo ""
-echo "Useful commands:"
-echo "  kardbrd-agent sub <setup-url>   # Subscribe to a board"
-echo "  kardbrd-agent status            # Show subscription status"
-echo "  kardbrd-agent unsub             # Unsubscribe from all boards"
+echo "Workspaces: $WORKSPACES_DIR"
 echo ""
 
 # Ensure directories exist
-mkdir -p "$STATE_DIR" "$WORKSPACES_DIR"
+mkdir -p "$WORKSPACES_DIR"
 
 EXTRA_ARGS=""
 if [ -f "$HOME/.ssh/kardbrd-agent" ]; then
@@ -63,8 +57,6 @@ fi
 exec $CMD run --rm -it \
     --name kardbrd-agent-shell \
     --entrypoint /bin/sh \
-    -e AGENT_STATE_DIR=/app/state \
-    -v "$STATE_DIR:/app/state" \
     -v "$WORKSPACES_DIR:/home/agent/workspaces" \
     $EXTRA_ARGS \
     "$IMAGE"

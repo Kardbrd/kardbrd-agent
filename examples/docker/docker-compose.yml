@@ -7,6 +7,10 @@ services:
     user: "1000:1000"
     restart: unless-stopped
     environment:
+      - KARDBRD_ID                                 # Board ID (required)
+      - KARDBRD_TOKEN                              # Bot token (required)
+      - KARDBRD_AGENT                              # Agent name for @mentions (required)
+      # - KARDBRD_URL=https://app.kardbrd.com      # API URL (optional)
       - ANTHROPIC_API_KEY
       - LOG_LEVEL=INFO
       - AGENT_CWD=/home/agent/repository
@@ -15,15 +19,11 @@ services:
       - AGENT_TEST_CMD=pnpm build                  # Match your project's build/test command
       - AGENT_MAX_CONCURRENT=2
       - AGENT_TIMEOUT=7200
-      # - AGENT_MERGE_QUEUE_LIST=merge queue       # List name that triggers merge workflow
       - GIT_AUTHOR_NAME=Kardbrd Agent
       - GIT_AUTHOR_EMAIL=agent@example.com
       - GIT_COMMITTER_NAME=Kardbrd Agent
       - GIT_COMMITTER_EMAIL=agent@example.com
     volumes:
-      # Subscription state (persisted across restarts)
-      - ./state:/app/state
-
       # Base repository (read-write)
       - ./repository:/home/agent/repository
 

@@ -80,9 +80,12 @@ class TestConcurrentProcessingIntegration:
     async def test_two_cards_processed_concurrently(self, git_repo: Path):
         """Test two cards can be processed at the same time."""
         manager = ProxyManager(
-            board_id="board123", api_url="https://test.kardbrd.com",
-            bot_token="test-token", agent_name="coder",
-            max_concurrent=3, cwd=git_repo,
+            board_id="board123",
+            api_url="https://test.kardbrd.com",
+            bot_token="test-token",
+            agent_name="coder",
+            max_concurrent=3,
+            cwd=git_repo,
         )
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
@@ -128,9 +131,12 @@ class TestConcurrentProcessingIntegration:
     async def test_semaphore_limits_concurrency(self, git_repo: Path):
         """Test semaphore limits concurrent executions."""
         manager = ProxyManager(
-            board_id="board123", api_url="https://test.kardbrd.com",
-            bot_token="test-token", agent_name="coder",
-            max_concurrent=1, cwd=git_repo,
+            board_id="board123",
+            api_url="https://test.kardbrd.com",
+            bot_token="test-token",
+            agent_name="coder",
+            max_concurrent=1,
+            cwd=git_repo,
         )
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
@@ -177,9 +183,12 @@ class TestRetryIntegration:
     async def test_retry_blocked_during_concurrent_processing(self, git_repo: Path):
         """Test retry is blocked when any card is being processed."""
         manager = ProxyManager(
-            board_id="board123", api_url="https://test.kardbrd.com",
-            bot_token="test-token", agent_name="coder",
-            max_concurrent=3, cwd=git_repo,
+            board_id="board123",
+            api_url="https://test.kardbrd.com",
+            bot_token="test-token",
+            agent_name="coder",
+            max_concurrent=3,
+            cwd=git_repo,
         )
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
@@ -234,9 +243,12 @@ class TestApiVerificationIntegration:
     async def test_concurrent_cards_api_verification_independent(self, git_repo: Path):
         """Test API verification works independently for concurrent cards."""
         manager = ProxyManager(
-            board_id="board123", api_url="https://test.kardbrd.com",
-            bot_token="test-token", agent_name="coder",
-            max_concurrent=2, cwd=git_repo,
+            board_id="board123",
+            api_url="https://test.kardbrd.com",
+            bot_token="test-token",
+            agent_name="coder",
+            max_concurrent=2,
+            cwd=git_repo,
         )
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
@@ -279,8 +291,11 @@ class TestApiVerificationIntegration:
     async def test_active_session_cleaned_up_on_success(self, git_repo: Path):
         """Test _active_sessions entry removed after successful processing."""
         manager = ProxyManager(
-            board_id="board123", api_url="https://test.kardbrd.com",
-            bot_token="test-token", agent_name="coder", cwd=git_repo,
+            board_id="board123",
+            api_url="https://test.kardbrd.com",
+            bot_token="test-token",
+            agent_name="coder",
+            cwd=git_repo,
         )
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
@@ -305,8 +320,11 @@ class TestApiVerificationIntegration:
     async def test_active_session_cleaned_up_on_error(self, git_repo: Path):
         """Test _active_sessions entry removed even after an exception."""
         manager = ProxyManager(
-            board_id="board123", api_url="https://test.kardbrd.com",
-            bot_token="test-token", agent_name="coder", cwd=git_repo,
+            board_id="board123",
+            api_url="https://test.kardbrd.com",
+            bot_token="test-token",
+            agent_name="coder",
+            cwd=git_repo,
         )
         manager.client = MagicMock()
         manager.client.get_card_markdown.side_effect = Exception("API error")
@@ -322,8 +340,11 @@ class TestApiVerificationIntegration:
     async def test_no_session_registry_attribute(self, git_repo: Path):
         """Test ProxyManager has no session_registry attribute."""
         manager = ProxyManager(
-            board_id="board123", api_url="https://test.kardbrd.com",
-            bot_token="test-token", agent_name="coder", cwd=git_repo,
+            board_id="board123",
+            api_url="https://test.kardbrd.com",
+            bot_token="test-token",
+            agent_name="coder",
+            cwd=git_repo,
         )
         assert not hasattr(manager, "session_registry")
 
@@ -335,8 +356,11 @@ class TestDuplicateCommentPrevention:
     async def test_no_fallback_comment_when_api_confirms_posted(self, git_repo: Path):
         """Test fallback comment not posted when API confirms bot already posted."""
         manager = ProxyManager(
-            board_id="board123", api_url="https://test.kardbrd.com",
-            bot_token="test-token", agent_name="coder", cwd=git_repo,
+            board_id="board123",
+            api_url="https://test.kardbrd.com",
+            bot_token="test-token",
+            agent_name="coder",
+            cwd=git_repo,
         )
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
@@ -370,8 +394,11 @@ class TestDuplicateCommentPrevention:
     async def test_no_fallback_when_resume_api_confirms_posted(self, git_repo: Path):
         """Test fallback skipped when API confirms bot posted after resume."""
         manager = ProxyManager(
-            board_id="board123", api_url="https://test.kardbrd.com",
-            bot_token="test-token", agent_name="coder", cwd=git_repo,
+            board_id="board123",
+            api_url="https://test.kardbrd.com",
+            bot_token="test-token",
+            agent_name="coder",
+            cwd=git_repo,
         )
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
@@ -434,9 +461,12 @@ class TestRequireLabelIntegration:
             ]
         )
         manager = ProxyManager(
-            board_id="board123", api_url="https://test.kardbrd.com",
-            bot_token="test-token", agent_name="coder",
-            cwd=git_repo, rule_engine=rule_engine,
+            board_id="board123",
+            api_url="https://test.kardbrd.com",
+            bot_token="test-token",
+            agent_name="coder",
+            cwd=git_repo,
+            rule_engine=rule_engine,
         )
         manager.client = MagicMock()
         manager.client.get_card.return_value = {
@@ -481,9 +511,12 @@ class TestRequireLabelIntegration:
             ]
         )
         manager = ProxyManager(
-            board_id="board123", api_url="https://test.kardbrd.com",
-            bot_token="test-token", agent_name="coder",
-            cwd=git_repo, rule_engine=rule_engine,
+            board_id="board123",
+            api_url="https://test.kardbrd.com",
+            bot_token="test-token",
+            agent_name="coder",
+            cwd=git_repo,
+            rule_engine=rule_engine,
         )
         manager.client = MagicMock()
         manager.client.get_card.return_value = {
@@ -519,9 +552,12 @@ class TestRequireLabelIntegration:
             ]
         )
         manager = ProxyManager(
-            board_id="board123", api_url="https://test.kardbrd.com",
-            bot_token="test-token", agent_name="coder",
-            cwd=git_repo, rule_engine=rule_engine,
+            board_id="board123",
+            api_url="https://test.kardbrd.com",
+            bot_token="test-token",
+            agent_name="coder",
+            cwd=git_repo,
+            rule_engine=rule_engine,
         )
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"

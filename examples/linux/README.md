@@ -18,17 +18,12 @@ cd kardbrd-agent/examples/linux
 # 2. Run provisioning script (auto-detects podman/docker, builds image, installs units)
 ./provision.sh
 
-# 3. Configure environment
+# 3. Configure environment (board credentials, API key, git identity)
 vi ~/.config/kardbrd-agent/agent.env
 
 # 4. Set up SSH key and clone your repo (see sections below)
 
-# 5. Subscribe to a board
-~/.local/bin/kardbrd-agent-shell.sh
-kardbrd-agent sub <setup-url>
-exit
-
-# 6. Start the service
+# 5. Start the service
 systemctl --user enable --now kardbrd-agent
 ```
 
@@ -72,7 +67,6 @@ After provisioning:
 │   ├── kardbrd-agent-update.sh            # Pull image and restart
 │   └── kardbrd-agent-shell.sh             # Interactive container shell
 └── share/kardbrd-agent/
-    ├── state/                             # Subscription JSON files
     └── workspaces/
         ├── repo/                          # Your cloned git repository
         └── kbn-<id>/                      # Worktrees (created automatically)
@@ -119,6 +113,11 @@ Edit `~/.config/kardbrd-agent/agent.env`:
 # Container runtime (set by provision.sh)
 CONTAINER_CMD=podman
 
+# Board configuration (required)
+KARDBRD_ID=<board-id>
+KARDBRD_TOKEN=<bot-token>
+KARDBRD_AGENT=<agent-name>
+
 # Anthropic API key (optional if ~/.claude is mounted)
 ANTHROPIC_API_KEY=sk-ant-...
 
@@ -129,10 +128,6 @@ LOG_LEVEL=INFO
 GIT_AUTHOR_NAME=Kardbrd Agent
 GIT_AUTHOR_EMAIL=agent@example.com
 ```
-
-### State Files
-
-Board subscriptions are stored as JSON in `~/.local/share/kardbrd-agent/state/`, configured via `kardbrd-agent sub <setup-url>`.
 
 ## Service Management
 
@@ -260,13 +255,9 @@ podman exec kardbrd-agent ssh -T git@github.com
 podman exec kardbrd-agent ls -la /home/agent/.ssh/
 ```
 
-**"No subscriptions" on start:**
+**"Missing required config" on start:**
 
-```bash
-# Subscribe using the shell script
-~/.local/bin/kardbrd-agent-shell.sh
-kardbrd-agent sub <setup-url>
-```
+Ensure `KARDBRD_ID`, `KARDBRD_TOKEN`, and `KARDBRD_AGENT` are set in `~/.config/kardbrd-agent/agent.env`.
 
 **Permission errors on volumes:**
 

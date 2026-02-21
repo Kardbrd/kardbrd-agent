@@ -14,7 +14,7 @@ Run kardbrd-agent inside your project's own container. The agent and Claude CLI 
 
 ```bash
 mkdir kardbrd-project && cd kardbrd-project
-mkdir -p state workspaces claude ssh
+mkdir -p workspaces claude ssh
 ```
 
 ### 2. Clone your repo
@@ -75,19 +75,20 @@ ssh-keygen -t ed25519 -f ssh/id_ed25519 -N "" -C "kardbrd-agent"
 cat ssh/id_ed25519.pub
 ```
 
-### 6. Set your API key
+### 6. Configure environment
+
+Create a `.env` file with your board credentials and API key:
 
 ```bash
-echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
+cat > .env << 'EOF'
+KARDBRD_ID=<board-id>
+KARDBRD_TOKEN=<bot-token>
+KARDBRD_AGENT=<agent-name>
+ANTHROPIC_API_KEY=sk-ant-...
+EOF
 ```
 
-### 7. Subscribe to a board (one-time)
-
-```bash
-docker compose run --rm agent sub <setup-url>
-```
-
-### 8. Start the agent
+### 7. Start the agent
 
 ```bash
 docker compose up -d
@@ -100,8 +101,7 @@ After setup:
 ```
 kardbrd-project/
 ├── docker-compose.yml
-├── .env                    # ANTHROPIC_API_KEY (gitignored)
-├── state/                  # Subscription JSON files
+├── .env                    # KARDBRD_ID, KARDBRD_TOKEN, KARDBRD_AGENT, ANTHROPIC_API_KEY
 ├── repository/             # Your cloned git repository
 │   └── Dockerfile          # Contains the agent target (or Dockerfile.agent)
 ├── workspaces/             # Worktrees (created automatically)
@@ -122,6 +122,10 @@ Set these in a `.env` file or export them before running `docker compose up`:
 
 | Variable | Default | Notes |
 |---|---|---|
+| `KARDBRD_ID` | — | Board ID (required) |
+| `KARDBRD_TOKEN` | — | Bot authentication token (required) |
+| `KARDBRD_AGENT` | — | Agent name for @mentions (required) |
+| `KARDBRD_URL` | `https://app.kardbrd.com` | API base URL |
 | `ANTHROPIC_API_KEY` | — | Required unless stored in `claude/` volume |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `AGENT_CWD` | cwd | Path to git repo inside the container |
@@ -130,7 +134,6 @@ Set these in a `.env` file or export them before running `docker compose up`:
 | `AGENT_TEST_CMD` | — | Test/build command for merge workflow |
 | `AGENT_MAX_CONCURRENT` | `3` | Parallel Claude sessions |
 | `AGENT_TIMEOUT` | `3600` | Max seconds per Claude session |
-| `AGENT_MERGE_QUEUE_LIST` | — | List name that triggers merge workflow |
 | `GIT_AUTHOR_NAME` | — | Git commit author name |
 | `GIT_AUTHOR_EMAIL` | — | Git commit author email |
 
@@ -242,12 +245,6 @@ CMD ["start", "--cwd", "/home/agent/repository"]
 docker compose logs -f
 ```
 
-### Check status
-
-```bash
-docker compose run --rm agent status
-```
-
 ### Restart
 
 ```bash
@@ -277,7 +274,6 @@ docker compose run --rm --entrypoint sh agent
 
 | Mount point | Purpose | Mode |
 |---|---|---|
-| `/app/state` | Subscription state files | rw |
 | `/home/agent/repository` | Base git repository | rw |
 | `/home/agent/workspaces` | Worktrees (one per card) | rw |
 | `/home/agent/.claude` | Claude CLI home (API creds, sessions) | rw |
@@ -298,13 +294,9 @@ If it fails, verify:
 1. The deploy key is added to your git hosting with **write** access
 2. The key file permissions are correct (`chmod 600 ssh/id_ed25519`)
 
-### "No subscriptions" on start
+### "Missing required config" on start
 
-Run the subscribe command first:
-
-```bash
-docker compose run --rm agent sub <setup-url>
-```
+Ensure `KARDBRD_ID`, `KARDBRD_TOKEN`, and `KARDBRD_AGENT` are set in your `.env` file or exported as environment variables.
 
 ### Setup command fails
 
@@ -315,5 +307,5 @@ If `AGENT_SETUP_CMD` (e.g. `pnpm install`) fails in worktrees, make sure the bas
 The container runs as UID 1000 (`agent` user). Ensure local directories are writable:
 
 ```bash
-sudo chown -R 1000:1000 state workspaces claude
+sudo chown -R 1000:1000 workspaces claude
 ```
