@@ -1,6 +1,6 @@
 # Docker Compose Setup
 
-Run kardbrd-agent inside your project's own container. The agent and Claude CLI are injected into an image built from your project's toolchain, so setup commands like `pnpm install` or `uv sync` just work.
+Run kardbrd-agent inside your project's own container. The agent and your chosen executor CLI (Claude or Goose) are injected into an image built from your project's toolchain, so setup commands like `pnpm install` or `uv sync` just work.
 
 ## Prerequisites
 
@@ -49,6 +49,8 @@ CMD ["start", "--cwd", "/home/agent/repository"]
 
 The `agent` target adds only what's needed on top of your existing image: `python3`, `python3-venv` (for uvx), Claude CLI, `uv`, and a non-root user. Claude CLI refuses to run as root with `--dangerously-skip-permissions`, so the non-root user is required.
 
+**Using Goose instead?** Replace `RUN npm install -g @anthropic-ai/claude-code` with `RUN curl -fsSL https://github.com/block/goose/releases/latest/download/install.sh | sh` and set `AGENT_EXECUTOR=goose` in your environment.
+
 **No Dockerfile yet?** Create a `Dockerfile.agent` instead — see [Dockerfile.agent examples](#dockerfileagent-examples) below.
 
 ### 4. Copy `docker-compose.yml`
@@ -85,6 +87,9 @@ KARDBRD_ID=<board-id>
 KARDBRD_TOKEN=<bot-token>
 KARDBRD_AGENT=<agent-name>
 ANTHROPIC_API_KEY=sk-ant-...
+# For Goose executor, uncomment these and set AGENT_EXECUTOR:
+# AGENT_EXECUTOR=goose
+# GOOSE_PROVIDER=anthropic
 EOF
 ```
 
@@ -101,7 +106,7 @@ After setup:
 ```
 kardbrd-project/
 ├── docker-compose.yml
-├── .env                    # KARDBRD_ID, KARDBRD_TOKEN, KARDBRD_AGENT, ANTHROPIC_API_KEY
+├── .env                    # KARDBRD_ID, KARDBRD_TOKEN, KARDBRD_AGENT, ANTHROPIC_API_KEY (+ AGENT_EXECUTOR, GOOSE_PROVIDER for Goose)
 ├── repository/             # Your cloned git repository
 │   └── Dockerfile          # Contains the agent target (or Dockerfile.agent)
 ├── workspaces/             # Worktrees (created automatically)
@@ -126,7 +131,9 @@ Set these in a `.env` file or export them before running `docker compose up`:
 | `KARDBRD_TOKEN` | — | Bot authentication token (required) |
 | `KARDBRD_AGENT` | — | Agent name for @mentions (required) |
 | `KARDBRD_URL` | `https://app.kardbrd.com` | API base URL |
-| `ANTHROPIC_API_KEY` | — | Required unless stored in `claude/` volume |
+| `ANTHROPIC_API_KEY` | — | Required for Claude executor (unless stored in `claude/` volume) |
+| `AGENT_EXECUTOR` | `claude` | Executor type: `claude` or `goose` |
+| `GOOSE_PROVIDER` | — | LLM provider for Goose (e.g. `anthropic`, `openai`, `ollama`) |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `AGENT_CWD` | cwd | Path to git repo inside the container |
 | `AGENT_WORKTREES_DIR` | parent of `AGENT_CWD` | Where worktrees are created |
