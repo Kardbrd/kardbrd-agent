@@ -10,8 +10,8 @@ from kardbrd_agent.executor import (
     ClaudeResult,
 )
 
-# Save a reference to the real check_claude_auth before autouse fixture patches it
-_real_check_claude_auth = ClaudeExecutor.check_claude_auth
+# Save a reference to the real check_auth before autouse fixture patches it
+_real_check_auth = ClaudeExecutor.check_auth
 
 
 class TestClaudeResult:
@@ -530,9 +530,23 @@ class TestAuthStatus:
         assert status.error == "Not logged in"
         assert status.email is None
 
+    def test_auth_hint_field(self):
+        """Test auth_hint field on AuthStatus."""
+        status = AuthStatus(
+            authenticated=False,
+            error="Not logged in",
+            auth_hint="Run `claude auth login`",
+        )
+        assert status.auth_hint == "Run `claude auth login`"
+
+    def test_auth_hint_default_none(self):
+        """Test auth_hint defaults to None."""
+        status = AuthStatus(authenticated=True)
+        assert status.auth_hint is None
+
 
 class TestCheckClaudeAuth:
-    """Tests for ClaudeExecutor.check_claude_auth static method."""
+    """Tests for ClaudeExecutor.check_auth static method."""
 
     @pytest.mark.asyncio
     async def test_authenticated_returns_success(self, mock_claude_auth):
@@ -544,7 +558,7 @@ class TestCheckClaudeAuth:
             subscription_type="max",
         )
 
-        result = await ClaudeExecutor.check_claude_auth()
+        result = await ClaudeExecutor.check_auth()
         assert result.authenticated is True
         assert result.email == "user@example.com"
         assert result.auth_method == "claude.ai"
@@ -557,7 +571,7 @@ class TestCheckClaudeAuth:
             authenticated=False, error="Claude CLI is not logged in"
         )
 
-        result = await ClaudeExecutor.check_claude_auth()
+        result = await ClaudeExecutor.check_auth()
         assert result.authenticated is False
         assert "not logged in" in result.error
 
@@ -568,7 +582,7 @@ class TestCheckClaudeAuth:
             authenticated=False, error="Claude CLI not found"
         )
 
-        result = await ClaudeExecutor.check_claude_auth()
+        result = await ClaudeExecutor.check_auth()
         assert result.authenticated is False
         assert "not found" in result.error
 
@@ -580,7 +594,7 @@ class TestCheckClaudeAuth:
             error="claude auth status exited with code 1: some error",
         )
 
-        result = await ClaudeExecutor.check_claude_auth()
+        result = await ClaudeExecutor.check_auth()
         assert result.authenticated is False
         assert "exited with code" in result.error
 
@@ -592,13 +606,13 @@ class TestCheckClaudeAuth:
             error="Failed to parse auth status output: not json",
         )
 
-        result = await ClaudeExecutor.check_claude_auth()
+        result = await ClaudeExecutor.check_auth()
         assert result.authenticated is False
         assert "parse" in result.error
 
     @pytest.mark.asyncio
-    async def test_real_check_claude_auth_authenticated(self):
-        """Test the real check_claude_auth with a mocked subprocess (authenticated)."""
+    async def test_real_check_auth_authenticated(self):
+        """Test the real check_auth with a mocked subprocess (authenticated)."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         auth_output = json.dumps(
@@ -616,7 +630,7 @@ class TestCheckClaudeAuth:
             mock_process.returncode = 0
             mock_exec.return_value = mock_process
 
-            result = await _real_check_claude_auth()
+            result = await _real_check_auth()
 
         assert result.authenticated is True
         assert result.email == "dev@example.com"
@@ -624,8 +638,8 @@ class TestCheckClaudeAuth:
         assert result.subscription_type == "pro"
 
     @pytest.mark.asyncio
-    async def test_real_check_claude_auth_not_logged_in(self):
-        """Test the real check_claude_auth with loggedIn=false."""
+    async def test_real_check_auth_not_logged_in(self):
+        """Test the real check_auth with loggedIn=false."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         auth_output = json.dumps({"loggedIn": False})
@@ -636,21 +650,21 @@ class TestCheckClaudeAuth:
             mock_process.returncode = 0
             mock_exec.return_value = mock_process
 
-            result = await _real_check_claude_auth()
+            result = await _real_check_auth()
 
         assert result.authenticated is False
         assert "not logged in" in result.error
 
     @pytest.mark.asyncio
-    async def test_real_check_claude_auth_cli_not_found(self):
-        """Test the real check_claude_auth when CLI is not installed."""
+    async def test_real_check_auth_cli_not_found(self):
+        """Test the real check_auth when CLI is not installed."""
         from unittest.mock import patch
 
         with patch(
             "asyncio.create_subprocess_exec",
             side_effect=FileNotFoundError(),
         ):
-            result = await _real_check_claude_auth()
+            result = await _real_check_auth()
 
         assert result.authenticated is False
         assert "not found" in result.error

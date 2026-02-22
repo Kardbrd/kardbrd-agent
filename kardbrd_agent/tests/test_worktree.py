@@ -130,14 +130,28 @@ class TestWorktreeManagerSymlinks:
         assert (worktree / ".env").is_symlink()
 
     def test_setup_symlinks_creates_claude_settings(self, git_repo: Path):
-        """Test .claude/settings.local.json symlink creation."""
+        """Test .claude/settings.local.json symlink creation for claude executor."""
         worktree = git_repo.parent / "card-abc12345"
         worktree.mkdir()
 
-        manager = WorktreeManager(git_repo)
+        manager = WorktreeManager(git_repo, executor_type="claude")
         manager._setup_symlinks(worktree)
 
         assert (worktree / ".claude" / "settings.local.json").is_symlink()
+
+    def test_setup_symlinks_skips_claude_settings_for_goose(self, git_repo: Path):
+        """Test .claude/ directory is NOT created for goose executor."""
+        worktree = git_repo.parent / "card-abc12345"
+        worktree.mkdir()
+
+        manager = WorktreeManager(git_repo, executor_type="goose")
+        manager._setup_symlinks(worktree)
+
+        # .mcp.json and .env should still be created
+        assert (worktree / ".mcp.json").is_symlink()
+        assert (worktree / ".env").is_symlink()
+        # .claude/ should NOT be created
+        assert not (worktree / ".claude").exists()
 
     def test_setup_symlinks_skips_missing_files(self, tmp_path: Path):
         """Test symlinks are not created for missing source files."""

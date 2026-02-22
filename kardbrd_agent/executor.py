@@ -6,6 +6,7 @@ import logging
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 logger = logging.getLogger("kardbrd_agent")
 
@@ -48,8 +49,8 @@ def create_mcp_config(api_url: str, bot_token: str) -> Path:
 
 
 @dataclass
-class ClaudeResult:
-    """Result from a Claude CLI execution."""
+class ExecutorResult:
+    """Result from an agent executor."""
 
     success: bool
     result_text: str
@@ -59,15 +60,48 @@ class ClaudeResult:
     session_id: str | None = None
 
 
+# Backwards compatibility alias
+ClaudeResult = ExecutorResult
+
+
 @dataclass
 class AuthStatus:
-    """Result from checking Claude CLI authentication."""
+    """Result from checking executor authentication."""
 
     authenticated: bool
     error: str | None = None
     email: str | None = None
     auth_method: str | None = None
     subscription_type: str | None = None
+    auth_hint: str | None = None  # Executor-specific re-auth instructions
+
+
+@runtime_checkable
+class Executor(Protocol):
+    """Protocol for agent executors (Claude, Goose, etc.)."""
+
+    async def execute(
+        self,
+        prompt: str,
+        resume_session_id: str | None = None,
+        cwd: Path | None = None,
+        model: str | None = None,
+    ) -> ExecutorResult: ...
+
+    def build_prompt(
+        self,
+        card_id: str,
+        card_markdown: str,
+        command: str,
+        comment_content: str,
+        author_name: str,
+        board_id: str | None = None,
+    ) -> str: ...
+
+    def extract_command(self, comment_content: str, mention_keyword: str) -> str: ...
+
+    @staticmethod
+    async def check_auth() -> AuthStatus: ...
 
 
 class ClaudeExecutor:
@@ -79,7 +113,7 @@ class ClaudeExecutor:
     """
 
     @staticmethod
-    async def check_claude_auth() -> AuthStatus:
+    async def check_auth() -> AuthStatus:
         """
         Check if Claude CLI is authenticated by running `claude auth status`.
 
@@ -101,6 +135,10 @@ class ClaudeExecutor:
                 return AuthStatus(
                     authenticated=False,
                     error=f"claude auth status exited with code {process.returncode}: {error_msg}",
+                    auth_hint=(
+                        "Run `claude auth login` on the host, "
+                        "or set ANTHROPIC_API_KEY environment variable."
+                    ),
                 )
 
             try:
@@ -109,11 +147,22 @@ class ClaudeExecutor:
                 return AuthStatus(
                     authenticated=False,
                     error=f"Failed to parse auth status output: {stdout.decode()[:200]}",
+                    auth_hint=(
+                        "Run `claude auth login` on the host, "
+                        "or set ANTHROPIC_API_KEY environment variable."
+                    ),
                 )
 
             logged_in = data.get("loggedIn", False)
             if not logged_in:
-                return AuthStatus(authenticated=False, error="Claude CLI is not logged in")
+                return AuthStatus(
+                    authenticated=False,
+                    error="Claude CLI is not logged in",
+                    auth_hint=(
+                        "Run `claude auth login` on the host, "
+                        "or set ANTHROPIC_API_KEY environment variable."
+                    ),
+                )
 
             return AuthStatus(
                 authenticated=True,
@@ -126,14 +175,22 @@ class ClaudeExecutor:
             return AuthStatus(
                 authenticated=False,
                 error="Claude CLI not found. Install: npm install -g @anthropic-ai/claude-code",
+                auth_hint="Install Claude CLI: npm install -g @anthropic-ai/claude-code",
             )
         except TimeoutError:
             return AuthStatus(
                 authenticated=False,
                 error="claude auth status timed out",
+                auth_hint=(
+                    "Run `claude auth login` on the host, "
+                    "or set ANTHROPIC_API_KEY environment variable."
+                ),
             )
         except Exception as e:
             return AuthStatus(authenticated=False, error=str(e))
+
+    # Backwards compatibility alias
+    check_claude_auth = check_auth
 
     def __init__(
         self,
@@ -162,7 +219,7 @@ class ClaudeExecutor:
         resume_session_id: str | None = None,
         cwd: Path | None = None,
         model: str | None = None,
-    ) -> ClaudeResult:
+    ) -> ExecutorResult:
         """
         Execute Claude CLI with the given prompt.
 
@@ -173,7 +230,7 @@ class ClaudeExecutor:
             model: Optional Claude model ID (e.g. "claude-haiku-4-5-20251001")
 
         Returns:
-            ClaudeResult with the execution outcome
+            ExecutorResult with the execution outcome
         """
         # Use passed cwd or default
         working_dir = cwd or self.cwd
@@ -228,7 +285,7 @@ class ClaudeExecutor:
             except TimeoutError:
                 process.kill()
                 await process.wait()
-                return ClaudeResult(
+                return ExecutorResult(
                     success=False,
                     result_text="",
                     error=f"Claude execution timed out after {self.timeout}s",
@@ -238,7 +295,7 @@ class ClaudeExecutor:
             return self._parse_output(stdout.decode(), stderr.decode(), process.returncode)
 
         except FileNotFoundError:
-            return ClaudeResult(
+            return ExecutorResult(
                 success=False,
                 result_text="",
                 error=(
@@ -248,7 +305,7 @@ class ClaudeExecutor:
             )
         except Exception as e:
             logger.exception("Error executing Claude")
-            return ClaudeResult(
+            return ExecutorResult(
                 success=False,
                 result_text="",
                 error=str(e),
@@ -262,7 +319,7 @@ class ClaudeExecutor:
                 except OSError:
                     pass
 
-    def _parse_output(self, stdout: str, stderr: str, returncode: int | None) -> ClaudeResult:
+    def _parse_output(self, stdout: str, stderr: str, returncode: int | None) -> ExecutorResult:
         """
         Parse Claude's stream-json output.
 
@@ -310,7 +367,7 @@ class ClaudeExecutor:
             if stderr:
                 error += f": {stderr[:500]}"
 
-        return ClaudeResult(
+        return ExecutorResult(
             success=returncode == 0 and error is None,
             result_text=result_text,
             error=error,
