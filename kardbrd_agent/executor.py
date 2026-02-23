@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +43,7 @@ def create_mcp_config(api_url: str, bot_token: str) -> Path:
 
     # Create temp file (will be cleaned up after Claude exits)
     fd, path = tempfile.mkstemp(suffix=".json", prefix="mcp-config-")
+    os.chmod(path, 0o600)  # Restrict to owner-only (contains bot token)
     with open(fd, "w") as f:
         json.dump(config, f, indent=2)
 

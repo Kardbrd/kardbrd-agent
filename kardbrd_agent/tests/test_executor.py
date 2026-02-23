@@ -264,6 +264,23 @@ class TestCreateMcpConfig:
         finally:
             config_path.unlink(missing_ok=True)
 
+    def test_config_file_permissions(self):
+        """Test that MCP config file has owner-only permissions (0o600)."""
+        import stat
+
+        from kardbrd_agent.executor import create_mcp_config
+
+        config_path = create_mcp_config(api_url="http://localhost:8000", bot_token="test-token")
+        try:
+            mode = config_path.stat().st_mode
+            # Check that only owner has read/write, no group/other access
+            assert mode & stat.S_IRWXG == 0, "Group should have no permissions"
+            assert mode & stat.S_IRWXO == 0, "Others should have no permissions"
+            assert mode & stat.S_IRUSR, "Owner should have read permission"
+            assert mode & stat.S_IWUSR, "Owner should have write permission"
+        finally:
+            config_path.unlink(missing_ok=True)
+
     def test_config_has_stdio_transport(self):
         """Test that the config uses stdio transport with kardbrd-mcp command."""
         import json
