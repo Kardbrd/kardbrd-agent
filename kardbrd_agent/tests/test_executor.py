@@ -529,6 +529,81 @@ class TestClaudeExecutorCwd:
             assert call_kwargs["cwd"] == default_cwd
 
 
+class TestClaudeExecutorTimeout:
+    """Tests for ST4: graceful timeout with terminate() before kill()."""
+
+    @pytest.mark.asyncio
+    async def test_timeout_calls_terminate_first(self):
+        """Test that timeout sends SIGTERM before SIGKILL."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        executor = ClaudeExecutor(cwd="/tmp", timeout=1)
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_process = MagicMock()
+            mock_process.communicate = AsyncMock(side_effect=TimeoutError())
+            mock_process.terminate = MagicMock()
+            mock_process.kill = MagicMock()
+            # First wait (grace period via wait_for) times out, second wait (after kill) succeeds
+            mock_process.wait = AsyncMock(side_effect=[TimeoutError(), None])
+            mock_exec.return_value = mock_process
+
+            result = await executor.execute("test prompt")
+
+        assert result.success is False
+        assert "timed out" in result.error
+        mock_process.terminate.assert_called_once()
+        mock_process.kill.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_timeout_terminate_succeeds_no_kill(self):
+        """Test that SIGKILL is NOT sent when process exits after SIGTERM."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        executor = ClaudeExecutor(cwd="/tmp", timeout=1)
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_process = MagicMock()
+            mock_process.communicate = AsyncMock(side_effect=TimeoutError())
+            mock_process.terminate = MagicMock()
+            mock_process.kill = MagicMock()
+            # Process exits gracefully after terminate
+            mock_process.wait = AsyncMock(return_value=0)
+            mock_exec.return_value = mock_process
+
+            result = await executor.execute("test prompt")
+
+        assert result.success is False
+        assert "timed out" in result.error
+        mock_process.terminate.assert_called_once()
+        mock_process.kill.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_bot_token_not_in_command_args(self):
+        """Test S1: bot_token is passed via MCP config env, not CLI args."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        executor = ClaudeExecutor(
+            cwd="/tmp",
+            timeout=60,
+            api_url="http://localhost:8000",
+            bot_token="secret-token-xyz",
+        )
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_process = MagicMock()
+            mock_process.communicate = AsyncMock(return_value=(b"", b""))
+            mock_process.returncode = 0
+            mock_exec.return_value = mock_process
+
+            await executor.execute("test prompt")
+
+            # Token must NOT appear in command-line args (visible via ps aux)
+            call_args = list(mock_exec.call_args[0])
+            for arg in call_args:
+                assert "secret-token-xyz" not in str(arg), f"Token found in command arg: {arg}"
+
+
 class TestAuthStatus:
     """Tests for AuthStatus dataclass."""
 

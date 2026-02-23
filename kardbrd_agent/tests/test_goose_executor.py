@@ -453,6 +453,120 @@ class TestGooseExecutorAsync:
             assert env.get("GOOSE_DISABLE_SESSION_NAMING") == "true"
 
 
+class TestGooseExecutorGracefulTimeout:
+    """Tests for ST4: graceful timeout with terminate() before kill()."""
+
+    @pytest.mark.asyncio
+    async def test_timeout_calls_terminate_first(self):
+        """Test that timeout sends SIGTERM before SIGKILL."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        executor = GooseExecutor(cwd="/tmp", timeout=1)
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_process = MagicMock()
+            mock_process.communicate = AsyncMock(side_effect=TimeoutError())
+            mock_process.terminate = MagicMock()
+            mock_process.kill = MagicMock()
+            # First wait (grace period via wait_for) times out, second wait (after kill) succeeds
+            mock_process.wait = AsyncMock(side_effect=[TimeoutError(), None])
+            mock_exec.return_value = mock_process
+
+            result = await executor.execute("test prompt")
+
+        assert result.success is False
+        assert "timed out" in result.error
+        mock_process.terminate.assert_called_once()
+        mock_process.kill.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_timeout_terminate_succeeds_no_kill(self):
+        """Test that SIGKILL is NOT sent when process exits after SIGTERM."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        executor = GooseExecutor(cwd="/tmp", timeout=1)
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_process = MagicMock()
+            mock_process.communicate = AsyncMock(side_effect=TimeoutError())
+            mock_process.terminate = MagicMock()
+            mock_process.kill = MagicMock()
+            # Process exits gracefully after terminate
+            mock_process.wait = AsyncMock(return_value=0)
+            mock_exec.return_value = mock_process
+
+            result = await executor.execute("test prompt")
+
+        assert result.success is False
+        assert "timed out" in result.error
+        mock_process.terminate.assert_called_once()
+        mock_process.kill.assert_not_called()
+
+
+class TestGooseCheckAuthStrictness:
+    """Tests for S4: check_auth returns authenticated=False when key missing."""
+
+    @pytest.mark.asyncio
+    async def test_openai_provider_missing_key_returns_false(self):
+        """Test check_auth returns False when OpenAI API key is missing."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        env = {"GOOSE_PROVIDER": "openai"}
+        with (
+            patch("asyncio.create_subprocess_exec") as mock_exec,
+            patch.dict(os.environ, env, clear=True),
+        ):
+            mock_process = MagicMock()
+            mock_process.communicate = AsyncMock(return_value=(b"1.0.0", b""))
+            mock_process.returncode = 0
+            mock_exec.return_value = mock_process
+
+            result = await GooseExecutor.check_auth()
+
+        assert result.authenticated is False
+        assert "OPENAI_API_KEY" in result.error
+        assert result.auth_hint is not None
+
+    @pytest.mark.asyncio
+    async def test_groq_provider_missing_key_returns_false(self):
+        """Test check_auth returns False when Groq API key is missing."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        env = {"GOOSE_PROVIDER": "groq"}
+        with (
+            patch("asyncio.create_subprocess_exec") as mock_exec,
+            patch.dict(os.environ, env, clear=True),
+        ):
+            mock_process = MagicMock()
+            mock_process.communicate = AsyncMock(return_value=(b"1.0.0", b""))
+            mock_process.returncode = 0
+            mock_exec.return_value = mock_process
+
+            result = await GooseExecutor.check_auth()
+
+        assert result.authenticated is False
+        assert "GROQ_API_KEY" in result.error
+
+    @pytest.mark.asyncio
+    async def test_unknown_provider_returns_true(self):
+        """Test check_auth returns True for unknown provider (no key to check)."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        env = {"GOOSE_PROVIDER": "custom-provider"}
+        with (
+            patch("asyncio.create_subprocess_exec") as mock_exec,
+            patch.dict(os.environ, env, clear=True),
+        ):
+            mock_process = MagicMock()
+            mock_process.communicate = AsyncMock(return_value=(b"1.0.0", b""))
+            mock_process.returncode = 0
+            mock_exec.return_value = mock_process
+
+            result = await GooseExecutor.check_auth()
+
+        assert result.authenticated is True
+
+
 class TestGooseExecutorPrompt:
     """Tests for GooseExecutor prompt building and command extraction."""
 
