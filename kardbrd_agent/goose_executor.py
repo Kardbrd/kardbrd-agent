@@ -6,7 +6,7 @@ import logging
 import os
 from pathlib import Path
 
-from .executor import AuthStatus, ClaudeExecutor, ExecutorResult
+from .executor import AuthStatus, ExecutorResult, build_prompt, extract_command
 from .rules import MODEL_MAP
 
 logger = logging.getLogger("kardbrd_agent")
@@ -333,15 +333,8 @@ class GooseExecutor:
         author_name: str,
         board_id: str | None = None,
     ) -> str:
-        """
-        Build the prompt from card context and user request.
-
-        Delegates to ClaudeExecutor's implementation since prompt building
-        is executor-agnostic.
-        """
-        # Reuse ClaudeExecutor's prompt builder
-        delegate = ClaudeExecutor.__new__(ClaudeExecutor)
-        return delegate.build_prompt(
+        """Delegate to module-level build_prompt()."""
+        return build_prompt(
             card_id=card_id,
             card_markdown=card_markdown,
             command=command,
@@ -351,11 +344,5 @@ class GooseExecutor:
         )
 
     def extract_command(self, comment_content: str, mention_keyword: str) -> str:
-        """
-        Extract the command from the comment content.
-
-        Delegates to ClaudeExecutor's implementation since command extraction
-        is executor-agnostic.
-        """
-        delegate = ClaudeExecutor.__new__(ClaudeExecutor)
-        return delegate.extract_command(comment_content, mention_keyword)
+        """Delegate to module-level extract_command()."""
+        return extract_command(comment_content, mention_keyword)

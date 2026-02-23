@@ -8,6 +8,8 @@ from kardbrd_agent.executor import (
     AuthStatus,
     ClaudeExecutor,
     ClaudeResult,
+    build_prompt,
+    extract_command,
 )
 
 # Save a reference to the real check_auth before autouse fixture patches it
@@ -764,3 +766,72 @@ class TestCheckClaudeAuth:
 
         assert result.authenticated is False
         assert "not found" in result.error
+
+
+class TestModuleLevelFunctions:
+    """Tests for ST5: module-level build_prompt() and extract_command()."""
+
+    def test_module_level_build_prompt_skill(self):
+        """Test module-level build_prompt with skill command."""
+        prompt = build_prompt(
+            card_id="abc123",
+            card_markdown="# Card Title",
+            command="/kp",
+            comment_content="@coder /kp",
+            author_name="Paul",
+        )
+        assert "/kp" in prompt
+        assert "abc123" in prompt
+        assert "Paul" in prompt
+
+    def test_module_level_build_prompt_free_form(self):
+        """Test module-level build_prompt with free-form command."""
+        prompt = build_prompt(
+            card_id="xyz789",
+            card_markdown="# Card",
+            command="fix the bug",
+            comment_content="@coder fix the bug",
+            author_name="Paul",
+        )
+        assert "Task Request" in prompt
+        assert "fix the bug" in prompt
+
+    def test_module_level_build_prompt_with_board_id(self):
+        """Test module-level build_prompt includes label instructions with board_id."""
+        prompt = build_prompt(
+            card_id="abc123",
+            card_markdown="# Card",
+            command="fix bug",
+            comment_content="@coder fix bug",
+            author_name="Paul",
+            board_id="board456",
+        )
+        assert "get_board_labels" in prompt
+        assert "board456" in prompt
+
+    def test_module_level_extract_command_skill(self):
+        """Test module-level extract_command with skill."""
+        assert extract_command("@coder /kp", "@coder") == "/kp"
+
+    def test_module_level_extract_command_free_form(self):
+        """Test module-level extract_command with free-form."""
+        assert extract_command("@coder fix the bug", "@coder") == "fix the bug"
+
+    def test_module_level_extract_command_no_mention(self):
+        """Test module-level extract_command when mention not found."""
+        assert extract_command("just text", "@coder") == "just text"
+
+    def test_claude_executor_delegates_to_module_level(self):
+        """Test ClaudeExecutor methods produce same result as module-level functions."""
+        executor = ClaudeExecutor()
+        kwargs = dict(
+            card_id="abc123",
+            card_markdown="# Card",
+            command="/kp",
+            comment_content="@coder /kp",
+            author_name="Paul",
+        )
+        assert executor.build_prompt(**kwargs) == build_prompt(**kwargs)
+        assert executor.extract_command("@coder /kp", "@coder") == extract_command(
+            "@coder /kp", "@coder"
+        )

@@ -107,6 +107,132 @@ class Executor(Protocol):
     async def check_auth() -> AuthStatus: ...
 
 
+def build_prompt(
+    card_id: str,
+    card_markdown: str,
+    command: str,
+    comment_content: str,
+    author_name: str,
+    board_id: str | None = None,
+) -> str:
+    """
+    Build the prompt for an executor from card context and user request.
+
+    Args:
+        card_id: The public_id of the card (for posting comments)
+        card_markdown: Full card content in markdown format
+        command: The extracted command (e.g., "/kp", "/ki", or free-form)
+        comment_content: The full comment that triggered the proxy
+        author_name: Name of the user who triggered the proxy
+        board_id: Optional board ID for label operations
+
+    Returns:
+        Formatted prompt string
+    """
+    # Common response instructions
+    response_instructions = f"""
+## IMPORTANT: How to Respond
+
+When you complete this task, you MUST post your response as a comment on the card.
+Use the `mcp__kardbrd__add_comment` tool with:
+- card_id: "{card_id}"
+- content: Your response (markdown supported)
+
+End your comment by mentioning the requester: @{author_name}
+
+DO NOT just output text - you must use the add_comment tool to post your response.
+"""
+
+    # Label instructions when board_id is available
+    label_instructions = ""
+    if board_id:
+        label_instructions = f"""
+## Labels
+
+Cards may have labels (shown as "Labels: ..." in card markdown).
+Available tools:
+- `mcp__kardbrd__get_board_labels` with board_id "{board_id}" \
+to discover available labels
+- `mcp__kardbrd__update_card` with `label_ids` (list of label IDs)
+
+**Important:** `label_ids` does a full replace — to add a label, \
+first read current labels, then send the full list.
+"""
+
+    # Determine if this is a skill command or free-form request
+    if command.startswith("/"):
+        # Skill command - let Claude Code handle it
+        prompt = f"""{command}
+
+---
+
+## Context
+
+**Card ID:** {card_id}
+**Triggered by:** @{author_name}
+**Comment:** {comment_content}
+
+## Card Content
+
+{card_markdown}
+{label_instructions}{response_instructions}
+"""
+    else:
+        # Free-form request - provide card context and the request
+        prompt = f"""## Task Request
+
+{comment_content}
+
+---
+
+## Card Context
+
+**Card ID:** {card_id}
+
+{card_markdown}
+{label_instructions}
+---
+
+**Requested by:** @{author_name}
+
+Please complete this request.
+{response_instructions}
+"""
+
+    return prompt
+
+
+def extract_command(comment_content: str, mention_keyword: str) -> str:
+    """
+    Extract the command from the comment content.
+
+    Examples:
+        "@coder /kp" -> "/kp"
+        "@coder /ke" -> "/ke"
+        "@coder fix the login bug" -> "fix the login bug"
+
+    Args:
+        comment_content: The full comment text
+        mention_keyword: The mention keyword (e.g., "@coder")
+
+    Returns:
+        The extracted command (without the mention)
+    """
+    # Remove the mention and strip whitespace
+    content = comment_content.lower()
+    mention = mention_keyword.lower()
+
+    # Find the mention and extract what comes after
+    idx = content.find(mention)
+    if idx == -1:
+        return comment_content.strip()
+
+    # Get everything after the mention
+    after_mention = comment_content[idx + len(mention) :].strip()
+
+    return after_mention if after_mention else comment_content.strip()
+
+
 class ClaudeExecutor:
     """
     Executes Claude CLI as a subprocess.
@@ -393,118 +519,16 @@ class ClaudeExecutor:
         author_name: str,
         board_id: str | None = None,
     ) -> str:
-        """
-        Build the prompt for Claude from card context and user request.
-
-        Args:
-            card_id: The public_id of the card (for posting comments)
-            card_markdown: Full card content in markdown format
-            command: The extracted command (e.g., "/kp", "/ki", or free-form)
-            comment_content: The full comment that triggered the proxy
-            author_name: Name of the user who triggered the proxy
-            board_id: Optional board ID for label operations
-
-        Returns:
-            Formatted prompt string
-        """
-        # Common response instructions
-        response_instructions = f"""
-## IMPORTANT: How to Respond
-
-When you complete this task, you MUST post your response as a comment on the card.
-Use the `mcp__kardbrd__add_comment` tool with:
-- card_id: "{card_id}"
-- content: Your response (markdown supported)
-
-End your comment by mentioning the requester: @{author_name}
-
-DO NOT just output text - you must use the add_comment tool to post your response.
-"""
-
-        # Label instructions when board_id is available
-        label_instructions = ""
-        if board_id:
-            label_instructions = f"""
-## Labels
-
-Cards may have labels (shown as "Labels: ..." in card markdown).
-Available tools:
-- `mcp__kardbrd__get_board_labels` with board_id "{board_id}" \
-to discover available labels
-- `mcp__kardbrd__update_card` with `label_ids` (list of label IDs)
-
-**Important:** `label_ids` does a full replace — to add a label, \
-first read current labels, then send the full list.
-"""
-
-        # Determine if this is a skill command or free-form request
-        if command.startswith("/"):
-            # Skill command - let Claude Code handle it
-            prompt = f"""{command}
-
----
-
-## Context
-
-**Card ID:** {card_id}
-**Triggered by:** @{author_name}
-**Comment:** {comment_content}
-
-## Card Content
-
-{card_markdown}
-{label_instructions}{response_instructions}
-"""
-        else:
-            # Free-form request - provide card context and the request
-            prompt = f"""## Task Request
-
-{comment_content}
-
----
-
-## Card Context
-
-**Card ID:** {card_id}
-
-{card_markdown}
-{label_instructions}
----
-
-**Requested by:** @{author_name}
-
-Please complete this request.
-{response_instructions}
-"""
-
-        return prompt
+        """Delegate to module-level build_prompt()."""
+        return build_prompt(
+            card_id=card_id,
+            card_markdown=card_markdown,
+            command=command,
+            comment_content=comment_content,
+            author_name=author_name,
+            board_id=board_id,
+        )
 
     def extract_command(self, comment_content: str, mention_keyword: str) -> str:
-        """
-        Extract the command from the comment content.
-
-        Examples:
-            "@coder /kp" -> "/kp"
-            "@coder /ke" -> "/ke"
-            "@coder fix the login bug" -> "fix the login bug"
-
-        Args:
-            comment_content: The full comment text
-            mention_keyword: The mention keyword (e.g., "@coder")
-
-        Returns:
-            The extracted command (without the mention)
-        """
-        # Remove the mention and strip whitespace
-        content = comment_content.lower()
-        mention = mention_keyword.lower()
-
-        # Find the mention and extract what comes after
-        idx = content.find(mention)
-        if idx == -1:
-            return comment_content.strip()
-
-        # Get everything after the mention
-        after_mention = comment_content[idx + len(mention) :].strip()
-
-        return after_mention if after_mention else comment_content.strip()
+        """Delegate to module-level extract_command()."""
+        return extract_command(comment_content, mention_keyword)

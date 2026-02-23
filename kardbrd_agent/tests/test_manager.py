@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kardbrd_agent.executor import AuthStatus, ClaudeResult
-from kardbrd_agent.manager import ActiveSession, ProxyManager
+from kardbrd_agent.manager import ActiveSession, ProxyManager, _sanitize_name
 from kardbrd_agent.rules import Rule, RuleEngine
 
 # Default test values for ProxyManager constructor
@@ -1523,3 +1523,62 @@ class TestGracefulShutdown:
             await manager.stop()
 
         assert len(manager._active_sessions) == 0
+
+
+class TestSanitizeName:
+    """Tests for S5: _sanitize_name prevents Markdown injection."""
+
+    def test_normal_name_unchanged(self):
+        """Test normal names pass through."""
+        assert _sanitize_name("Paul") == "Paul"
+
+    def test_name_with_spaces(self):
+        """Test names with spaces are preserved."""
+        assert _sanitize_name("Paul Smith") == "Paul Smith"
+
+    def test_name_with_hyphen_and_underscore(self):
+        """Test hyphens and underscores are preserved."""
+        assert _sanitize_name("Paul-Smith_Jr") == "Paul-Smith_Jr"
+
+    def test_name_with_period(self):
+        """Test periods are preserved."""
+        assert _sanitize_name("Paul.Smith") == "Paul.Smith"
+
+    def test_markdown_link_injection(self):
+        """Test Markdown link injection is stripped."""
+        assert _sanitize_name("](http://evil.com)[x") == "httpevil.comx"
+
+    def test_markdown_bold_injection(self):
+        """Test Markdown bold formatting is stripped."""
+        assert _sanitize_name("**bold**") == "bold"
+
+    def test_html_tag_injection(self):
+        """Test HTML tags are stripped."""
+        assert _sanitize_name("<script>alert(1)</script>") == "scriptalert1script"
+
+    def test_empty_after_sanitization_returns_unknown(self):
+        """Test empty string after sanitization returns 'Unknown'."""
+        assert _sanitize_name("[]()") == "Unknown"
+
+    def test_empty_string_returns_unknown(self):
+        """Test empty input returns 'Unknown'."""
+        assert _sanitize_name("") == "Unknown"
+
+    @pytest.mark.asyncio
+    async def test_mention_comment_uses_sanitized_name(self):
+        """Test _handle_comment_created sanitizes author_name before passing to _process_mention."""
+        manager = _make_manager()
+        manager._process_mention = AsyncMock()
+
+        await manager._handle_comment_created(
+            {
+                "card_id": "card1",
+                "comment_id": "comm1",
+                "content": "@coder do thing",
+                "author_name": "**injected**",
+            }
+        )
+
+        # The author_name passed to _process_mention should be sanitized
+        call_kwargs = manager._process_mention.call_args[1]
+        assert call_kwargs["author_name"] == "injected"

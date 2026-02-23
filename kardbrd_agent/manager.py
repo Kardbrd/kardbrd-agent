@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import UTC
 from pathlib import Path
@@ -13,6 +14,16 @@ from .rules import Rule, RuleEngine
 from .worktree import WorktreeManager
 
 logger = logging.getLogger("kardbrd_agent")
+
+
+def _sanitize_name(name: str) -> str:
+    """Sanitize a user-supplied name for safe embedding in Markdown.
+
+    Strips characters that could be used for Markdown injection
+    (links, formatting, HTML tags). Keeps only alphanumeric, spaces,
+    hyphens, underscores, and periods.
+    """
+    return re.sub(r"[^\w\s\-.]", "", name).strip() or "Unknown"
 
 
 @dataclass
@@ -238,7 +249,7 @@ class ProxyManager:
         card_id = message.get("card_id")
         comment_id = message.get("comment_id")
         content = message.get("content", "")
-        author_name = message.get("author_name", "Unknown")
+        author_name = _sanitize_name(message.get("author_name", "Unknown"))
 
         logger.debug(f"Comment event: card={card_id}, author={author_name}")
 

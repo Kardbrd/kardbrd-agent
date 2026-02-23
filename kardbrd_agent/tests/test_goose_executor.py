@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from kardbrd_agent.executor import ExecutorResult
+from kardbrd_agent.executor import ExecutorResult, build_prompt, extract_command
 from kardbrd_agent.goose_executor import (
     GOOSE_MODEL_MAP,
     LOCAL_PROVIDERS,
@@ -589,6 +589,19 @@ class TestGooseExecutorPrompt:
         executor = GooseExecutor()
         command = executor.extract_command("@bot /kp", "@bot")
         assert command == "/kp"
+
+    def test_goose_executor_matches_module_level_functions(self):
+        """Test GooseExecutor delegates to module-level functions (ST5: no __new__)."""
+        executor = GooseExecutor()
+        kwargs = dict(
+            card_id="abc123",
+            card_markdown="# Card",
+            command="/kp",
+            comment_content="@bot /kp",
+            author_name="Paul",
+        )
+        assert executor.build_prompt(**kwargs) == build_prompt(**kwargs)
+        assert executor.extract_command("@bot /kp", "@bot") == extract_command("@bot /kp", "@bot")
 
 
 class TestProviderKeyMap:
