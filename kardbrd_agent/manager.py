@@ -124,7 +124,10 @@ class ProxyManager:
 
         # Initialize worktree manager
         self.worktree_manager = WorktreeManager(
-            self.cwd, worktrees_dir=self.worktrees_dir, setup_command=self.setup_command
+            self.cwd,
+            worktrees_dir=self.worktrees_dir,
+            setup_command=self.setup_command,
+            executor_type=self.executor_type,
         )
 
         # Initialize WebSocket connection

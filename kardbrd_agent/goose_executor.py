@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 from .executor import AuthStatus, ClaudeExecutor, ExecutorResult
+from .rules import MODEL_MAP
 
 logger = logging.getLogger("kardbrd_agent")
 
@@ -23,12 +24,8 @@ PROVIDER_KEY_MAP = {
 # Providers that run locally and don't need an API key
 LOCAL_PROVIDERS = {"ollama"}
 
-# Map short model names to Goose provider/model format
-GOOSE_MODEL_MAP = {
-    "opus": "claude-opus-4-6",
-    "sonnet": "claude-sonnet-4-5-20250929",
-    "haiku": "claude-haiku-4-5-20251001",
-}
+# Backwards-compatible alias — single source of truth is rules.MODEL_MAP
+GOOSE_MODEL_MAP = MODEL_MAP
 
 
 class GooseExecutor:
