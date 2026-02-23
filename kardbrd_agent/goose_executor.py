@@ -244,8 +244,13 @@ class GooseExecutor:
                     timeout=self.timeout,
                 )
             except TimeoutError:
-                process.kill()
-                await process.wait()
+                # Graceful shutdown: SIGTERM first, then SIGKILL after 5s
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except TimeoutError:
+                    process.kill()
+                    await process.wait()
                 return ExecutorResult(
                     success=False,
                     result_text="",

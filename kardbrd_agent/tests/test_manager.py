@@ -151,13 +151,14 @@ class TestProxyManagerAsync:
 
     @pytest.mark.asyncio
     async def test_handle_board_event_skips_duplicate_card(self):
-        """Test that duplicate card mentions are skipped."""
+        """Test that duplicate card mentions don't spawn an executor."""
         manager = _make_manager()
         manager._active_sessions["abc123"] = ActiveSession(
             card_id="abc123", worktree_path=Path("/tmp")
         )
 
-        manager._process_mention = AsyncMock()
+        manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock()
 
         await manager._handle_board_event(
             {
@@ -169,8 +170,8 @@ class TestProxyManagerAsync:
             }
         )
 
-        # Should not process duplicate
-        manager._process_mention.assert_not_called()
+        # Duplicate check inside semaphore should prevent auth check / execution
+        manager.executor.check_auth.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_handle_board_event_handles_card_moved(self):
@@ -938,14 +939,16 @@ class TestRuleEngineIntegration:
         rule = Rule(name="ideas", events=["card_moved"], action="/ke", list="Ideas")
         engine = RuleEngine(rules=[rule])
         manager = _make_manager(rule_engine=engine)
-        manager._process_rule = AsyncMock()
+        manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock()
         manager._active_sessions["abc123"] = ActiveSession(
             card_id="abc123", worktree_path=Path("/tmp")
         )
 
         await manager._check_rules("card_moved", {"card_id": "abc123", "list_name": "Ideas"})
 
-        manager._process_rule.assert_not_called()
+        # Duplicate check inside semaphore should prevent auth check / execution
+        manager.executor.check_auth.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_process_rule_spawns_claude(self):

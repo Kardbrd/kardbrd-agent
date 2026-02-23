@@ -148,8 +148,27 @@ class ProxyManager:
         await asyncio.gather(self.connection.connect(), self._status_ping_loop())
 
     async def stop(self) -> None:
-        """Stop the proxy manager."""
+        """Stop the proxy manager and terminate active executor subprocesses."""
         self._running = False
+
+        # Terminate active executor sessions gracefully
+        if self._active_sessions:
+            logger.info(f"Stopping {len(self._active_sessions)} active session(s)...")
+            for card_id, session in list(self._active_sessions.items()):
+                if session.process and session.process.returncode is None:
+                    logger.info(f"Terminating session for card {card_id}")
+                    session.process.terminate()
+
+            # Give processes 5s to exit gracefully
+            await asyncio.sleep(5)
+
+            for card_id, session in list(self._active_sessions.items()):
+                if session.process and session.process.returncode is None:
+                    logger.warning(f"Force-killing session for card {card_id}")
+                    session.process.kill()
+
+            self._active_sessions.clear()
+
         if self.connection:
             await self.connection.close()
         if self.client:
@@ -230,12 +249,7 @@ class ProxyManager:
 
         logger.info(f"Detected {self.mention_keyword} mention by {author_name} on card {card_id}")
 
-        # Check if already processing THIS card
-        if card_id in self._active_sessions:
-            logger.warning(f"Card {card_id} already being processed, skipping")
-            return
-
-        # Process the mention (will acquire semaphore)
+        # Process the mention (will acquire semaphore and check for duplicates)
         await self._process_mention(
             card_id=card_id,
             comment_id=comment_id,
@@ -327,13 +341,14 @@ class ProxyManager:
             content: The comment content
             author_name: Name of the comment author
         """
-        # Check if already processing THIS card (before semaphore)
-        if card_id in self._active_sessions:
-            logger.warning(f"Card {card_id} already being processed")
-            return
-
         # Acquire semaphore (blocks if max_concurrent reached)
         async with self._semaphore:
+            # Check inside semaphore to prevent race condition where two
+            # concurrent events for the same card both pass the check
+            if card_id in self._active_sessions:
+                logger.warning(f"Card {card_id} already being processed")
+                return
+
             self._processing = True  # Mark as processing
             # Add 👀 reaction to acknowledge receipt
             self._add_reaction(card_id, comment_id, "👀")
@@ -591,10 +606,7 @@ DO NOT do any new work - just publish what you already did."""
                 await self._handle_stop_reaction(card_id, comment_id)
                 continue
 
-            # Skip if card is already being processed
-            if card_id in self._active_sessions:
-                logger.warning(f"Card {card_id} already processing, skipping rule '{rule.name}'")
-                continue
+            # _process_rule checks for duplicates inside semaphore
             await self._process_rule(card_id=card_id, rule=rule, message=message)
 
     async def _process_rule(self, card_id: str, rule: Rule, message: dict) -> None:
@@ -611,6 +623,11 @@ DO NOT do any new work - just publish what you already did."""
             message: The full WebSocket message
         """
         async with self._semaphore:
+            # Check inside semaphore to prevent race condition
+            if card_id in self._active_sessions:
+                logger.warning(f"Card {card_id} already processing, skipping rule '{rule.name}'")
+                return
+
             self._processing = True
             session: ActiveSession | None = None
 
