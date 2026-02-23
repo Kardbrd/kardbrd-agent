@@ -108,17 +108,13 @@ class GooseExecutor:
 
         expected_key = PROVIDER_KEY_MAP.get(provider.lower())
         if expected_key and not os.environ.get(expected_key):
-            # Key might be in Goose's keychain — warn but return authenticated
-            logger.warning(
-                f"No {expected_key} env var found for provider '{provider}'. "
-                f"Goose may use keychain credentials."
-            )
             return AuthStatus(
-                authenticated=True,
-                auth_method=f"goose/{provider} (keychain)",
+                authenticated=False,
+                error=f"Missing {expected_key} environment variable for provider '{provider}'",
                 auth_hint=(
-                    f"If auth fails at runtime, set {expected_key} env var "
-                    f"or run `goose configure`."
+                    f"Set {expected_key} env var, or run `goose configure` "
+                    f"to store credentials in the system keychain.\n\n"
+                    f"For headless/server deployments, env vars are required."
                 ),
             )
 
@@ -224,9 +220,11 @@ class GooseExecutor:
             cmd.extend(["-r", "-n", resume_session_id])
 
         # Add MCP extension for kardbrd if credentials are set
+        # Pass bot_token via env var (not CLI args) to avoid exposure in ps/proc
         if self.api_url and self.bot_token:
-            extension_cmd = f"kardbrd-mcp --api-url {self.api_url} --token {self.bot_token}"
+            extension_cmd = f"kardbrd-mcp --api-url {self.api_url}"
             cmd.extend(["--with-extension", extension_cmd])
+            env["KARDBRD_TOKEN"] = self.bot_token
 
         logger.info(f"Spawning Goose in {working_dir}")
         logger.debug(f"Prompt length: {len(prompt)} chars")

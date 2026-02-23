@@ -229,6 +229,29 @@ class TestGooseCheckAuth:
         assert result.authenticated is True
         assert "anthropic" in result.auth_method
 
+    @pytest.mark.asyncio
+    async def test_goose_provider_missing_api_key(self):
+        """Test check_auth returns authenticated=False when API key env var is missing."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        # Provider is set but API key env var is missing
+        env = {"GOOSE_PROVIDER": "anthropic"}
+        with (
+            patch("asyncio.create_subprocess_exec") as mock_exec,
+            patch.dict(os.environ, env, clear=True),
+        ):
+            mock_process = MagicMock()
+            mock_process.communicate = AsyncMock(return_value=(b"1.0.0", b""))
+            mock_process.returncode = 0
+            mock_exec.return_value = mock_process
+
+            result = await GooseExecutor.check_auth()
+
+        assert result.authenticated is False
+        assert "ANTHROPIC_API_KEY" in result.error
+        assert result.auth_hint is not None
+        assert "ANTHROPIC_API_KEY" in result.auth_hint
+
 
 class TestGooseExecutorAsync:
     """Async tests for GooseExecutor."""
@@ -323,7 +346,38 @@ class TestGooseExecutorAsync:
             ext_cmd = call_args[ext_idx + 1]
             assert "kardbrd-mcp" in ext_cmd
             assert "http://localhost:8000" in ext_cmd
-            assert "test-token" in ext_cmd
+            # Token should be in env, NOT in extension command args
+            assert "test-token" not in ext_cmd
+
+    @pytest.mark.asyncio
+    async def test_execute_bot_token_in_env_not_args(self):
+        """Test bot_token is passed via env var, not in subprocess command args."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        executor = GooseExecutor(
+            cwd="/tmp",
+            timeout=60,
+            api_url="http://localhost:8000",
+            bot_token="secret-token-123",
+        )
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_process = MagicMock()
+            mock_process.communicate = AsyncMock(return_value=(b"", b""))
+            mock_process.returncode = 0
+            mock_exec.return_value = mock_process
+
+            await executor.execute("test")
+
+            # Token must NOT appear in command args (visible via ps)
+            call_args = list(mock_exec.call_args[0])
+            for arg in call_args:
+                assert "secret-token-123" not in str(arg)
+
+            # Token must be in env vars
+            call_kwargs = mock_exec.call_args[1]
+            env = call_kwargs.get("env", {})
+            assert env.get("KARDBRD_TOKEN") == "secret-token-123"
 
     @pytest.mark.asyncio
     async def test_execute_no_mcp_without_credentials(self):

@@ -281,8 +281,10 @@ class TestCreateMcpConfig:
             assert server["command"] == "kardbrd-mcp"
             assert "--api-url" in server["args"]
             assert "http://localhost:8000" in server["args"]
-            assert "--token" in server["args"]
-            assert "test-token" in server["args"]
+            # Token should be in env, NOT in args (S1: avoid ps exposure)
+            assert "--token" not in server["args"]
+            assert "test-token" not in server["args"]
+            assert server["env"]["KARDBRD_TOKEN"] == "test-token"
             # Should NOT have SSE-style keys
             assert "type" not in server
             assert "url" not in server
@@ -302,9 +304,11 @@ class TestCreateMcpConfig:
             with open(config_path) as f:
                 config = json.load(f)
 
-            args = config["mcpServers"]["kardbrd"]["args"]
-            assert "https://api.example.com" in args
-            assert "secret-bot-123" in args
+            server = config["mcpServers"]["kardbrd"]
+            assert "https://api.example.com" in server["args"]
+            # Token passed via env, not args (S1: avoid ps exposure)
+            assert "secret-bot-123" not in server["args"]
+            assert server["env"]["KARDBRD_TOKEN"] == "secret-bot-123"
         finally:
             config_path.unlink(missing_ok=True)
 

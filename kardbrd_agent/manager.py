@@ -424,18 +424,18 @@ class ProxyManager:
                     self.client.add_comment(card_id, error_comment)
                     logger.info(f"Posted error comment to card {card_id}")
 
-            except Exception:
-                import traceback
-
+            except Exception as exc:
                 logger.exception("Error processing mention")
                 # Add 🛑 reaction for exception
                 self._add_reaction(card_id, comment_id, "🛑")
-                # Post full stack trace for debugging
-                tb = traceback.format_exc()
+                # Post sanitized message (no stack trace — keeps internals private)
+                error_type = type(exc).__name__
                 try:
                     self.client.add_comment(
                         card_id,
-                        f"**Error processing request**\n\n```\n{tb}\n```\n\n@{author_name}",
+                        f"**Error processing request**\n\n"
+                        f"An internal error occurred (`{error_type}`). "
+                        f"Check the agent logs for details.\n\n@{author_name}",
                     )
                 except Exception:
                     logger.error("Failed to post error comment")
@@ -673,15 +673,15 @@ DO NOT do any new work - just publish what you already did."""
                     )
                     self.client.add_comment(card_id, error_comment)
 
-            except Exception:
-                import traceback
-
+            except Exception as exc:
                 logger.exception(f"Error processing rule '{rule.name}'")
-                tb = traceback.format_exc()
+                error_type = type(exc).__name__
                 try:
                     self.client.add_comment(
                         card_id,
-                        f"**Automation Error** ({rule.name})\n\n```\n{tb}\n```",
+                        f"**Automation Error** ({rule.name})\n\n"
+                        f"An internal error occurred (`{error_type}`). "
+                        f"Check the agent logs for details.",
                     )
                 except Exception:
                     logger.error("Failed to post error comment for rule")

@@ -32,9 +32,10 @@ def create_mcp_config(api_url: str, bot_token: str) -> Path:
                 "args": [
                     "--api-url",
                     api_url,
-                    "--token",
-                    bot_token,
                 ],
+                "env": {
+                    "KARDBRD_TOKEN": bot_token,
+                },
             }
         }
     }
