@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kardbrd_agent.executor import AuthStatus, ClaudeResult
-from kardbrd_agent.manager import ActiveSession, ProxyManager
+from kardbrd_agent.manager import ActiveSession, ProxyManager, _sanitize_name
 from kardbrd_agent.rules import Rule, RuleEngine
 
 # Default test values for ProxyManager constructor
@@ -151,13 +151,14 @@ class TestProxyManagerAsync:
 
     @pytest.mark.asyncio
     async def test_handle_board_event_skips_duplicate_card(self):
-        """Test that duplicate card mentions are skipped."""
+        """Test that duplicate card mentions don't spawn an executor."""
         manager = _make_manager()
         manager._active_sessions["abc123"] = ActiveSession(
             card_id="abc123", worktree_path=Path("/tmp")
         )
 
-        manager._process_mention = AsyncMock()
+        manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock()
 
         await manager._handle_board_event(
             {
@@ -169,8 +170,8 @@ class TestProxyManagerAsync:
             }
         )
 
-        # Should not process duplicate
-        manager._process_mention.assert_not_called()
+        # Duplicate check inside semaphore should prevent auth check / execution
+        manager.executor.check_auth.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_handle_board_event_handles_card_moved(self):
@@ -196,6 +197,9 @@ class TestProxyManagerAsync:
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
         manager.executor.extract_command.return_value = "/kp"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = AsyncMock(
@@ -217,6 +221,9 @@ class TestProxyManagerAsync:
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
         manager.executor.extract_command.return_value = "/kp"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = AsyncMock(
@@ -241,6 +248,9 @@ class TestProxyManagerAsync:
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
         manager.executor.extract_command.return_value = "/kp"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = AsyncMock(
@@ -263,6 +273,9 @@ class TestProxyManagerAsync:
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
         manager.executor.extract_command.return_value = "/kp"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = AsyncMock(
@@ -283,6 +296,10 @@ class TestProxyManagerAsync:
 
         manager.client = MagicMock()
         manager.client.get_card_markdown.side_effect = Exception("API error")
+        manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
         manager.worktree_manager = MagicMock()
         manager.worktree_manager.create_worktree.return_value = Path("/tmp/wt")
 
@@ -539,6 +556,9 @@ class TestStopReaction:
         manager.worktree_manager = MagicMock()
         manager.worktree_manager.create_worktree.return_value = Path("/tmp/wt")
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
         manager.executor.extract_command.return_value = "stop the presses"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = AsyncMock(
@@ -574,6 +594,9 @@ class TestProcessingAttribute:
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
         manager.executor.extract_command.return_value = "/kp"
         manager.executor.build_prompt.return_value = "prompt"
         manager._has_recent_bot_comment = MagicMock(return_value=False)
@@ -599,6 +622,10 @@ class TestProcessingAttribute:
         manager = _make_manager()
         manager.client = MagicMock()
         manager.client.get_card_markdown.side_effect = Exception("API error")
+        manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
         manager.worktree_manager = MagicMock()
         manager.worktree_manager.create_worktree.return_value = Path("/tmp/wt")
 
@@ -912,14 +939,16 @@ class TestRuleEngineIntegration:
         rule = Rule(name="ideas", events=["card_moved"], action="/ke", list="Ideas")
         engine = RuleEngine(rules=[rule])
         manager = _make_manager(rule_engine=engine)
-        manager._process_rule = AsyncMock()
+        manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock()
         manager._active_sessions["abc123"] = ActiveSession(
             card_id="abc123", worktree_path=Path("/tmp")
         )
 
         await manager._check_rules("card_moved", {"card_id": "abc123", "list_name": "Ideas"})
 
-        manager._process_rule.assert_not_called()
+        # Duplicate check inside semaphore should prevent auth check / execution
+        manager.executor.check_auth.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_process_rule_spawns_claude(self):
@@ -930,6 +959,9 @@ class TestRuleEngineIntegration:
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = AsyncMock(
             return_value=ClaudeResult(success=True, result_text="Done")
@@ -954,6 +986,9 @@ class TestRuleEngineIntegration:
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = AsyncMock(
             return_value=ClaudeResult(success=True, result_text="Done")
@@ -975,6 +1010,9 @@ class TestRuleEngineIntegration:
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = AsyncMock(
             return_value=ClaudeResult(success=False, result_text="", error="Model error")
@@ -1049,16 +1087,19 @@ class TestAuthCheckInMention:
     """Tests for authentication check before processing mentions."""
 
     @pytest.mark.asyncio
-    async def test_process_mention_aborts_when_not_authenticated(self, mock_claude_auth):
+    async def test_process_mention_aborts_when_not_authenticated(self):
         """Test that _process_mention posts error and returns when auth fails."""
-        mock_claude_auth.return_value = AuthStatus(
-            authenticated=False, error="Claude CLI is not logged in"
-        )
-
         manager = _make_manager()
         manager.client = MagicMock()
         manager.worktree_manager = MagicMock()
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(
+                authenticated=False,
+                error="Claude CLI is not logged in",
+                auth_hint="Run `claude auth login` on the host.",
+            )
+        )
         manager.executor.execute = AsyncMock()
 
         await manager._process_mention("card1", "comm1", "@coder hi", "Paul")
@@ -1077,14 +1118,15 @@ class TestAuthCheckInMention:
         manager.client.toggle_reaction.assert_any_call("card1", "comm1", "🛑")
 
     @pytest.mark.asyncio
-    async def test_process_mention_proceeds_when_authenticated(self, mock_claude_auth):
+    async def test_process_mention_proceeds_when_authenticated(self):
         """Test that _process_mention proceeds normally when auth succeeds."""
-        mock_claude_auth.return_value = AuthStatus(authenticated=True, email="test@test.com")
-
         manager = _make_manager()
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
         manager.executor.extract_command.return_value = "/kp"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = AsyncMock(
@@ -1100,17 +1142,20 @@ class TestAuthCheckInMention:
         manager.executor.execute.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_process_rule_aborts_when_not_authenticated(self, mock_claude_auth):
+    async def test_process_rule_aborts_when_not_authenticated(self):
         """Test that _process_rule posts error when auth fails."""
-        mock_claude_auth.return_value = AuthStatus(
-            authenticated=False, error="Claude CLI is not logged in"
-        )
-
         rule = Rule(name="auto-ke", events=["card_moved"], action="/ke")
         manager = _make_manager()
         manager.client = MagicMock()
         manager.worktree_manager = MagicMock()
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(
+                authenticated=False,
+                error="Claude CLI is not logged in",
+                auth_hint="Run `claude auth login` on the host.",
+            )
+        )
         manager.executor.execute = AsyncMock()
 
         await manager._process_rule("card1", rule, {"card_id": "card1"})
@@ -1125,17 +1170,415 @@ class TestAuthCheckInMention:
         assert "not logged in" in comment
 
     @pytest.mark.asyncio
-    async def test_process_mention_clears_session_on_auth_failure(self, mock_claude_auth):
+    async def test_process_mention_clears_session_on_auth_failure(self):
         """Test that active session is cleaned up when auth fails."""
-        mock_claude_auth.return_value = AuthStatus(authenticated=False, error="Not logged in")
-
         manager = _make_manager()
         manager.client = MagicMock()
         manager.worktree_manager = MagicMock()
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=False, error="Not logged in")
+        )
 
         await manager._process_mention("card1", "comm1", "@coder hi", "Paul")
 
         # Session should be cleaned up
         assert "card1" not in manager._active_sessions
         assert manager._processing is False
+
+    @pytest.mark.asyncio
+    async def test_auth_hint_appears_in_mention_error_comment(self):
+        """Test auth_hint from AuthStatus is included in error comment on card."""
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.worktree_manager = MagicMock()
+        manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(
+                authenticated=False,
+                error="GOOSE_PROVIDER not set",
+                auth_hint="Set GOOSE_PROVIDER to your LLM provider. Run `goose configure`.",
+            )
+        )
+
+        await manager._process_mention("card1", "comm1", "@coder hi", "Paul")
+
+        comment = manager.client.add_comment.call_args[0][1]
+        assert "GOOSE_PROVIDER not set" in comment
+        assert "Set GOOSE_PROVIDER to your LLM provider" in comment
+        assert "`goose configure`" in comment
+
+    @pytest.mark.asyncio
+    async def test_auth_hint_appears_in_rule_error_comment(self):
+        """Test auth_hint from AuthStatus is included in rule error comment."""
+        rule = Rule(name="auto-ke", events=["card_moved"], action="/ke")
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.worktree_manager = MagicMock()
+        manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(
+                authenticated=False,
+                error="ANTHROPIC_API_KEY not set",
+                auth_hint="Set ANTHROPIC_API_KEY env var or run `goose configure`.",
+            )
+        )
+
+        await manager._process_rule("card1", rule, {"card_id": "card1"})
+
+        comment = manager.client.add_comment.call_args[0][1]
+        assert "ANTHROPIC_API_KEY not set" in comment
+        assert "Set ANTHROPIC_API_KEY env var" in comment
+
+
+class TestExecutorTypeThreading:
+    """Tests for executor_type being properly passed to WorktreeManager."""
+
+    def test_executor_type_stored_on_manager(self):
+        """Test executor_type is stored in manager."""
+        manager = _make_manager(executor_type="goose")
+        assert manager.executor_type == "goose"
+
+    def test_executor_type_defaults_to_claude(self):
+        """Test executor_type defaults to 'claude'."""
+        manager = _make_manager()
+        assert manager.executor_type == "claude"
+
+
+class TestErrorSanitization:
+    """Tests for S3: error messages don't contain full tracebacks."""
+
+    @pytest.mark.asyncio
+    async def test_mention_exception_posts_sanitized_error(self):
+        """Test _process_mention exception posts error type only, no traceback."""
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
+        manager.worktree_manager = MagicMock()
+        manager.worktree_manager.create_worktree.side_effect = ConnectionError(
+            "Failed to connect to git remote https://internal.corp/repo.git"
+        )
+
+        await manager._process_mention("card1", "comm1", "@coder hi", "Paul")
+
+        comment = manager.client.add_comment.call_args[0][1]
+        # Should contain the error type name
+        assert "ConnectionError" in comment
+        # Should have the generic instruction
+        assert "Check the agent logs for details" in comment
+        # Should NOT contain the full error message (may have sensitive info)
+        assert "internal.corp" not in comment
+        # Should NOT contain traceback markers
+        assert "Traceback" not in comment
+        assert "File " not in comment
+
+    @pytest.mark.asyncio
+    async def test_rule_exception_posts_sanitized_error(self):
+        """Test _process_rule exception posts error type only, no traceback."""
+        rule = Rule(name="ideas", events=["card_moved"], action="/ke")
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
+        manager.worktree_manager = MagicMock()
+        manager.worktree_manager.create_worktree.side_effect = RuntimeError(
+            "Sensitive internal path: /home/agent/.secrets/key.pem"
+        )
+
+        await manager._process_rule("card1", rule, {"card_id": "card1"})
+
+        comment = manager.client.add_comment.call_args[0][1]
+        # Should contain the error type name
+        assert "RuntimeError" in comment
+        # Should have the generic instruction
+        assert "Check the agent logs for details" in comment
+        # Should NOT contain the sensitive error details
+        assert ".secrets" not in comment
+        assert "key.pem" not in comment
+
+
+class TestConcurrentDuplicatePrevention:
+    """Tests for ST1: duplicate-card session check inside semaphore."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_mentions_for_same_card_only_one_proceeds(self):
+        """Test two concurrent _process_mention calls for same card: only one executes."""
+        import asyncio
+
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.client.get_card_markdown.return_value = "# Card"
+        manager.worktree_manager = MagicMock()
+        manager.worktree_manager.create_worktree.return_value = Path("/tmp/wt")
+        manager._has_recent_bot_comment = MagicMock(return_value=True)
+
+        execution_count = 0
+        execute_started = asyncio.Event()
+        execute_proceed = asyncio.Event()
+
+        async def slow_execute(prompt, cwd=None, **kwargs):
+            nonlocal execution_count
+            execution_count += 1
+            execute_started.set()
+            await execute_proceed.wait()
+            return ClaudeResult(success=True, result_text="Done")
+
+        manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
+        manager.executor.extract_command.return_value = "/kp"
+        manager.executor.build_prompt.return_value = "prompt"
+        manager.executor.execute = slow_execute
+
+        # Start first mention (will block inside execute)
+        task1 = asyncio.create_task(
+            manager._process_mention("card1", "comm1", "@coder /kp", "Paul")
+        )
+        # Wait for first one to start executing
+        await execute_started.wait()
+
+        # Start second mention for same card while first is still running
+        task2 = asyncio.create_task(
+            manager._process_mention("card1", "comm2", "@coder /kp", "Paul")
+        )
+        # Give task2 time to reach the duplicate check
+        await asyncio.sleep(0.05)
+
+        # Let the first task complete
+        execute_proceed.set()
+        await task1
+        await task2
+
+        # Only one execution should have happened
+        assert execution_count == 1
+
+    @pytest.mark.asyncio
+    async def test_concurrent_rules_for_same_card_only_one_proceeds(self):
+        """Test two concurrent _process_rule calls for same card: only one executes."""
+        import asyncio
+
+        rule = Rule(name="ideas", events=["card_moved"], action="/ke")
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.client.get_card_markdown.return_value = "# Card"
+        manager.worktree_manager = MagicMock()
+        manager.worktree_manager.create_worktree.return_value = Path("/tmp/wt")
+        manager._has_recent_bot_comment = MagicMock(return_value=True)
+
+        execution_count = 0
+        execute_started = asyncio.Event()
+        execute_proceed = asyncio.Event()
+
+        async def slow_execute(prompt, cwd=None, **kwargs):
+            nonlocal execution_count
+            execution_count += 1
+            execute_started.set()
+            await execute_proceed.wait()
+            return ClaudeResult(success=True, result_text="Done")
+
+        manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
+        manager.executor.build_prompt.return_value = "prompt"
+        manager.executor.execute = slow_execute
+
+        task1 = asyncio.create_task(manager._process_rule("card1", rule, {"card_id": "card1"}))
+        await execute_started.wait()
+
+        task2 = asyncio.create_task(manager._process_rule("card1", rule, {"card_id": "card1"}))
+        await asyncio.sleep(0.05)
+
+        execute_proceed.set()
+        await task1
+        await task2
+
+        assert execution_count == 1
+
+
+class TestGracefulShutdown:
+    """Tests for ST3: stop() terminates active subprocesses."""
+
+    @pytest.mark.asyncio
+    async def test_stop_terminates_active_processes(self):
+        """Test stop() sends SIGTERM to active sessions."""
+        manager = _make_manager()
+        manager.connection = AsyncMock()
+        manager.client = MagicMock()
+
+        mock_process = MagicMock()
+        mock_process.returncode = None  # Still running
+        manager._active_sessions["card1"] = ActiveSession(
+            card_id="card1",
+            worktree_path=Path("/tmp/wt"),
+            process=mock_process,
+        )
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("asyncio.sleep", AsyncMock())
+            await manager.stop()
+
+        mock_process.terminate.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_stop_force_kills_after_grace_period(self):
+        """Test stop() force-kills processes that don't exit after SIGTERM."""
+        manager = _make_manager()
+        manager.connection = AsyncMock()
+        manager.client = MagicMock()
+
+        mock_process = MagicMock()
+        mock_process.returncode = None  # Still running after terminate
+
+        manager._active_sessions["card1"] = ActiveSession(
+            card_id="card1",
+            worktree_path=Path("/tmp/wt"),
+            process=mock_process,
+        )
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("asyncio.sleep", AsyncMock())
+            await manager.stop()
+
+        mock_process.terminate.assert_called_once()
+        mock_process.kill.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_stop_skips_already_exited_processes(self):
+        """Test stop() doesn't terminate already-exited processes."""
+        manager = _make_manager()
+        manager.connection = AsyncMock()
+        manager.client = MagicMock()
+
+        mock_process = MagicMock()
+        mock_process.returncode = 0  # Already exited
+        manager._active_sessions["card1"] = ActiveSession(
+            card_id="card1",
+            worktree_path=Path("/tmp/wt"),
+            process=mock_process,
+        )
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("asyncio.sleep", AsyncMock())
+            await manager.stop()
+
+        mock_process.terminate.assert_not_called()
+        mock_process.kill.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stop_clears_active_sessions(self):
+        """Test stop() clears all active sessions."""
+        manager = _make_manager()
+        manager.connection = AsyncMock()
+        manager.client = MagicMock()
+
+        mock_process = MagicMock()
+        mock_process.returncode = None
+        manager._active_sessions["card1"] = ActiveSession(
+            card_id="card1",
+            worktree_path=Path("/tmp/wt"),
+            process=mock_process,
+        )
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("asyncio.sleep", AsyncMock())
+            await manager.stop()
+
+        assert len(manager._active_sessions) == 0
+
+    @pytest.mark.asyncio
+    async def test_stop_with_no_active_sessions(self):
+        """Test stop() works cleanly when no sessions are active."""
+        manager = _make_manager()
+        manager.connection = AsyncMock()
+        manager.client = MagicMock()
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("asyncio.sleep", AsyncMock())
+            await manager.stop()
+
+        assert manager._running is False
+
+    @pytest.mark.asyncio
+    async def test_stop_handles_session_without_process(self):
+        """Test stop() handles sessions where process hasn't been assigned."""
+        manager = _make_manager()
+        manager.connection = AsyncMock()
+        manager.client = MagicMock()
+
+        manager._active_sessions["card1"] = ActiveSession(
+            card_id="card1",
+            worktree_path=Path("/tmp/wt"),
+            process=None,  # No process yet
+        )
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("asyncio.sleep", AsyncMock())
+            await manager.stop()
+
+        assert len(manager._active_sessions) == 0
+
+
+class TestSanitizeName:
+    """Tests for S5: _sanitize_name prevents Markdown injection."""
+
+    def test_normal_name_unchanged(self):
+        """Test normal names pass through."""
+        assert _sanitize_name("Paul") == "Paul"
+
+    def test_name_with_spaces(self):
+        """Test names with spaces are preserved."""
+        assert _sanitize_name("Paul Smith") == "Paul Smith"
+
+    def test_name_with_hyphen_and_underscore(self):
+        """Test hyphens and underscores are preserved."""
+        assert _sanitize_name("Paul-Smith_Jr") == "Paul-Smith_Jr"
+
+    def test_name_with_period(self):
+        """Test periods are preserved."""
+        assert _sanitize_name("Paul.Smith") == "Paul.Smith"
+
+    def test_markdown_link_injection(self):
+        """Test Markdown link injection is stripped."""
+        assert _sanitize_name("](http://evil.com)[x") == "httpevil.comx"
+
+    def test_markdown_bold_injection(self):
+        """Test Markdown bold formatting is stripped."""
+        assert _sanitize_name("**bold**") == "bold"
+
+    def test_html_tag_injection(self):
+        """Test HTML tags are stripped."""
+        assert _sanitize_name("<script>alert(1)</script>") == "scriptalert1script"
+
+    def test_empty_after_sanitization_returns_unknown(self):
+        """Test empty string after sanitization returns 'Unknown'."""
+        assert _sanitize_name("[]()") == "Unknown"
+
+    def test_empty_string_returns_unknown(self):
+        """Test empty input returns 'Unknown'."""
+        assert _sanitize_name("") == "Unknown"
+
+    @pytest.mark.asyncio
+    async def test_mention_comment_uses_sanitized_name(self):
+        """Test _handle_comment_created sanitizes author_name before passing to _process_mention."""
+        manager = _make_manager()
+        manager._process_mention = AsyncMock()
+
+        await manager._handle_comment_created(
+            {
+                "card_id": "card1",
+                "comment_id": "comm1",
+                "content": "@coder do thing",
+                "author_name": "**injected**",
+            }
+        )
+
+        # The author_name passed to _process_mention should be sanitized
+        call_kwargs = manager._process_mention.call_args[1]
+        assert call_kwargs["author_name"] == "injected"

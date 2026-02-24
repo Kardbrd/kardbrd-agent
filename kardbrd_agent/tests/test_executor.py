@@ -8,10 +8,12 @@ from kardbrd_agent.executor import (
     AuthStatus,
     ClaudeExecutor,
     ClaudeResult,
+    build_prompt,
+    extract_command,
 )
 
-# Save a reference to the real check_claude_auth before autouse fixture patches it
-_real_check_claude_auth = ClaudeExecutor.check_claude_auth
+# Save a reference to the real check_auth before autouse fixture patches it
+_real_check_auth = ClaudeExecutor.check_auth
 
 
 class TestClaudeResult:
@@ -264,6 +266,23 @@ class TestCreateMcpConfig:
         finally:
             config_path.unlink(missing_ok=True)
 
+    def test_config_file_permissions(self):
+        """Test that MCP config file has owner-only permissions (0o600)."""
+        import stat
+
+        from kardbrd_agent.executor import create_mcp_config
+
+        config_path = create_mcp_config(api_url="http://localhost:8000", bot_token="test-token")
+        try:
+            mode = config_path.stat().st_mode
+            # Check that only owner has read/write, no group/other access
+            assert mode & stat.S_IRWXG == 0, "Group should have no permissions"
+            assert mode & stat.S_IRWXO == 0, "Others should have no permissions"
+            assert mode & stat.S_IRUSR, "Owner should have read permission"
+            assert mode & stat.S_IWUSR, "Owner should have write permission"
+        finally:
+            config_path.unlink(missing_ok=True)
+
     def test_config_has_stdio_transport(self):
         """Test that the config uses stdio transport with kardbrd-mcp command."""
         import json
@@ -281,8 +300,10 @@ class TestCreateMcpConfig:
             assert server["command"] == "kardbrd-mcp"
             assert "--api-url" in server["args"]
             assert "http://localhost:8000" in server["args"]
-            assert "--token" in server["args"]
-            assert "test-token" in server["args"]
+            # Token should be in env, NOT in args (S1: avoid ps exposure)
+            assert "--token" not in server["args"]
+            assert "test-token" not in server["args"]
+            assert server["env"]["KARDBRD_TOKEN"] == "test-token"
             # Should NOT have SSE-style keys
             assert "type" not in server
             assert "url" not in server
@@ -302,9 +323,11 @@ class TestCreateMcpConfig:
             with open(config_path) as f:
                 config = json.load(f)
 
-            args = config["mcpServers"]["kardbrd"]["args"]
-            assert "https://api.example.com" in args
-            assert "secret-bot-123" in args
+            server = config["mcpServers"]["kardbrd"]
+            assert "https://api.example.com" in server["args"]
+            # Token passed via env, not args (S1: avoid ps exposure)
+            assert "secret-bot-123" not in server["args"]
+            assert server["env"]["KARDBRD_TOKEN"] == "secret-bot-123"
         finally:
             config_path.unlink(missing_ok=True)
 
@@ -508,6 +531,81 @@ class TestClaudeExecutorCwd:
             assert call_kwargs["cwd"] == default_cwd
 
 
+class TestClaudeExecutorTimeout:
+    """Tests for ST4: graceful timeout with terminate() before kill()."""
+
+    @pytest.mark.asyncio
+    async def test_timeout_calls_terminate_first(self):
+        """Test that timeout sends SIGTERM before SIGKILL."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        executor = ClaudeExecutor(cwd="/tmp", timeout=1)
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_process = MagicMock()
+            mock_process.communicate = AsyncMock(side_effect=TimeoutError())
+            mock_process.terminate = MagicMock()
+            mock_process.kill = MagicMock()
+            # First wait (grace period via wait_for) times out, second wait (after kill) succeeds
+            mock_process.wait = AsyncMock(side_effect=[TimeoutError(), None])
+            mock_exec.return_value = mock_process
+
+            result = await executor.execute("test prompt")
+
+        assert result.success is False
+        assert "timed out" in result.error
+        mock_process.terminate.assert_called_once()
+        mock_process.kill.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_timeout_terminate_succeeds_no_kill(self):
+        """Test that SIGKILL is NOT sent when process exits after SIGTERM."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        executor = ClaudeExecutor(cwd="/tmp", timeout=1)
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_process = MagicMock()
+            mock_process.communicate = AsyncMock(side_effect=TimeoutError())
+            mock_process.terminate = MagicMock()
+            mock_process.kill = MagicMock()
+            # Process exits gracefully after terminate
+            mock_process.wait = AsyncMock(return_value=0)
+            mock_exec.return_value = mock_process
+
+            result = await executor.execute("test prompt")
+
+        assert result.success is False
+        assert "timed out" in result.error
+        mock_process.terminate.assert_called_once()
+        mock_process.kill.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_bot_token_not_in_command_args(self):
+        """Test S1: bot_token is passed via MCP config env, not CLI args."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        executor = ClaudeExecutor(
+            cwd="/tmp",
+            timeout=60,
+            api_url="http://localhost:8000",
+            bot_token="secret-token-xyz",
+        )
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_process = MagicMock()
+            mock_process.communicate = AsyncMock(return_value=(b"", b""))
+            mock_process.returncode = 0
+            mock_exec.return_value = mock_process
+
+            await executor.execute("test prompt")
+
+            # Token must NOT appear in command-line args (visible via ps aux)
+            call_args = list(mock_exec.call_args[0])
+            for arg in call_args:
+                assert "secret-token-xyz" not in str(arg), f"Token found in command arg: {arg}"
+
+
 class TestAuthStatus:
     """Tests for AuthStatus dataclass."""
 
@@ -530,9 +628,23 @@ class TestAuthStatus:
         assert status.error == "Not logged in"
         assert status.email is None
 
+    def test_auth_hint_field(self):
+        """Test auth_hint field on AuthStatus."""
+        status = AuthStatus(
+            authenticated=False,
+            error="Not logged in",
+            auth_hint="Run `claude auth login`",
+        )
+        assert status.auth_hint == "Run `claude auth login`"
+
+    def test_auth_hint_default_none(self):
+        """Test auth_hint defaults to None."""
+        status = AuthStatus(authenticated=True)
+        assert status.auth_hint is None
+
 
 class TestCheckClaudeAuth:
-    """Tests for ClaudeExecutor.check_claude_auth static method."""
+    """Tests for ClaudeExecutor.check_auth static method."""
 
     @pytest.mark.asyncio
     async def test_authenticated_returns_success(self, mock_claude_auth):
@@ -544,7 +656,7 @@ class TestCheckClaudeAuth:
             subscription_type="max",
         )
 
-        result = await ClaudeExecutor.check_claude_auth()
+        result = await ClaudeExecutor.check_auth()
         assert result.authenticated is True
         assert result.email == "user@example.com"
         assert result.auth_method == "claude.ai"
@@ -557,7 +669,7 @@ class TestCheckClaudeAuth:
             authenticated=False, error="Claude CLI is not logged in"
         )
 
-        result = await ClaudeExecutor.check_claude_auth()
+        result = await ClaudeExecutor.check_auth()
         assert result.authenticated is False
         assert "not logged in" in result.error
 
@@ -568,7 +680,7 @@ class TestCheckClaudeAuth:
             authenticated=False, error="Claude CLI not found"
         )
 
-        result = await ClaudeExecutor.check_claude_auth()
+        result = await ClaudeExecutor.check_auth()
         assert result.authenticated is False
         assert "not found" in result.error
 
@@ -580,7 +692,7 @@ class TestCheckClaudeAuth:
             error="claude auth status exited with code 1: some error",
         )
 
-        result = await ClaudeExecutor.check_claude_auth()
+        result = await ClaudeExecutor.check_auth()
         assert result.authenticated is False
         assert "exited with code" in result.error
 
@@ -592,13 +704,13 @@ class TestCheckClaudeAuth:
             error="Failed to parse auth status output: not json",
         )
 
-        result = await ClaudeExecutor.check_claude_auth()
+        result = await ClaudeExecutor.check_auth()
         assert result.authenticated is False
         assert "parse" in result.error
 
     @pytest.mark.asyncio
-    async def test_real_check_claude_auth_authenticated(self):
-        """Test the real check_claude_auth with a mocked subprocess (authenticated)."""
+    async def test_real_check_auth_authenticated(self):
+        """Test the real check_auth with a mocked subprocess (authenticated)."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         auth_output = json.dumps(
@@ -616,7 +728,7 @@ class TestCheckClaudeAuth:
             mock_process.returncode = 0
             mock_exec.return_value = mock_process
 
-            result = await _real_check_claude_auth()
+            result = await _real_check_auth()
 
         assert result.authenticated is True
         assert result.email == "dev@example.com"
@@ -624,8 +736,8 @@ class TestCheckClaudeAuth:
         assert result.subscription_type == "pro"
 
     @pytest.mark.asyncio
-    async def test_real_check_claude_auth_not_logged_in(self):
-        """Test the real check_claude_auth with loggedIn=false."""
+    async def test_real_check_auth_not_logged_in(self):
+        """Test the real check_auth with loggedIn=false."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         auth_output = json.dumps({"loggedIn": False})
@@ -636,21 +748,90 @@ class TestCheckClaudeAuth:
             mock_process.returncode = 0
             mock_exec.return_value = mock_process
 
-            result = await _real_check_claude_auth()
+            result = await _real_check_auth()
 
         assert result.authenticated is False
         assert "not logged in" in result.error
 
     @pytest.mark.asyncio
-    async def test_real_check_claude_auth_cli_not_found(self):
-        """Test the real check_claude_auth when CLI is not installed."""
+    async def test_real_check_auth_cli_not_found(self):
+        """Test the real check_auth when CLI is not installed."""
         from unittest.mock import patch
 
         with patch(
             "asyncio.create_subprocess_exec",
             side_effect=FileNotFoundError(),
         ):
-            result = await _real_check_claude_auth()
+            result = await _real_check_auth()
 
         assert result.authenticated is False
         assert "not found" in result.error
+
+
+class TestModuleLevelFunctions:
+    """Tests for ST5: module-level build_prompt() and extract_command()."""
+
+    def test_module_level_build_prompt_skill(self):
+        """Test module-level build_prompt with skill command."""
+        prompt = build_prompt(
+            card_id="abc123",
+            card_markdown="# Card Title",
+            command="/kp",
+            comment_content="@coder /kp",
+            author_name="Paul",
+        )
+        assert "/kp" in prompt
+        assert "abc123" in prompt
+        assert "Paul" in prompt
+
+    def test_module_level_build_prompt_free_form(self):
+        """Test module-level build_prompt with free-form command."""
+        prompt = build_prompt(
+            card_id="xyz789",
+            card_markdown="# Card",
+            command="fix the bug",
+            comment_content="@coder fix the bug",
+            author_name="Paul",
+        )
+        assert "Task Request" in prompt
+        assert "fix the bug" in prompt
+
+    def test_module_level_build_prompt_with_board_id(self):
+        """Test module-level build_prompt includes label instructions with board_id."""
+        prompt = build_prompt(
+            card_id="abc123",
+            card_markdown="# Card",
+            command="fix bug",
+            comment_content="@coder fix bug",
+            author_name="Paul",
+            board_id="board456",
+        )
+        assert "get_board_labels" in prompt
+        assert "board456" in prompt
+
+    def test_module_level_extract_command_skill(self):
+        """Test module-level extract_command with skill."""
+        assert extract_command("@coder /kp", "@coder") == "/kp"
+
+    def test_module_level_extract_command_free_form(self):
+        """Test module-level extract_command with free-form."""
+        assert extract_command("@coder fix the bug", "@coder") == "fix the bug"
+
+    def test_module_level_extract_command_no_mention(self):
+        """Test module-level extract_command when mention not found."""
+        assert extract_command("just text", "@coder") == "just text"
+
+    def test_claude_executor_delegates_to_module_level(self):
+        """Test ClaudeExecutor methods produce same result as module-level functions."""
+        executor = ClaudeExecutor()
+        kwargs = dict(
+            card_id="abc123",
+            card_markdown="# Card",
+            command="/kp",
+            comment_content="@coder /kp",
+            author_name="Paul",
+        )
+        assert executor.build_prompt(**kwargs) == build_prompt(**kwargs)
+        assert executor.extract_command("@coder /kp", "@coder") == extract_command(
+            "@coder /kp", "@coder"
+        )

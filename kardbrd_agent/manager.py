@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import UTC
 from pathlib import Path
@@ -13,6 +14,16 @@ from .rules import Rule, RuleEngine
 from .worktree import WorktreeManager
 
 logger = logging.getLogger("kardbrd_agent")
+
+
+def _sanitize_name(name: str) -> str:
+    """Sanitize a user-supplied name for safe embedding in Markdown.
+
+    Strips characters that could be used for Markdown injection
+    (links, formatting, HTML tags). Keeps only alphanumeric, spaces,
+    hyphens, underscores, and periods.
+    """
+    return re.sub(r"[^\w\s\-.]", "", name).strip() or "Unknown"
 
 
 @dataclass
@@ -48,6 +59,7 @@ class ProxyManager:
         worktrees_dir: str | Path | None = None,
         setup_command: str | None = None,
         rule_engine: RuleEngine | None = None,
+        executor_type: str = "claude",
     ):
         self.board_id = board_id
         self.api_url = api_url
@@ -60,6 +72,7 @@ class ProxyManager:
         self.worktrees_dir = Path(worktrees_dir) if worktrees_dir else None
         self.setup_command = setup_command
         self.rule_engine = rule_engine or RuleEngine()
+        self.executor_type = executor_type
 
         # Will be initialized in start()
         self.connection: WebSocketAgentConnection | None = None
@@ -67,7 +80,7 @@ class ProxyManager:
         self.executor: ClaudeExecutor | None = None
         self.worktree_manager: WorktreeManager | None = None
 
-        # Concurrency control: semaphore limits parallel Claude sessions
+        # Concurrency control: semaphore limits parallel agent sessions
         self._semaphore = asyncio.Semaphore(max_concurrent)
         # Track active sessions: card_id → ActiveSession
         self._active_sessions: dict[str, ActiveSession] = {}
@@ -91,26 +104,41 @@ class ProxyManager:
             base_url=self.api_url,
             token=self.bot_token,
         )
-        self.executor = ClaudeExecutor(
-            cwd=self.cwd,
-            timeout=self.timeout,
-            api_url=self.api_url,
-            bot_token=self.bot_token,
-        )
 
-        # Check Claude CLI authentication
-        auth_status = await ClaudeExecutor.check_claude_auth()
+        # Executor factory: create the right executor based on type
+        if self.executor_type == "goose":
+            from .goose_executor import GooseExecutor
+
+            self.executor = GooseExecutor(
+                cwd=self.cwd,
+                timeout=self.timeout,
+                api_url=self.api_url,
+                bot_token=self.bot_token,
+            )
+        else:
+            self.executor = ClaudeExecutor(
+                cwd=self.cwd,
+                timeout=self.timeout,
+                api_url=self.api_url,
+                bot_token=self.bot_token,
+            )
+
+        # Check agent authentication
+        auth_status = await self.executor.check_auth()
         if auth_status.authenticated:
             logger.info(
-                f"Claude auth OK (method={auth_status.auth_method}, "
+                f"Agent auth OK (method={auth_status.auth_method}, "
                 f"email={auth_status.email}, plan={auth_status.subscription_type})"
             )
         else:
-            logger.warning(f"Claude auth check failed: {auth_status.error}")
+            logger.warning(f"Agent auth check failed: {auth_status.error}")
 
         # Initialize worktree manager
         self.worktree_manager = WorktreeManager(
-            self.cwd, worktrees_dir=self.worktrees_dir, setup_command=self.setup_command
+            self.cwd,
+            worktrees_dir=self.worktrees_dir,
+            setup_command=self.setup_command,
+            executor_type=self.executor_type,
         )
 
         # Initialize WebSocket connection
@@ -131,8 +159,27 @@ class ProxyManager:
         await asyncio.gather(self.connection.connect(), self._status_ping_loop())
 
     async def stop(self) -> None:
-        """Stop the proxy manager."""
+        """Stop the proxy manager and terminate active executor subprocesses."""
         self._running = False
+
+        # Terminate active executor sessions gracefully
+        if self._active_sessions:
+            logger.info(f"Stopping {len(self._active_sessions)} active session(s)...")
+            for card_id, session in list(self._active_sessions.items()):
+                if session.process and session.process.returncode is None:
+                    logger.info(f"Terminating session for card {card_id}")
+                    session.process.terminate()
+
+            # Give processes 5s to exit gracefully
+            await asyncio.sleep(5)
+
+            for card_id, session in list(self._active_sessions.items()):
+                if session.process and session.process.returncode is None:
+                    logger.warning(f"Force-killing session for card {card_id}")
+                    session.process.kill()
+
+            self._active_sessions.clear()
+
         if self.connection:
             await self.connection.close()
         if self.client:
@@ -202,7 +249,7 @@ class ProxyManager:
         card_id = message.get("card_id")
         comment_id = message.get("comment_id")
         content = message.get("content", "")
-        author_name = message.get("author_name", "Unknown")
+        author_name = _sanitize_name(message.get("author_name", "Unknown"))
 
         logger.debug(f"Comment event: card={card_id}, author={author_name}")
 
@@ -213,12 +260,7 @@ class ProxyManager:
 
         logger.info(f"Detected {self.mention_keyword} mention by {author_name} on card {card_id}")
 
-        # Check if already processing THIS card
-        if card_id in self._active_sessions:
-            logger.warning(f"Card {card_id} already being processed, skipping")
-            return
-
-        # Process the mention (will acquire semaphore)
+        # Process the mention (will acquire semaphore and check for duplicates)
         await self._process_mention(
             card_id=card_id,
             comment_id=comment_id,
@@ -310,13 +352,14 @@ class ProxyManager:
             content: The comment content
             author_name: Name of the comment author
         """
-        # Check if already processing THIS card (before semaphore)
-        if card_id in self._active_sessions:
-            logger.warning(f"Card {card_id} already being processed")
-            return
-
         # Acquire semaphore (blocks if max_concurrent reached)
         async with self._semaphore:
+            # Check inside semaphore to prevent race condition where two
+            # concurrent events for the same card both pass the check
+            if card_id in self._active_sessions:
+                logger.warning(f"Card {card_id} already being processed")
+                return
+
             self._processing = True  # Mark as processing
             # Add 👀 reaction to acknowledge receipt
             self._add_reaction(card_id, comment_id, "👀")
@@ -324,16 +367,17 @@ class ProxyManager:
             session: ActiveSession | None = None
 
             try:
-                # Check Claude CLI authentication before doing work
-                auth_status = await ClaudeExecutor.check_claude_auth()
+                # Check agent authentication before doing work
+                auth_status = await self.executor.check_auth()
                 if not auth_status.authenticated:
-                    logger.error(f"Claude not authenticated: {auth_status.error}")
+                    logger.error(f"Agent not authenticated: {auth_status.error}")
                     self._add_reaction(card_id, comment_id, "🛑")
+                    hint = auth_status.auth_hint or "Check your LLM provider configuration."
                     self.client.add_comment(
                         card_id,
-                        f"**Claude not authenticated**\n\n"
+                        f"**Agent not authenticated**\n\n"
                         f"```\n{auth_status.error}\n```\n\n"
-                        f"Please run `claude auth login` on the host.\n\n"
+                        f"{hint}\n\n"
                         f"@{author_name}",
                     )
                     return
@@ -366,8 +410,8 @@ class ProxyManager:
                     board_id=self.board_id,
                 )
 
-                # Execute Claude in worktree directory
-                logger.info(f"Spawning Claude in {worktree_path}...")
+                # Execute agent in worktree directory
+                logger.info(f"Spawning agent in {worktree_path}...")
                 result = await self.executor.execute(prompt, cwd=worktree_path)
 
                 # Store session_id in active session
@@ -376,15 +420,15 @@ class ProxyManager:
 
                 # Check result and verify response was posted
                 if result.success:
-                    logger.info("Claude completed successfully")
+                    logger.info("Agent completed successfully")
 
-                    # Check if Claude posted via the kardbrd API
+                    # Check if agent posted via the kardbrd API
                     if self._has_recent_bot_comment(card_id):
-                        logger.info("Claude posted response (verified via API)")
+                        logger.info("Agent posted response (verified via API)")
                         self._add_reaction(card_id, comment_id, "✅")
                     elif result.session_id:
-                        # Claude didn't post - resume session with explicit instructions
-                        logger.warning("Claude didn't post response, resuming session...")
+                        # Agent didn't post - resume session with explicit instructions
+                        logger.warning("Agent didn't post response, resuming session...")
                         await self._resume_to_publish(
                             card_id=card_id,
                             comment_id=comment_id,
@@ -395,29 +439,29 @@ class ProxyManager:
                     else:
                         # No session_id to resume - log warning but mark success
                         logger.warning(
-                            "Claude completed but no response posted (no session to resume)"
+                            "Agent completed but no response posted (no session to resume)"
                         )
                         self._add_reaction(card_id, comment_id, "✅")
                 else:
-                    logger.error(f"Claude failed: {result.error}")
+                    logger.error(f"Agent failed: {result.error}")
                     self._add_reaction(card_id, comment_id, "🛑")
                     # Post error details for debugging
                     error_comment = f"**Error**\n\n```\n{result.error}\n```\n\n@{author_name}"
                     self.client.add_comment(card_id, error_comment)
                     logger.info(f"Posted error comment to card {card_id}")
 
-            except Exception:
-                import traceback
-
+            except Exception as exc:
                 logger.exception("Error processing mention")
                 # Add 🛑 reaction for exception
                 self._add_reaction(card_id, comment_id, "🛑")
-                # Post full stack trace for debugging
-                tb = traceback.format_exc()
+                # Post sanitized message (no stack trace — keeps internals private)
+                error_type = type(exc).__name__
                 try:
                     self.client.add_comment(
                         card_id,
-                        f"**Error processing request**\n\n```\n{tb}\n```\n\n@{author_name}",
+                        f"**Error processing request**\n\n"
+                        f"An internal error occurred (`{error_type}`). "
+                        f"Check the agent logs for details.\n\n@{author_name}",
                     )
                 except Exception:
                     logger.error("Failed to post error comment")
@@ -514,7 +558,7 @@ DO NOT do any new work - just publish what you already did."""
 
         if session.process:
             session.process.kill()
-            logger.info(f"Killed Claude session for card {card_id} via stop reaction")
+            logger.info(f"Killed agent session for card {card_id} via stop reaction")
 
         # Remove from active sessions but preserve worktree
         del self._active_sessions[card_id]
@@ -573,10 +617,7 @@ DO NOT do any new work - just publish what you already did."""
                 await self._handle_stop_reaction(card_id, comment_id)
                 continue
 
-            # Skip if card is already being processed
-            if card_id in self._active_sessions:
-                logger.warning(f"Card {card_id} already processing, skipping rule '{rule.name}'")
-                continue
+            # _process_rule checks for duplicates inside semaphore
             await self._process_rule(card_id=card_id, rule=rule, message=message)
 
     async def _process_rule(self, card_id: str, rule: Rule, message: dict) -> None:
@@ -593,19 +634,25 @@ DO NOT do any new work - just publish what you already did."""
             message: The full WebSocket message
         """
         async with self._semaphore:
+            # Check inside semaphore to prevent race condition
+            if card_id in self._active_sessions:
+                logger.warning(f"Card {card_id} already processing, skipping rule '{rule.name}'")
+                return
+
             self._processing = True
             session: ActiveSession | None = None
 
             try:
-                # Check Claude CLI authentication before doing work
-                auth_status = await ClaudeExecutor.check_claude_auth()
+                # Check agent authentication before doing work
+                auth_status = await self.executor.check_auth()
                 if not auth_status.authenticated:
-                    logger.error(f"Claude not authenticated: {auth_status.error}")
+                    logger.error(f"Agent not authenticated: {auth_status.error}")
+                    hint = auth_status.auth_hint or "Check your LLM provider configuration."
                     self.client.add_comment(
                         card_id,
                         f"**Automation Error** ({rule.name})\n\n"
-                        f"Claude not authenticated: `{auth_status.error}`\n\n"
-                        f"Please run `claude auth login` on the host.",
+                        f"Agent not authenticated: `{auth_status.error}`\n\n"
+                        f"{hint}",
                     )
                     return
 
@@ -627,7 +674,7 @@ DO NOT do any new work - just publish what you already did."""
                     board_id=self.board_id,
                 )
 
-                logger.info(f"Rule '{rule.name}': spawning Claude in {worktree_path}")
+                logger.info(f"Rule '{rule.name}': spawning agent in {worktree_path}")
                 result = await self.executor.execute(
                     prompt,
                     cwd=worktree_path,
@@ -638,7 +685,7 @@ DO NOT do any new work - just publish what you already did."""
                     session.session_id = result.session_id
 
                 if result.success:
-                    logger.info(f"Rule '{rule.name}': Claude completed successfully")
+                    logger.info(f"Rule '{rule.name}': agent completed successfully")
                     if not self._has_recent_bot_comment(card_id) and result.session_id:
                         await self._resume_to_publish(
                             card_id=card_id,
@@ -648,21 +695,21 @@ DO NOT do any new work - just publish what you already did."""
                             worktree_path=worktree_path,
                         )
                 else:
-                    logger.error(f"Rule '{rule.name}': Claude failed: {result.error}")
+                    logger.error(f"Rule '{rule.name}': agent failed: {result.error}")
                     error_comment = (
                         f"**Automation Error** ({rule.name})\n\n```\n{result.error}\n```"
                     )
                     self.client.add_comment(card_id, error_comment)
 
-            except Exception:
-                import traceback
-
+            except Exception as exc:
                 logger.exception(f"Error processing rule '{rule.name}'")
-                tb = traceback.format_exc()
+                error_type = type(exc).__name__
                 try:
                     self.client.add_comment(
                         card_id,
-                        f"**Automation Error** ({rule.name})\n\n```\n{tb}\n```",
+                        f"**Automation Error** ({rule.name})\n\n"
+                        f"An internal error occurred (`{error_type}`). "
+                        f"Check the agent logs for details.",
                     )
                 except Exception:
                     logger.error("Failed to post error comment for rule")

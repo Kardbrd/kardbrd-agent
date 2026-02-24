@@ -36,9 +36,9 @@ def mock_claude_result() -> ClaudeResult:
 
 @pytest.fixture(autouse=True)
 def mock_claude_auth():
-    """Auto-patch ClaudeExecutor.check_claude_auth to return authenticated in all tests."""
+    """Auto-patch ClaudeExecutor.check_auth to return authenticated in all tests."""
     with patch(
-        "kardbrd_agent.executor.ClaudeExecutor.check_claude_auth",
+        "kardbrd_agent.executor.ClaudeExecutor.check_auth",
         new_callable=AsyncMock,
         return_value=AuthStatus(authenticated=True, email="test@test.com", auth_method="api_key"),
     ) as mock:

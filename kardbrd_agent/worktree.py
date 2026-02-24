@@ -17,7 +17,11 @@ class WorktreeManager:
     """
 
     def __init__(
-        self, base_repo: Path, worktrees_dir: Path | None = None, setup_command: str | None = None
+        self,
+        base_repo: Path,
+        worktrees_dir: Path | None = None,
+        setup_command: str | None = None,
+        executor_type: str = "claude",
     ):
         """
         Initialize worktree manager.
@@ -27,6 +31,8 @@ class WorktreeManager:
             worktrees_dir: Optional directory for worktrees (defaults to base_repo parent)
             setup_command: Shell command to run in worktree after creation
                 (e.g. "npm install", "uv sync"). None means skip setup.
+            executor_type: The executor type ("claude" or "goose"). Controls
+                which config symlinks are created.
         """
         self.base_repo = Path(base_repo).resolve()
         # Store worktrees in explicit dir or as sibling directories
@@ -34,6 +40,7 @@ class WorktreeManager:
             Path(worktrees_dir).resolve() if worktrees_dir else self.base_repo.parent
         )
         self.setup_command = setup_command
+        self.executor_type = executor_type
         # Track active worktrees: card_id → worktree_path
         self.active_worktrees: dict[str, Path] = {}
 
@@ -66,14 +73,15 @@ class WorktreeManager:
                 dst.symlink_to(src)
                 logger.debug(f"Created symlink: {dst} -> {src}")
 
-        # Claude settings
-        claude_dir = worktree_path / ".claude"
-        claude_dir.mkdir(exist_ok=True)
-        settings_src = self.base_repo / ".claude" / "settings.local.json"
-        settings_dst = claude_dir / "settings.local.json"
-        if settings_src.exists() and not settings_dst.exists():
-            settings_dst.symlink_to(settings_src)
-            logger.debug(f"Created symlink: {settings_dst} -> {settings_src}")
+        # Claude settings (only for claude executor)
+        if self.executor_type == "claude":
+            claude_dir = worktree_path / ".claude"
+            claude_dir.mkdir(exist_ok=True)
+            settings_src = self.base_repo / ".claude" / "settings.local.json"
+            settings_dst = claude_dir / "settings.local.json"
+            if settings_src.exists() and not settings_dst.exists():
+                settings_dst.symlink_to(settings_src)
+                logger.debug(f"Created symlink: {settings_dst} -> {settings_src}")
 
     def _run_setup_command(self, worktree_path: Path) -> None:
         """

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kardbrd_agent.executor import ClaudeResult
+from kardbrd_agent.executor import AuthStatus, ClaudeResult
 from kardbrd_agent.manager import ProxyManager
 from kardbrd_agent.worktree import WorktreeManager
 
@@ -102,6 +102,9 @@ class TestConcurrentProcessingIntegration:
             return ClaudeResult(success=True, result_text="Done")
 
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
         manager.executor.extract_command.return_value = "/kp"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = mock_execute
@@ -153,6 +156,9 @@ class TestConcurrentProcessingIntegration:
             return ClaudeResult(success=True, result_text="Done")
 
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
         manager.executor.extract_command.return_value = "/kp"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = mock_execute
@@ -208,6 +214,9 @@ class TestRetryIntegration:
             return ClaudeResult(success=True, result_text="Done")
 
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
         manager.executor.extract_command.return_value = "/kp"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = slow_execute
@@ -266,6 +275,9 @@ class TestApiVerificationIntegration:
             return ClaudeResult(success=True, result_text="Done")
 
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
         manager.executor.extract_command.return_value = "/kp"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = mock_execute
@@ -303,6 +315,9 @@ class TestApiVerificationIntegration:
         manager._has_recent_bot_comment = MagicMock(return_value=True)
 
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
         manager.executor.extract_command.return_value = "/kp"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = AsyncMock(
@@ -374,6 +389,9 @@ class TestDuplicateCommentPrevention:
             return ClaudeResult(success=True, result_text="Posted!", session_id="sess123")
 
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
         manager.executor.extract_command.return_value = "/kp"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = mock_execute
@@ -423,6 +441,9 @@ class TestDuplicateCommentPrevention:
             return ClaudeResult(success=True, result_text="Posted via MCP")
 
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
         manager.executor.extract_command.return_value = "/kp"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = mock_execute
@@ -476,6 +497,9 @@ class TestRequireLabelIntegration:
         manager.client.toggle_reaction = MagicMock()
         manager._has_recent_bot_comment = MagicMock(return_value=True)
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = AsyncMock(
             return_value=ClaudeResult(success=True, result_text="Done")
@@ -523,6 +547,9 @@ class TestRequireLabelIntegration:
             "labels": [{"name": "Workflow"}],
         }
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
         manager.executor.execute = AsyncMock()
         manager.worktree_manager = MagicMock()
 
@@ -563,6 +590,9 @@ class TestRequireLabelIntegration:
         manager.client.get_card_markdown.return_value = "# Card"
         manager._has_recent_bot_comment = MagicMock(return_value=True)
         manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = AsyncMock(
             return_value=ClaudeResult(success=True, result_text="Done")

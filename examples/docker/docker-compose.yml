@@ -12,6 +12,8 @@ services:
       - KARDBRD_AGENT                              # Agent name for @mentions (required)
       # - KARDBRD_URL=https://app.kardbrd.com      # API URL (optional)
       - ANTHROPIC_API_KEY
+      # - AGENT_EXECUTOR=goose                         # Uncomment for Goose executor
+      # - GOOSE_PROVIDER=anthropic                     # Required when using Goose (e.g. anthropic, openai, ollama)
       - LOG_LEVEL=INFO
       - AGENT_CWD=/home/agent/repository
       - AGENT_WORKTREES_DIR=/home/agent/workspaces

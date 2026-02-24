@@ -22,6 +22,12 @@ MODEL_MAP = {
     "haiku": "claude-haiku-4-5-20251001",
 }
 
+# Backwards compatibility alias
+CLAUDE_MODEL_MAP = MODEL_MAP
+
+# Valid executor types
+VALID_EXECUTORS = {"claude", "goose"}
+
 # All known WebSocket event types from the server spec.
 # Used for validation only — rules match event names directly.
 KNOWN_EVENTS = frozenset(
@@ -81,7 +87,7 @@ KNOWN_FIELDS = frozenset(
 )
 
 # Top-level fields recognized in kardbrd.yml
-KNOWN_CONFIG_FIELDS = frozenset({"board_id", "agent", "api_url", "rules"})
+KNOWN_CONFIG_FIELDS = frozenset({"board_id", "agent", "api_url", "rules", "executor"})
 
 
 class Severity(Enum):
@@ -162,11 +168,12 @@ class Rule:
 
 @dataclass
 class BoardConfig:
-    """Top-level config from kardbrd.yml (board_id, agent, api_url)."""
+    """Top-level config from kardbrd.yml (board_id, agent, api_url, executor)."""
 
     board_id: str
     agent_name: str
     api_url: str | None = None  # Falls back to env var or default
+    executor: str | None = None  # "claude" (default) or "goose"
 
 
 @dataclass
@@ -373,10 +380,19 @@ def _parse_board_config(data: dict) -> BoardConfig:
         raise ValueError("kardbrd.yml: 'board_id' is required")
     if not agent:
         raise ValueError("kardbrd.yml: 'agent' is required")
+
+    executor = data.get("executor")
+    if executor and str(executor).lower() not in VALID_EXECUTORS:
+        logger.warning(
+            f"kardbrd.yml: unknown executor '{executor}', "
+            f"expected one of: {', '.join(sorted(VALID_EXECUTORS))}"
+        )
+
     return BoardConfig(
         board_id=str(board_id),
         agent_name=str(agent),
         api_url=str(data["api_url"]) if data.get("api_url") else None,
+        executor=str(executor).lower() if executor else None,
     )
 
 
@@ -581,6 +597,29 @@ def _validate_dict_format(data: dict, result: ValidationResult) -> list | None:
                 f"Unknown top-level field(s): {', '.join(sorted(unknown))}",
             )
         )
+
+    # Validate executor if present
+    executor = data.get("executor")
+    if executor:
+        if not isinstance(executor, str):
+            result.issues.append(
+                ValidationIssue(
+                    Severity.ERROR,
+                    None,
+                    None,
+                    f"'executor' must be a string, got {type(executor).__name__}",
+                )
+            )
+        elif executor.lower() not in VALID_EXECUTORS:
+            result.issues.append(
+                ValidationIssue(
+                    Severity.WARNING,
+                    None,
+                    None,
+                    f"Unknown executor '{executor}', "
+                    f"expected one of: {', '.join(sorted(VALID_EXECUTORS))}",
+                )
+            )
 
     # Extract rules list
     rules_data = data.get("rules")

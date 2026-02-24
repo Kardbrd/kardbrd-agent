@@ -3,9 +3,11 @@
 import asyncio
 import json
 import logging
+import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 logger = logging.getLogger("kardbrd_agent")
 
@@ -31,15 +33,17 @@ def create_mcp_config(api_url: str, bot_token: str) -> Path:
                 "args": [
                     "--api-url",
                     api_url,
-                    "--token",
-                    bot_token,
                 ],
+                "env": {
+                    "KARDBRD_TOKEN": bot_token,
+                },
             }
         }
     }
 
     # Create temp file (will be cleaned up after Claude exits)
     fd, path = tempfile.mkstemp(suffix=".json", prefix="mcp-config-")
+    os.chmod(path, 0o600)  # Restrict to owner-only (contains bot token)
     with open(fd, "w") as f:
         json.dump(config, f, indent=2)
 
@@ -48,8 +52,8 @@ def create_mcp_config(api_url: str, bot_token: str) -> Path:
 
 
 @dataclass
-class ClaudeResult:
-    """Result from a Claude CLI execution."""
+class ExecutorResult:
+    """Result from an agent executor."""
 
     success: bool
     result_text: str
@@ -59,15 +63,174 @@ class ClaudeResult:
     session_id: str | None = None
 
 
+# Backwards compatibility alias
+ClaudeResult = ExecutorResult
+
+
 @dataclass
 class AuthStatus:
-    """Result from checking Claude CLI authentication."""
+    """Result from checking executor authentication."""
 
     authenticated: bool
     error: str | None = None
     email: str | None = None
     auth_method: str | None = None
     subscription_type: str | None = None
+    auth_hint: str | None = None  # Executor-specific re-auth instructions
+
+
+@runtime_checkable
+class Executor(Protocol):
+    """Protocol for agent executors (Claude, Goose, etc.)."""
+
+    async def execute(
+        self,
+        prompt: str,
+        resume_session_id: str | None = None,
+        cwd: Path | None = None,
+        model: str | None = None,
+    ) -> ExecutorResult: ...
+
+    def build_prompt(
+        self,
+        card_id: str,
+        card_markdown: str,
+        command: str,
+        comment_content: str,
+        author_name: str,
+        board_id: str | None = None,
+    ) -> str: ...
+
+    def extract_command(self, comment_content: str, mention_keyword: str) -> str: ...
+
+    @staticmethod
+    async def check_auth() -> AuthStatus: ...
+
+
+def build_prompt(
+    card_id: str,
+    card_markdown: str,
+    command: str,
+    comment_content: str,
+    author_name: str,
+    board_id: str | None = None,
+) -> str:
+    """
+    Build the prompt for an executor from card context and user request.
+
+    Args:
+        card_id: The public_id of the card (for posting comments)
+        card_markdown: Full card content in markdown format
+        command: The extracted command (e.g., "/kp", "/ki", or free-form)
+        comment_content: The full comment that triggered the proxy
+        author_name: Name of the user who triggered the proxy
+        board_id: Optional board ID for label operations
+
+    Returns:
+        Formatted prompt string
+    """
+    # Common response instructions
+    response_instructions = f"""
+## IMPORTANT: How to Respond
+
+When you complete this task, you MUST post your response as a comment on the card.
+Use the `mcp__kardbrd__add_comment` tool with:
+- card_id: "{card_id}"
+- content: Your response (markdown supported)
+
+End your comment by mentioning the requester: @{author_name}
+
+DO NOT just output text - you must use the add_comment tool to post your response.
+"""
+
+    # Label instructions when board_id is available
+    label_instructions = ""
+    if board_id:
+        label_instructions = f"""
+## Labels
+
+Cards may have labels (shown as "Labels: ..." in card markdown).
+Available tools:
+- `mcp__kardbrd__get_board_labels` with board_id "{board_id}" \
+to discover available labels
+- `mcp__kardbrd__update_card` with `label_ids` (list of label IDs)
+
+**Important:** `label_ids` does a full replace — to add a label, \
+first read current labels, then send the full list.
+"""
+
+    # Determine if this is a skill command or free-form request
+    if command.startswith("/"):
+        # Skill command - let Claude Code handle it
+        prompt = f"""{command}
+
+---
+
+## Context
+
+**Card ID:** {card_id}
+**Triggered by:** @{author_name}
+**Comment:** {comment_content}
+
+## Card Content
+
+{card_markdown}
+{label_instructions}{response_instructions}
+"""
+    else:
+        # Free-form request - provide card context and the request
+        prompt = f"""## Task Request
+
+{comment_content}
+
+---
+
+## Card Context
+
+**Card ID:** {card_id}
+
+{card_markdown}
+{label_instructions}
+---
+
+**Requested by:** @{author_name}
+
+Please complete this request.
+{response_instructions}
+"""
+
+    return prompt
+
+
+def extract_command(comment_content: str, mention_keyword: str) -> str:
+    """
+    Extract the command from the comment content.
+
+    Examples:
+        "@coder /kp" -> "/kp"
+        "@coder /ke" -> "/ke"
+        "@coder fix the login bug" -> "fix the login bug"
+
+    Args:
+        comment_content: The full comment text
+        mention_keyword: The mention keyword (e.g., "@coder")
+
+    Returns:
+        The extracted command (without the mention)
+    """
+    # Remove the mention and strip whitespace
+    content = comment_content.lower()
+    mention = mention_keyword.lower()
+
+    # Find the mention and extract what comes after
+    idx = content.find(mention)
+    if idx == -1:
+        return comment_content.strip()
+
+    # Get everything after the mention
+    after_mention = comment_content[idx + len(mention) :].strip()
+
+    return after_mention if after_mention else comment_content.strip()
 
 
 class ClaudeExecutor:
@@ -79,7 +242,7 @@ class ClaudeExecutor:
     """
 
     @staticmethod
-    async def check_claude_auth() -> AuthStatus:
+    async def check_auth() -> AuthStatus:
         """
         Check if Claude CLI is authenticated by running `claude auth status`.
 
@@ -101,6 +264,10 @@ class ClaudeExecutor:
                 return AuthStatus(
                     authenticated=False,
                     error=f"claude auth status exited with code {process.returncode}: {error_msg}",
+                    auth_hint=(
+                        "Run `claude auth login` on the host, "
+                        "or set ANTHROPIC_API_KEY environment variable."
+                    ),
                 )
 
             try:
@@ -109,11 +276,22 @@ class ClaudeExecutor:
                 return AuthStatus(
                     authenticated=False,
                     error=f"Failed to parse auth status output: {stdout.decode()[:200]}",
+                    auth_hint=(
+                        "Run `claude auth login` on the host, "
+                        "or set ANTHROPIC_API_KEY environment variable."
+                    ),
                 )
 
             logged_in = data.get("loggedIn", False)
             if not logged_in:
-                return AuthStatus(authenticated=False, error="Claude CLI is not logged in")
+                return AuthStatus(
+                    authenticated=False,
+                    error="Claude CLI is not logged in",
+                    auth_hint=(
+                        "Run `claude auth login` on the host, "
+                        "or set ANTHROPIC_API_KEY environment variable."
+                    ),
+                )
 
             return AuthStatus(
                 authenticated=True,
@@ -126,14 +304,22 @@ class ClaudeExecutor:
             return AuthStatus(
                 authenticated=False,
                 error="Claude CLI not found. Install: npm install -g @anthropic-ai/claude-code",
+                auth_hint="Install Claude CLI: npm install -g @anthropic-ai/claude-code",
             )
         except TimeoutError:
             return AuthStatus(
                 authenticated=False,
                 error="claude auth status timed out",
+                auth_hint=(
+                    "Run `claude auth login` on the host, "
+                    "or set ANTHROPIC_API_KEY environment variable."
+                ),
             )
         except Exception as e:
             return AuthStatus(authenticated=False, error=str(e))
+
+    # Backwards compatibility alias
+    check_claude_auth = check_auth
 
     def __init__(
         self,
@@ -162,7 +348,7 @@ class ClaudeExecutor:
         resume_session_id: str | None = None,
         cwd: Path | None = None,
         model: str | None = None,
-    ) -> ClaudeResult:
+    ) -> ExecutorResult:
         """
         Execute Claude CLI with the given prompt.
 
@@ -173,7 +359,7 @@ class ClaudeExecutor:
             model: Optional Claude model ID (e.g. "claude-haiku-4-5-20251001")
 
         Returns:
-            ClaudeResult with the execution outcome
+            ExecutorResult with the execution outcome
         """
         # Use passed cwd or default
         working_dir = cwd or self.cwd
@@ -226,9 +412,14 @@ class ClaudeExecutor:
                     timeout=self.timeout,
                 )
             except TimeoutError:
-                process.kill()
-                await process.wait()
-                return ClaudeResult(
+                # Graceful shutdown: SIGTERM first, then SIGKILL after 5s
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except TimeoutError:
+                    process.kill()
+                    await process.wait()
+                return ExecutorResult(
                     success=False,
                     result_text="",
                     error=f"Claude execution timed out after {self.timeout}s",
@@ -238,7 +429,7 @@ class ClaudeExecutor:
             return self._parse_output(stdout.decode(), stderr.decode(), process.returncode)
 
         except FileNotFoundError:
-            return ClaudeResult(
+            return ExecutorResult(
                 success=False,
                 result_text="",
                 error=(
@@ -248,7 +439,7 @@ class ClaudeExecutor:
             )
         except Exception as e:
             logger.exception("Error executing Claude")
-            return ClaudeResult(
+            return ExecutorResult(
                 success=False,
                 result_text="",
                 error=str(e),
@@ -262,7 +453,7 @@ class ClaudeExecutor:
                 except OSError:
                     pass
 
-    def _parse_output(self, stdout: str, stderr: str, returncode: int | None) -> ClaudeResult:
+    def _parse_output(self, stdout: str, stderr: str, returncode: int | None) -> ExecutorResult:
         """
         Parse Claude's stream-json output.
 
@@ -310,7 +501,7 @@ class ClaudeExecutor:
             if stderr:
                 error += f": {stderr[:500]}"
 
-        return ClaudeResult(
+        return ExecutorResult(
             success=returncode == 0 and error is None,
             result_text=result_text,
             error=error,
@@ -328,118 +519,16 @@ class ClaudeExecutor:
         author_name: str,
         board_id: str | None = None,
     ) -> str:
-        """
-        Build the prompt for Claude from card context and user request.
-
-        Args:
-            card_id: The public_id of the card (for posting comments)
-            card_markdown: Full card content in markdown format
-            command: The extracted command (e.g., "/kp", "/ki", or free-form)
-            comment_content: The full comment that triggered the proxy
-            author_name: Name of the user who triggered the proxy
-            board_id: Optional board ID for label operations
-
-        Returns:
-            Formatted prompt string
-        """
-        # Common response instructions
-        response_instructions = f"""
-## IMPORTANT: How to Respond
-
-When you complete this task, you MUST post your response as a comment on the card.
-Use the `mcp__kardbrd__add_comment` tool with:
-- card_id: "{card_id}"
-- content: Your response (markdown supported)
-
-End your comment by mentioning the requester: @{author_name}
-
-DO NOT just output text - you must use the add_comment tool to post your response.
-"""
-
-        # Label instructions when board_id is available
-        label_instructions = ""
-        if board_id:
-            label_instructions = f"""
-## Labels
-
-Cards may have labels (shown as "Labels: ..." in card markdown).
-Available tools:
-- `mcp__kardbrd__get_board_labels` with board_id "{board_id}" \
-to discover available labels
-- `mcp__kardbrd__update_card` with `label_ids` (list of label IDs)
-
-**Important:** `label_ids` does a full replace — to add a label, \
-first read current labels, then send the full list.
-"""
-
-        # Determine if this is a skill command or free-form request
-        if command.startswith("/"):
-            # Skill command - let Claude Code handle it
-            prompt = f"""{command}
-
----
-
-## Context
-
-**Card ID:** {card_id}
-**Triggered by:** @{author_name}
-**Comment:** {comment_content}
-
-## Card Content
-
-{card_markdown}
-{label_instructions}{response_instructions}
-"""
-        else:
-            # Free-form request - provide card context and the request
-            prompt = f"""## Task Request
-
-{comment_content}
-
----
-
-## Card Context
-
-**Card ID:** {card_id}
-
-{card_markdown}
-{label_instructions}
----
-
-**Requested by:** @{author_name}
-
-Please complete this request.
-{response_instructions}
-"""
-
-        return prompt
+        """Delegate to module-level build_prompt()."""
+        return build_prompt(
+            card_id=card_id,
+            card_markdown=card_markdown,
+            command=command,
+            comment_content=comment_content,
+            author_name=author_name,
+            board_id=board_id,
+        )
 
     def extract_command(self, comment_content: str, mention_keyword: str) -> str:
-        """
-        Extract the command from the comment content.
-
-        Examples:
-            "@coder /kp" -> "/kp"
-            "@coder /ke" -> "/ke"
-            "@coder fix the login bug" -> "fix the login bug"
-
-        Args:
-            comment_content: The full comment text
-            mention_keyword: The mention keyword (e.g., "@coder")
-
-        Returns:
-            The extracted command (without the mention)
-        """
-        # Remove the mention and strip whitespace
-        content = comment_content.lower()
-        mention = mention_keyword.lower()
-
-        # Find the mention and extract what comes after
-        idx = content.find(mention)
-        if idx == -1:
-            return comment_content.strip()
-
-        # Get everything after the mention
-        after_mention = comment_content[idx + len(mention) :].strip()
-
-        return after_mention if after_mention else comment_content.strip()
+        """Delegate to module-level extract_command()."""
+        return extract_command(comment_content, mention_keyword)

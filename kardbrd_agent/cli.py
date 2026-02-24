@@ -92,6 +92,13 @@ def start(
         envvar="AGENT_RULES_FILE",
         help="Path to kardbrd.yml rules file (defaults to <cwd>/kardbrd.yml)",
     ),
+    executor: str = typer.Option(
+        "claude",
+        "--executor",
+        "-e",
+        envvar="AGENT_EXECUTOR",
+        help="Executor type: 'claude' (default) or 'goose'",
+    ),
 ):
     """Start the proxy manager and listen for @mentions.
 
@@ -125,6 +132,7 @@ def start(
         config_table.add_row("Worktrees directory", str(worktrees_dir))
     config_table.add_row("Timeout", f"{timeout}s")
     config_table.add_row("Max concurrent", str(max_concurrent))
+    config_table.add_row("Executor", executor)
     config_table.add_row("MCP", "kardbrd-mcp (stdio per session)")
     config_table.add_row("Setup command", setup_cmd or "[dim]none (skip)[/dim]")
 
@@ -167,6 +175,11 @@ def start(
     console.print("\n[green]Starting...[/green]\n")
 
     # Create and run the proxy manager
+    # Override executor from kardbrd.yml config if present
+    effective_executor = executor
+    if hasattr(rule_engine, "config") and rule_engine.config.executor:
+        effective_executor = rule_engine.config.executor
+
     manager = ProxyManager(
         board_id=board_id,
         api_url=api_url,
@@ -178,6 +191,7 @@ def start(
         worktrees_dir=worktrees_dir,
         setup_command=setup_cmd,
         rule_engine=rule_engine,
+        executor_type=effective_executor,
     )
 
     try:

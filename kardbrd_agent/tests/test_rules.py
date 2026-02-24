@@ -1894,6 +1894,7 @@ class TestBoardConfig:
         assert config.board_id == "abc123"
         assert config.agent_name == "TestBot"
         assert config.api_url is None
+        assert config.executor is None
 
     def test_board_config_with_api_url(self):
         """Test creating BoardConfig with api_url."""
@@ -1903,6 +1904,15 @@ class TestBoardConfig:
             api_url="http://app.kardbrd.com",
         )
         assert config.api_url == "http://app.kardbrd.com"
+
+    def test_board_config_with_executor(self):
+        """Test creating BoardConfig with executor field."""
+        config = BoardConfig(
+            board_id="abc123",
+            agent_name="TestBot",
+            executor="goose",
+        )
+        assert config.executor == "goose"
 
 
 class TestLoadRulesDictFormat:
@@ -2056,13 +2066,68 @@ class TestValidateDictFormat:
         assert not result.is_valid
         assert any("'rules' must be a list" in e.message for e in result.errors)
 
+    def test_validate_executor_valid(self, tmp_path):
+        """Test valid executor field produces no issues."""
+        f = tmp_path / "kardbrd.yml"
+        f.write_text("board_id: abc\nagent: Bot\nexecutor: goose\nrules: []\n")
+        from kardbrd_agent.rules import validate_rules_file
+
+        result = validate_rules_file(f)
+        assert result.is_valid
+        assert result.issues == []
+
+    def test_validate_executor_unknown_warns(self, tmp_path):
+        """Test unknown executor produces warning."""
+        f = tmp_path / "kardbrd.yml"
+        f.write_text("board_id: abc\nagent: Bot\nexecutor: unknown_executor\nrules: []\n")
+        from kardbrd_agent.rules import validate_rules_file
+
+        result = validate_rules_file(f)
+        assert result.is_valid  # warnings don't invalidate
+        assert any("unknown_executor" in w.message for w in result.warnings)
+
+    def test_validate_executor_not_string_errors(self, tmp_path):
+        """Test non-string executor produces error."""
+        f = tmp_path / "kardbrd.yml"
+        f.write_text("board_id: abc\nagent: Bot\nexecutor: 123\nrules: []\n")
+        from kardbrd_agent.rules import validate_rules_file
+
+        result = validate_rules_file(f)
+        assert not result.is_valid
+        assert any("'executor' must be a string" in e.message for e in result.errors)
+
+
+class TestLoadRulesExecutor:
+    """Tests for loading executor config from kardbrd.yml."""
+
+    def test_load_executor_field(self, tmp_path):
+        """Test executor field is parsed from kardbrd.yml."""
+        rules_file = tmp_path / "kardbrd.yml"
+        rules_file.write_text("board_id: abc\nagent: Bot\nexecutor: goose\nrules: []\n")
+        engine, config = load_rules(rules_file)
+        assert config.executor == "goose"
+
+    def test_load_executor_default_none(self, tmp_path):
+        """Test executor defaults to None when not specified."""
+        rules_file = tmp_path / "kardbrd.yml"
+        rules_file.write_text("board_id: abc\nagent: Bot\nrules: []\n")
+        engine, config = load_rules(rules_file)
+        assert config.executor is None
+
+    def test_load_executor_case_insensitive(self, tmp_path):
+        """Test executor is lowercased."""
+        rules_file = tmp_path / "kardbrd.yml"
+        rules_file.write_text("board_id: abc\nagent: Bot\nexecutor: Goose\nrules: []\n")
+        engine, config = load_rules(rules_file)
+        assert config.executor == "goose"
+
 
 class TestKnownConfigFields:
     """Tests for KNOWN_CONFIG_FIELDS."""
 
     def test_known_config_fields_contents(self):
         """Test KNOWN_CONFIG_FIELDS contains expected fields."""
-        assert {"board_id", "agent", "api_url", "rules"} == KNOWN_CONFIG_FIELDS
+        assert {"board_id", "agent", "api_url", "rules", "executor"} == KNOWN_CONFIG_FIELDS
 
     def test_known_config_fields_is_frozenset(self):
         """Test KNOWN_CONFIG_FIELDS is immutable."""
