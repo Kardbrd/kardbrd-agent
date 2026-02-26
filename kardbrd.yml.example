@@ -5,13 +5,20 @@
 #
 # ── Format ────────────────────────────────────────────────────────────
 #
-# kardbrd.yml is a YAML dict with top-level config and a rules list:
+# kardbrd.yml is a YAML dict with top-level config, optional schedules,
+# and a rules list:
 #
 #   board_id: eykqek0W                # required: your board ID
 #   agent: MBPBot                     # required: agent name for @mentions
 #   api_url: http://app.kardbrd.com   # optional: defaults to KARDBRD_API_URL env var
+#   executor: claude                  # optional: "claude" (default) or "goose"
 #
-#   rules:
+#   schedules:                        # optional: cron-based automation
+#     - name: "Daily Summary"
+#       cron: "0 0 * * *"
+#       action: summarize the board
+#
+#   rules:                            # event-driven automation
 #     - name: "Rule name"
 #       event: card_moved
 #       action: /ke
@@ -112,6 +119,40 @@
 #                      Executes deterministically (no Claude spawn).
 #                      Typically used with emoji: "🛑" reactions.
 #
+# ── Schedules ──────────────────────────────────────────────────────
+#
+# Cron-based schedules run independently of WebSocket events.
+# Each schedule has a `name` that doubles as the card title — the
+# scheduler finds an existing card with that name (case-insensitive)
+# or creates a new one. The action then runs in that card's context.
+#
+#   schedules:
+#     - name: Daily Summary          # card title (find or create)
+#       cron: "0 0 * * *"            # standard cron expression
+#       model: haiku                 # optional: haiku | sonnet | opus
+#       list: Ideas                  # optional: target list for new cards
+#       assignee: E21K9jmv           # optional: user ID to assign new cards
+#       action: |
+#         Read the activity on the board for the previous day...
+#
+# Schedule fields:
+#   name:      Required. The card title. Used to find or create the card.
+#   cron:      Required. Standard cron expression (5 fields: min hour dom mon dow).
+#   action:    Required. Prompt or skill command to run.
+#   model:     Optional. haiku | sonnet | opus.
+#   list:      Optional. Target list for newly created cards.
+#   assignee:  Optional. User ID to assign when creating a new card.
+#              Existing cards keep their current assignee.
+#
+# Notes:
+# - Schedules use `croniter` for cron parsing.
+# - The ScheduleManager runs as a third asyncio.gather() task alongside
+#   WebSocket and status ping.
+# - If the agent was offline when a cron was due, the missed run is
+#   NOT executed on startup.
+# - Schedules reuse the same executor pipeline as rules (semaphore,
+#   worktree, per-card deduplication).
+#
 # ── Notes ───────────────────────────────────────────────────────────
 #
 # - Rules are checked AFTER built-in handlers (@mention, done-cleanup).
@@ -131,6 +172,30 @@
 board_id: eykqek0W
 agent: MyBot
 api_url: http://app.kardbrd.com
+
+schedules:
+  # Daily activity summary — runs at midnight UTC
+  - name: Daily Summary
+    cron: "0 0 * * *"
+    model: haiku
+    list: Ideas
+    action: |
+      Read the activity on the board for the previous day using
+      mcp__kardbrd__get_board_activity_markdown and summarize
+      by human their activity on the board. Post the summary
+      as a comment on this card.
+
+  # Weekly backlog grooming — runs every Monday at 9am UTC
+  - name: Weekly Backlog Review
+    cron: "0 9 * * 1"
+    model: sonnet
+    list: Ideas
+    assignee: abc123
+    action: |
+      Review all cards on the board. Identify cards that have been
+      stale for more than a week (no comments or updates). Post a
+      summary of stale cards as a comment on this card with
+      recommendations for each: archive, re-prioritize, or discuss.
 
 rules:
   # When a card lands in the Ideas list, explore it immediately

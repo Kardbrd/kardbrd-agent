@@ -43,7 +43,9 @@ uv run kardbrd-agent validate path/to/kardbrd.yml
 
 **ProxyManager** (`manager.py`) — Main orchestrator. Connects via WebSocket, detects @mention comments and card moves, spawns the configured executor in worktrees, manages concurrency with asyncio.Semaphore (max_concurrent default 3), tracks per-card sessions. Accepts board config directly via constructor params (`board_id`, `api_url`, `bot_token`, `agent_name`). Uses an executor factory pattern: `executor_type` param selects `ClaudeExecutor` (default) or `GooseExecutor`.
 
-**RuleEngine** (`rules.py`) — Declarative YAML-driven automation. Loads `kardbrd.yml` with top-level config (`board_id`, `agent`, optional `api_url`, optional `executor`) and a `rules` list. Each Rule has conditions (`list`, `title`, `label`, `emoji`, `require_label`, `exclude_label`, `require_user`, `content_contains`) and triggers an executor session or the built-in `__stop__` action. `ReloadableRuleEngine` hot-reloads rules every 60s on file change. `validate_rules_file()` provides comprehensive validation with errors/warnings.
+**RuleEngine** (`rules.py`) — Declarative YAML-driven automation. Loads `kardbrd.yml` with top-level config (`board_id`, `agent`, optional `api_url`, optional `executor`) and a `rules` list + optional `schedules` list. Each Rule has conditions (`list`, `title`, `label`, `emoji`, `require_label`, `exclude_label`, `require_user`, `content_contains`) and triggers an executor session or the built-in `__stop__` action. Each `Schedule` has `name`, `cron`, `action`, optional `model`, `assignee`, `list`. `ReloadableRuleEngine` hot-reloads rules and schedules every 60s on file change. `validate_rules_file()` provides comprehensive validation with errors/warnings.
+
+**ScheduleManager** (`scheduler.py`) — Cron-based automation. Runs as a third `asyncio.gather()` task alongside WebSocket and status ping. Each schedule's `name` is the card title — finds existing card (case-insensitive) or creates one. New cards can be placed in a specific list and assigned to a user. Fires actions via `_process_schedule()` which creates a synthetic Rule and delegates to `_process_rule()`.
 
 **Executor Protocol** (`executor.py`) — Defines the `Executor` Protocol (runtime_checkable) with methods: `execute()`, `build_prompt()`, `extract_command()`, `check_auth()`. Contains `ExecutorResult` (aliased as `ClaudeResult` for backwards compat) and `AuthStatus` (with `auth_hint` for executor-specific re-auth instructions). `ClaudeExecutor` implements the protocol: spawns `claude -p` subprocess with `--output-format=stream-json`, parses streaming output, extracts session IDs for resumption, enforces timeouts. Builds prompts with card context and detects skill commands ("/kp", "/ki"). Accepts per-rule model via `--model` flag.
 
@@ -100,3 +102,20 @@ rules:
 ```
 
 Rule conditions: `list`, `title`, `label`, `emoji`, `content_contains`, `require_label`, `exclude_label`, `require_user`. All conditions must match (AND logic).
+
+### Schedules
+
+Cron-based schedules run independently of WebSocket events. Each schedule has a `name` that doubles as the card title — the scheduler finds an existing card with that name (case-insensitive) or creates a new one. The action then runs in that card's context.
+
+```yaml
+schedules:
+  - name: Daily Summary          # card title (find or create)
+    cron: "0 0 * * *"            # standard cron expression
+    model: haiku                 # optional: opus | sonnet | haiku
+    list: Ideas                  # optional: target list for new cards
+    assignee: E21K9jmv           # optional: user ID to assign new cards
+    action: |
+      Read the activity on the board for the previous day...
+```
+
+Schedule fields: `name` (required), `cron` (required), `action` (required), `model`, `assignee`, `list`. Uses `croniter` for cron parsing. `ScheduleManager` (`scheduler.py`) runs as a third `asyncio.gather()` task alongside WebSocket and status ping.

@@ -10,7 +10,8 @@ from pathlib import Path
 from kardbrd_client import KardbrdClient, WebSocketAgentConnection
 
 from .executor import ClaudeExecutor
-from .rules import Rule, RuleEngine
+from .rules import Rule, RuleEngine, Schedule
+from .scheduler import ScheduleManager
 from .wizard import ensure_wizard_card
 from .worktree import WorktreeManager
 
@@ -61,6 +62,7 @@ class ProxyManager:
         setup_command: str | None = None,
         rule_engine: RuleEngine | None = None,
         executor_type: str = "claude",
+        schedules: list[Schedule] | None = None,
     ):
         self.board_id = board_id
         self.api_url = api_url
@@ -74,12 +76,14 @@ class ProxyManager:
         self.setup_command = setup_command
         self.rule_engine = rule_engine or RuleEngine()
         self.executor_type = executor_type
+        self._schedules = schedules or []
 
         # Will be initialized in start()
         self.connection: WebSocketAgentConnection | None = None
         self.client: KardbrdClient | None = None
         self.executor: ClaudeExecutor | None = None
         self.worktree_manager: WorktreeManager | None = None
+        self.schedule_manager: ScheduleManager | None = None
 
         # Concurrency control: semaphore limits parallel agent sessions
         self._semaphore = asyncio.Semaphore(max_concurrent)
@@ -160,7 +164,19 @@ class ProxyManager:
         logger.info(f"Working directory: {self.cwd}")
         logger.info(f"Listening for {self.mention_keyword} mentions...")
 
-        await asyncio.gather(self.connection.connect(), self._status_ping_loop())
+        # Start schedule manager if schedules configured
+        tasks = [self.connection.connect(), self._status_ping_loop()]
+        if self._schedules:
+            self.schedule_manager = ScheduleManager(
+                schedules=self._schedules,
+                board_id=self.board_id,
+                client=self.client,
+                process_callback=self._process_schedule,
+            )
+            tasks.append(self.schedule_manager.start())
+            logger.info(f"Scheduler: {len(self._schedules)} schedule(s) configured")
+
+        await asyncio.gather(*tasks)
 
     async def stop(self) -> None:
         """Stop the proxy manager and terminate active executor subprocesses."""
@@ -743,6 +759,27 @@ DO NOT do any new work - just publish what you already did."""
             finally:
                 self._processing = False
                 self._active_sessions.pop(card_id, None)
+
+    async def _process_schedule(self, card_id: str, schedule: Schedule) -> None:
+        """
+        Process a triggered schedule by spawning the executor on a card.
+
+        Creates a synthetic Rule from the schedule and delegates to _process_rule.
+
+        Args:
+            card_id: The card ID (found or created by ScheduleManager)
+            schedule: The Schedule that triggered
+        """
+        # Create a synthetic Rule to reuse _process_rule flow
+        rule = Rule(
+            name=f"schedule:{schedule.name}",
+            events=[],  # Schedules don't use events
+            action=schedule.action,
+            model=schedule.model,
+        )
+        # Synthetic message with card_id
+        message = {"card_id": card_id}
+        await self._process_rule(card_id=card_id, rule=rule, message=message)
 
     async def _handle_card_moved(self, message: dict) -> None:
         """
