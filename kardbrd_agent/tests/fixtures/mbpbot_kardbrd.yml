@@ -46,6 +46,20 @@ board_id: 0gl5MlBZ
 agent: MBPBot
 api_url: http://app.kardbrd.com
 
+schedules:
+  # ── Daily activity summary ────────────────────────────────────────
+  # Every day at midnight UTC, create (or reuse) a "Daily Summary" card
+  # and post a summary of the previous day's board activity.
+  - name: Daily Summary
+    cron: "0 0 * * *"
+    model: haiku
+    list: Ideas
+    action: |
+      Read the activity on the board for the previous day using
+      mcp__kardbrd__get_board_activity_markdown and summarize
+      by human their activity on the board. Post the summary
+      as a comment on this card.
+
 rules:
   # ── Step 1: Auto-explore new cards ────────────────────────────────
   # When a card is created or moved to Ideas, explore the codebase.

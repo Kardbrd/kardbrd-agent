@@ -87,7 +87,10 @@ KNOWN_FIELDS = frozenset(
 )
 
 # Top-level fields recognized in kardbrd.yml
-KNOWN_CONFIG_FIELDS = frozenset({"board_id", "agent", "api_url", "rules", "executor"})
+KNOWN_CONFIG_FIELDS = frozenset({"board_id", "agent", "api_url", "rules", "executor", "schedules"})
+
+# All known fields in a schedule entry
+KNOWN_SCHEDULE_FIELDS = frozenset({"name", "cron", "action", "model", "assignee", "list"})
 
 
 class Severity(Enum):
@@ -167,6 +170,29 @@ class Rule:
 
 
 @dataclass
+class Schedule:
+    """A cron-based schedule from kardbrd.yml.
+
+    Each schedule creates or reuses a card (by name) and runs the action
+    in that card's context at the specified cron interval.
+    """
+
+    name: str  # Also used as the card title for find-or-create
+    cron: str  # Cron expression (e.g. "0 0 * * *")
+    action: str
+    model: str | None = None
+    assignee: str | None = None  # User ID to assign to the card
+    list: str | None = None  # Target list name for card creation
+
+    @property
+    def model_id(self) -> str | None:
+        """Resolve short model name to full CLI model ID."""
+        if self.model is None:
+            return None
+        return MODEL_MAP.get(self.model.lower(), self.model)
+
+
+@dataclass
 class BoardConfig:
     """Top-level config from kardbrd.yml (board_id, agent, api_url, executor)."""
 
@@ -174,6 +200,7 @@ class BoardConfig:
     agent_name: str
     api_url: str | None = None  # Falls back to env var or default
     executor: str | None = None  # "claude" (default) or "goose"
+    schedules: list[Schedule] = field(default_factory=list)
 
 
 @dataclass
@@ -325,6 +352,64 @@ def parse_rules(data: list[dict]) -> list[Rule]:
     return rules
 
 
+def parse_schedules(data: list[dict]) -> list[Schedule]:
+    """
+    Parse a list of schedule dicts (from YAML) into Schedule objects.
+
+    Args:
+        data: List of schedule dictionaries from YAML
+
+    Returns:
+        List of validated Schedule objects
+
+    Raises:
+        ValueError: If a schedule is missing required fields or has invalid cron
+    """
+    from croniter import CroniterBadCronError, croniter
+
+    schedules = []
+    for i, entry in enumerate(data):
+        name = entry.get("name")
+        if not name:
+            raise ValueError(f"Schedule {i} is missing 'name'")
+
+        cron_expr = entry.get("cron")
+        if not cron_expr:
+            raise ValueError(f"Schedule '{name}' is missing 'cron'")
+
+        action = entry.get("action")
+        if not action:
+            raise ValueError(f"Schedule '{name}' is missing 'action'")
+
+        # Validate cron expression
+        try:
+            croniter(str(cron_expr))
+        except (CroniterBadCronError, ValueError, KeyError) as e:
+            raise ValueError(
+                f"Schedule '{name}': invalid cron expression '{cron_expr}': {e}"
+            ) from e
+
+        # Validate model if provided
+        model = entry.get("model")
+        if model and str(model).lower() not in MODEL_MAP:
+            logger.warning(
+                f"Schedule '{name}': unknown model '{model}', "
+                f"expected one of {list(MODEL_MAP.keys())}"
+            )
+
+        schedule = Schedule(
+            name=str(name),
+            cron=str(cron_expr),
+            action=str(action),
+            model=str(model) if model else None,
+            assignee=str(entry["assignee"]) if entry.get("assignee") else None,
+            list=str(entry["list"]) if entry.get("list") else None,
+        )
+        schedules.append(schedule)
+
+    return schedules
+
+
 def load_rules(path: Path) -> tuple[RuleEngine, BoardConfig]:
     """
     Load kardbrd.yml from the given path and return a RuleEngine and config.
@@ -365,7 +450,16 @@ def load_rules(path: Path) -> tuple[RuleEngine, BoardConfig]:
         rules = parse_rules(rules_data)
     else:
         raise ValueError(f"'rules' must be a list, got {type(rules_data).__name__}")
-    logger.info(f"Loaded {len(rules)} rules from {path}")
+
+    # Parse schedules
+    schedules_data = data.get("schedules")
+    if schedules_data is not None:
+        if isinstance(schedules_data, list):
+            config.schedules = parse_schedules(schedules_data)
+        else:
+            raise ValueError(f"'schedules' must be a list, got {type(schedules_data).__name__}")
+
+    logger.info(f"Loaded {len(rules)} rules and {len(config.schedules)} schedules from {path}")
     return RuleEngine(rules=rules), config
 
 
@@ -572,7 +666,123 @@ def validate_rules_file(path: Path) -> ValidationResult:
                 )
             )
 
+    # Validate schedules
+    _validate_schedules(data, result)
+
     return result
+
+
+def _validate_schedules(data: dict, result: ValidationResult) -> None:
+    """Validate the schedules section of kardbrd.yml."""
+    from croniter import CroniterBadCronError, croniter
+
+    schedules_data = data.get("schedules")
+    if schedules_data is None:
+        return
+
+    if not isinstance(schedules_data, list):
+        result.issues.append(
+            ValidationIssue(
+                Severity.ERROR,
+                None,
+                None,
+                f"'schedules' must be a list, got {type(schedules_data).__name__}",
+            )
+        )
+        return
+
+    for i, entry in enumerate(schedules_data):
+        if not isinstance(entry, dict):
+            result.issues.append(
+                ValidationIssue(
+                    Severity.ERROR,
+                    None,
+                    None,
+                    f"Schedule {i} must be a mapping, got {type(entry).__name__}",
+                )
+            )
+            continue
+
+        name = entry.get("name")
+
+        # Required fields
+        if not name:
+            result.issues.append(
+                ValidationIssue(Severity.ERROR, None, None, f"Schedule {i}: missing 'name'")
+            )
+        if not entry.get("cron"):
+            result.issues.append(
+                ValidationIssue(
+                    Severity.ERROR, None, name, f"Schedule '{name or i}': missing 'cron'"
+                )
+            )
+        if not entry.get("action"):
+            result.issues.append(
+                ValidationIssue(
+                    Severity.ERROR, None, name, f"Schedule '{name or i}': missing 'action'"
+                )
+            )
+
+        # Check for unknown fields
+        unknown = set(entry.keys()) - KNOWN_SCHEDULE_FIELDS
+        if unknown:
+            result.issues.append(
+                ValidationIssue(
+                    Severity.WARNING,
+                    None,
+                    name,
+                    f"Schedule '{name or i}': unknown field(s): {', '.join(sorted(unknown))}",
+                )
+            )
+
+        # Validate cron expression
+        cron_expr = entry.get("cron")
+        if cron_expr:
+            try:
+                croniter(str(cron_expr))
+            except (CroniterBadCronError, ValueError, KeyError):
+                result.issues.append(
+                    ValidationIssue(
+                        Severity.ERROR,
+                        None,
+                        name,
+                        f"Schedule '{name or i}': invalid cron expression '{cron_expr}'",
+                    )
+                )
+
+        # Validate model
+        model = entry.get("model")
+        if model:
+            if not isinstance(model, str):
+                result.issues.append(
+                    ValidationIssue(
+                        Severity.ERROR,
+                        None,
+                        name,
+                        f"Schedule '{name or i}': 'model' must be a string",
+                    )
+                )
+            elif model.lower() not in MODEL_MAP:
+                result.issues.append(
+                    ValidationIssue(
+                        Severity.WARNING,
+                        None,
+                        name,
+                        f"Schedule '{name or i}': unknown model '{model}'",
+                    )
+                )
+
+        # Validate action is a string
+        action = entry.get("action")
+        if action and not isinstance(action, str):
+            result.issues.append(
+                ValidationIssue(
+                    Severity.ERROR,
+                    None,
+                    name,
+                    f"Schedule '{name or i}': 'action' must be a string",
+                )
+            )
 
 
 def _validate_dict_format(data: dict, result: ValidationResult) -> list | None:
@@ -670,6 +880,12 @@ class ReloadableRuleEngine:
             "BoardConfig not loaded — kardbrd.yml must have board_id and agent"
         )
         return self._config
+
+    @property
+    def schedules(self) -> list[Schedule]:
+        """Return the current schedules, reloading if needed."""
+        self._maybe_reload()
+        return self._config.schedules if self._config else []
 
     def match(self, event_type: str, message: dict) -> list[Rule]:
         """Match an event against the current rules, reloading if needed."""

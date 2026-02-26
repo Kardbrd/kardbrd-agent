@@ -172,6 +172,14 @@ def start(
         rule_engine = RuleEngine()
         console.print(f"\nRules: [dim]no kardbrd.yml found at {rules_path}[/dim]")
 
+    # Display schedules if any
+    schedules = []
+    if hasattr(rule_engine, "config") and rule_engine.config.schedules:
+        schedules = rule_engine.config.schedules
+        console.print(f"\nSchedules: {len(schedules)} configured")
+        for sched in schedules:
+            console.print(f"  - {sched.name} (cron: {sched.cron})")
+
     console.print("\n[green]Starting...[/green]\n")
 
     # Create and run the proxy manager
@@ -192,6 +200,7 @@ def start(
         setup_command=setup_cmd,
         rule_engine=rule_engine,
         executor_type=effective_executor,
+        schedules=schedules,
     )
 
     try:

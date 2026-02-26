@@ -2127,7 +2127,8 @@ class TestKnownConfigFields:
 
     def test_known_config_fields_contents(self):
         """Test KNOWN_CONFIG_FIELDS contains expected fields."""
-        assert {"board_id", "agent", "api_url", "rules", "executor"} == KNOWN_CONFIG_FIELDS
+        expected = {"board_id", "agent", "api_url", "rules", "executor", "schedules"}
+        assert expected == KNOWN_CONFIG_FIELDS
 
     def test_known_config_fields_is_frozenset(self):
         """Test KNOWN_CONFIG_FIELDS is immutable."""
