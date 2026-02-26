@@ -11,6 +11,7 @@ from kardbrd_client import KardbrdClient, WebSocketAgentConnection
 
 from .executor import ClaudeExecutor
 from .rules import Rule, RuleEngine
+from .wizard import ensure_wizard_card
 from .worktree import WorktreeManager
 
 logger = logging.getLogger("kardbrd_agent")
@@ -133,6 +134,9 @@ class ProxyManager:
         else:
             logger.warning(f"Agent auth check failed: {auth_status.error}")
 
+        # Create onboarding wizard card if bot has no rules configured
+        await self._ensure_wizard_card()
+
         # Initialize worktree manager
         self.worktree_manager = WorktreeManager(
             self.cwd,
@@ -185,6 +189,28 @@ class ProxyManager:
         if self.client:
             self.client.close()
         logger.info("Proxy manager stopped")
+
+    async def _ensure_wizard_card(self) -> None:
+        """Create the onboarding wizard card if the bot has no rules.
+
+        Skipped when the rule engine has any rules loaded (i.e. a valid
+        ``kardbrd.yml`` exists).  The creation itself is idempotent — if the
+        wizard card already exists on the board it is left untouched.
+        """
+        if self.rule_engine.rules:
+            return  # Bot is configured, skip
+
+        try:
+            card_id = await asyncio.to_thread(
+                ensure_wizard_card,
+                self.client,
+                self.board_id,
+                self.agent_name,
+            )
+            if card_id:
+                logger.info("Wizard card ready: %s", card_id)
+        except Exception:
+            logger.exception("Failed to ensure wizard card")
 
     async def _status_ping_loop(self) -> None:
         """
