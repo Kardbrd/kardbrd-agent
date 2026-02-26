@@ -2,7 +2,7 @@
 
 from datetime import UTC
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -1582,3 +1582,242 @@ class TestSanitizeName:
         # The author_name passed to _process_mention should be sanitized
         call_kwargs = manager._process_mention.call_args[1]
         assert call_kwargs["author_name"] == "injected"
+
+
+class TestBotCard:
+    """Tests for bot card creation and update on startup."""
+
+    def test_bot_card_title(self):
+        """Test bot card title uses agent name with robot emoji."""
+        manager = _make_manager(agent_name="MBPBot")
+        assert manager._bot_card_title() == "\U0001f916 MBPBot"
+
+    def test_build_bot_card_description_contains_config(self):
+        """Test description includes all key configuration values."""
+        manager = _make_manager(
+            agent_name="TestBot",
+            timeout=300,
+            max_concurrent=5,
+            setup_command="uv sync",
+        )
+        desc = manager._build_bot_card_description()
+
+        assert "@TestBot" in desc
+        assert "`board123`" in desc
+        assert "https://test.kardbrd.com" in desc
+        assert "300s" in desc
+        assert "5" in desc
+        assert "uv sync" in desc
+        assert "kardbrd-mcp" in desc
+
+    def test_build_bot_card_description_no_setup_command(self):
+        """Test description shows 'none' when no setup command configured."""
+        manager = _make_manager()
+        desc = manager._build_bot_card_description()
+        assert "| Setup command | none |" in desc
+
+    def test_build_bot_card_description_includes_rules(self):
+        """Test description includes rule names when rules are loaded."""
+        rules = [
+            Rule(name="Explore ideas", events=["card_moved"], action="/ke"),
+            Rule(
+                name="Stop agent", events=["reaction_added"], action="__stop__", emoji="\U0001f6d1"
+            ),
+        ]
+        engine = RuleEngine(rules=rules)
+        manager = _make_manager(rule_engine=engine)
+        desc = manager._build_bot_card_description()
+
+        assert "| Rules | 2 |" in desc
+        assert "## Triggers" in desc
+        assert "### Explore ideas" in desc
+        assert "### Stop agent" in desc
+
+    def test_build_bot_card_description_no_rules(self):
+        """Test description shows '0' rules when no rules configured."""
+        manager = _make_manager()
+        desc = manager._build_bot_card_description()
+        assert "| Rules | 0 |" in desc
+        assert "## Triggers" not in desc
+
+    def test_build_bot_card_description_trigger_details(self):
+        """Test triggers section includes event, conditions, model, and action."""
+        rules = [
+            Rule(
+                name="Ship on approval",
+                events=["reaction_added"],
+                action="Merge the PR",
+                model="sonnet",
+                emoji="\u2705",
+                require_label="Agent",
+                require_user="user123",
+            ),
+            Rule(
+                name="Explore new ideas",
+                events=["card_created", "card_moved"],
+                action="/ke",
+                list="Ideas",
+                exclude_label="Agent",
+            ),
+        ]
+        engine = RuleEngine(rules=rules)
+        manager = _make_manager(rule_engine=engine)
+        desc = manager._build_bot_card_description()
+
+        # First rule details
+        assert "**Event:** reaction_added" in desc
+        assert "emoji = \u2705" in desc
+        assert "require label `Agent`" in desc
+        assert "require user `user123`" in desc
+        assert "**Model:** sonnet" in desc
+        assert "**Action:** Merge the PR" in desc
+
+        # Second rule details
+        assert "**Event:** card_created, card_moved" in desc
+        assert "list = `Ideas`" in desc
+        assert "exclude label `Agent`" in desc
+
+    def test_build_bot_card_description_stop_action_display(self):
+        """Test __stop__ action displays as 'Stop active session'."""
+        rules = [
+            Rule(name="Stop", events=["reaction_added"], action="__stop__", emoji="\U0001f6d1"),
+        ]
+        engine = RuleEngine(rules=rules)
+        manager = _make_manager(rule_engine=engine)
+        desc = manager._build_bot_card_description()
+        assert "**Action:** Stop active session" in desc
+
+    def test_build_bot_card_description_long_action_truncated(self):
+        """Test long action strings are truncated in trigger display."""
+        long_action = "x" * 100
+        rules = [
+            Rule(name="Long rule", events=["comment_created"], action=long_action),
+        ]
+        engine = RuleEngine(rules=rules)
+        manager = _make_manager(rule_engine=engine)
+        desc = manager._build_bot_card_description()
+        assert "**Action:** " + "x" * 80 + "..." in desc
+
+    def test_ensure_bot_card_creates_new_card(self):
+        """Test _ensure_bot_card creates a new card when none exists."""
+        manager = _make_manager(agent_name="TestBot")
+        manager.client = MagicMock()
+        manager.client.get_board.return_value = {
+            "lists": [
+                {
+                    "public_id": "list1",
+                    "name": "To Do",
+                    "cards": [],
+                }
+            ]
+        }
+        manager.client.create_card.return_value = {"public_id": "new-card-1"}
+
+        manager._ensure_bot_card()
+
+        manager.client.create_card.assert_called_once_with(
+            board_id="board123",
+            list_id="list1",
+            title="\U0001f916 TestBot",
+            description=manager._build_bot_card_description(),
+        )
+
+    def test_ensure_bot_card_updates_existing_card(self):
+        """Test _ensure_bot_card updates an existing card."""
+        manager = _make_manager(agent_name="TestBot")
+        manager.client = MagicMock()
+        manager.client.get_board.return_value = {
+            "lists": [
+                {
+                    "public_id": "list1",
+                    "name": "To Do",
+                    "cards": [
+                        {"public_id": "existing-card", "title": "\U0001f916 TestBot"},
+                    ],
+                }
+            ]
+        }
+
+        manager._ensure_bot_card()
+
+        manager.client.update_card.assert_called_once()
+        call_args = manager.client.update_card.call_args
+        assert call_args[0][0] == "existing-card"
+        assert "description" in call_args[1]
+        manager.client.create_card.assert_not_called()
+
+    def test_ensure_bot_card_finds_card_in_any_list(self):
+        """Test _ensure_bot_card finds an existing card in any list, not just the first."""
+        manager = _make_manager(agent_name="TestBot")
+        manager.client = MagicMock()
+        manager.client.get_board.return_value = {
+            "lists": [
+                {"public_id": "list1", "name": "To Do", "cards": []},
+                {
+                    "public_id": "list2",
+                    "name": "In Progress",
+                    "cards": [
+                        {"public_id": "card-in-list2", "title": "\U0001f916 TestBot"},
+                    ],
+                },
+            ]
+        }
+
+        manager._ensure_bot_card()
+
+        manager.client.update_card.assert_called_once()
+        assert manager.client.update_card.call_args[0][0] == "card-in-list2"
+        manager.client.create_card.assert_not_called()
+
+    def test_ensure_bot_card_handles_empty_board(self):
+        """Test _ensure_bot_card handles a board with no lists gracefully."""
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.client.get_board.return_value = {"lists": []}
+
+        manager._ensure_bot_card()
+
+        manager.client.create_card.assert_not_called()
+        manager.client.update_card.assert_not_called()
+
+    def test_ensure_bot_card_handles_api_error(self):
+        """Test _ensure_bot_card does not crash on API errors."""
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.client.get_board.side_effect = Exception("API down")
+
+        # Should not raise
+        manager._ensure_bot_card()
+
+    @pytest.mark.asyncio
+    async def test_start_calls_ensure_bot_card(self):
+        """Test that start() calls _ensure_bot_card."""
+        manager = _make_manager()
+        manager._ensure_bot_card = MagicMock()
+        manager._ensure_wizard_card = AsyncMock()
+
+        with (
+            patch("kardbrd_agent.manager.KardbrdClient"),
+            patch("kardbrd_agent.manager.ClaudeExecutor") as mock_exec_cls,
+            patch("kardbrd_agent.manager.WorktreeManager"),
+            patch("kardbrd_agent.manager.WebSocketAgentConnection") as mock_ws,
+        ):
+            # check_auth is a static method called on the executor instance
+            mock_exec_cls.return_value.check_auth = AsyncMock(
+                return_value=AuthStatus(authenticated=True, email="t@t.com", auth_method="api_key")
+            )
+
+            # Make connection.connect() return immediately
+            mock_conn = MagicMock()
+            mock_conn.connect = AsyncMock()
+            mock_ws.return_value = mock_conn
+
+            # Stop the manager after startup to avoid infinite loop
+            async def stop_after_start(*args):
+                manager._running = False
+
+            mock_conn.connect.side_effect = stop_after_start
+
+            await manager.start()
+
+        manager._ensure_bot_card.assert_called_once()

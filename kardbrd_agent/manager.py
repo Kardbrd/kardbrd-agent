@@ -4,7 +4,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
 
 from kardbrd_client import KardbrdClient, WebSocketAgentConnection
@@ -145,6 +145,9 @@ class ProxyManager:
             executor_type=self.executor_type,
         )
 
+        # Create or update bot card on the board
+        self._ensure_bot_card()
+
         # Initialize WebSocket connection
         self.connection = WebSocketAgentConnection(
             base_url=self.api_url,
@@ -211,6 +214,115 @@ class ProxyManager:
                 logger.info("Wizard card ready: %s", card_id)
         except Exception:
             logger.exception("Failed to ensure wizard card")
+
+    def _bot_card_title(self) -> str:
+        """Return the expected title for this agent's bot card."""
+        return f"\U0001f916 {self.agent_name}"
+
+    def _build_bot_card_description(self) -> str:
+        """Build the markdown description for the bot card."""
+        now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
+        rules_count = len(self.rule_engine.rules) if self.rule_engine else 0
+
+        lines = [
+            "| **Setting** | **Value** |",
+            "| --- | --- |",
+            f"| Agent | @{self.agent_name} |",
+            f"| Board | `{self.board_id}` |",
+            f"| API | {self.api_url} |",
+            f"| Working directory | `{self.cwd}` |",
+            f"| Timeout | {self.timeout}s |",
+            f"| Max concurrent | {self.max_concurrent} |",
+            "| MCP | kardbrd-mcp (stdio per session) |",
+            f"| Setup command | {self.setup_command or 'none'} |",
+            f"| Rules | {rules_count} |",
+            f"| Last started | {now} |",
+        ]
+
+        # Add detailed triggers section if rules exist
+        if self.rule_engine and self.rule_engine.rules:
+            lines.append("")
+            lines.append("## Triggers")
+            lines.append("")
+            for rule in self.rule_engine.rules:
+                lines.append(f"### {rule.name}")
+                lines.append("")
+                lines.append(f"- **Event:** {', '.join(rule.events)}")
+                # Conditions
+                conditions = []
+                if rule.list:
+                    conditions.append(f"list = `{rule.list}`")
+                if rule.title:
+                    conditions.append(f"title = `{rule.title}`")
+                if rule.label:
+                    conditions.append(f"label = `{rule.label}`")
+                if rule.emoji:
+                    conditions.append(f"emoji = {rule.emoji}")
+                if rule.content_contains:
+                    conditions.append(f"content contains `{rule.content_contains}`")
+                if rule.require_label:
+                    conditions.append(f"require label `{rule.require_label}`")
+                if rule.exclude_label:
+                    conditions.append(f"exclude label `{rule.exclude_label}`")
+                if rule.require_user:
+                    conditions.append(f"require user `{rule.require_user}`")
+                if conditions:
+                    lines.append(f"- **Conditions:** {', '.join(conditions)}")
+                if rule.model:
+                    lines.append(f"- **Model:** {rule.model}")
+                action_display = rule.action
+                if rule.is_stop:
+                    action_display = "Stop active session"
+                elif len(rule.action) > 80:
+                    action_display = rule.action[:80] + "..."
+                lines.append(f"- **Action:** {action_display}")
+                lines.append("")
+
+        return "\n".join(lines)
+
+    def _ensure_bot_card(self) -> None:
+        """Find or create the bot card on the board and update its description.
+
+        Searches all cards on the board for one matching the bot card title.
+        If found, updates its description. If not, creates a new card in the
+        first list on the board.
+        """
+        title = self._bot_card_title()
+        description = self._build_bot_card_description()
+
+        try:
+            board = self.client.get_board(self.board_id)
+            lists = board.get("lists", [])
+            if not lists:
+                logger.warning("Board has no lists, skipping bot card creation")
+                return
+
+            # Search for existing bot card across all lists
+            existing_card_id = None
+            for lst in lists:
+                for card in lst.get("cards", []):
+                    if card.get("title") == title:
+                        existing_card_id = card.get("public_id") or card.get("id")
+                        break
+                if existing_card_id:
+                    break
+
+            if existing_card_id:
+                self.client.update_card(existing_card_id, description=description)
+                logger.info(f"Updated bot card: {existing_card_id}")
+            else:
+                first_list_id = lists[0].get("public_id") or lists[0].get("id")
+                card = self.client.create_card(
+                    board_id=self.board_id,
+                    list_id=first_list_id,
+                    title=title,
+                    description=description,
+                )
+                card_id = card.get("public_id") or card.get("id")
+                logger.info(f"Created bot card: {card_id}")
+
+        except Exception as e:
+            logger.warning(f"Failed to ensure bot card: {e}")
 
     async def _status_ping_loop(self) -> None:
         """
