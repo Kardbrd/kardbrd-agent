@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from kardbrd_client import KardbrdClient, WebSocketAgentConnection
+from kardbrd_client import KardbrdAPIError, KardbrdClient, WebSocketAgentConnection
 
 from .executor import AuthStatus, ClaudeExecutor
 from .rules import Rule, RuleEngine, Schedule
@@ -131,6 +131,9 @@ class ProxyManager:
                 bot_token=self.bot_token,
             )
 
+        # Validate kardbrd API token before proceeding
+        await self._validate_board_token()
+
         # Check agent authentication
         auth_status = await self.executor.check_auth()
         self._auth_status = auth_status
@@ -192,6 +195,26 @@ class ProxyManager:
             logger.info(f"Scheduler: {len(self._schedules)} schedule(s) configured")
 
         await asyncio.gather(*tasks)
+
+    async def _validate_board_token(self) -> None:
+        """Validate the kardbrd API token by fetching the board.
+
+        Raises ``SystemExit`` with a clear error message when the token is
+        invalid so the agent fails fast instead of entering an infinite
+        WebSocket reconnect loop.
+        """
+        try:
+            await asyncio.to_thread(self.client.get_board, self.board_id)
+            logger.info("Board token validated successfully")
+        except KardbrdAPIError as exc:
+            if exc.status_code in (401, 403):
+                logger.error(
+                    "Kardbrd API token is invalid or expired (HTTP %s). "
+                    "Check KARDBRD_TOKEN and restart.",
+                    exc.status_code,
+                )
+                raise SystemExit(1) from exc
+            raise  # Re-raise non-auth errors (e.g. 500)
 
     async def stop(self) -> None:
         """Stop the proxy manager and terminate active executor subprocesses."""

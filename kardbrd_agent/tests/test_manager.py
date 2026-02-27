@@ -1795,6 +1795,7 @@ class TestBotCard:
         manager = _make_manager()
         manager._ensure_bot_card = MagicMock()
         manager._ensure_wizard_card = AsyncMock()
+        manager._validate_board_token = AsyncMock()
 
         with (
             patch("kardbrd_agent.manager.KardbrdClient"),
@@ -2071,3 +2072,105 @@ class TestNonGitRepo:
 
         # Should not raise
         await manager._cleanup_worktree("abc12345")
+
+
+class TestValidateBoardToken:
+    """Tests for kardbrd API token validation on startup."""
+
+    @pytest.mark.asyncio
+    async def test_validate_board_token_success(self):
+        """Test token validation passes when get_board succeeds."""
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.client.get_board.return_value = {"lists": []}
+
+        # Should not raise
+        await manager._validate_board_token()
+
+        manager.client.get_board.assert_called_once_with("board123")
+
+    @pytest.mark.asyncio
+    async def test_validate_board_token_401_exits(self):
+        """Test token validation exits on HTTP 401."""
+        from kardbrd_client import KardbrdAPIError
+
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.client.get_board.side_effect = KardbrdAPIError(
+            "Authentication required", code="UNAUTHORIZED", status_code=401
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            await manager._validate_board_token()
+
+        assert exc_info.value.code == 1
+
+    @pytest.mark.asyncio
+    async def test_validate_board_token_403_exits(self):
+        """Test token validation exits on HTTP 403."""
+        from kardbrd_client import KardbrdAPIError
+
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.client.get_board.side_effect = KardbrdAPIError(
+            "Forbidden", code="FORBIDDEN", status_code=403
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            await manager._validate_board_token()
+
+        assert exc_info.value.code == 1
+
+    @pytest.mark.asyncio
+    async def test_validate_board_token_500_reraises(self):
+        """Test token validation re-raises non-auth API errors."""
+        from kardbrd_client import KardbrdAPIError
+
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.client.get_board.side_effect = KardbrdAPIError(
+            "Internal server error", code="SERVER_ERROR", status_code=500
+        )
+
+        with pytest.raises(KardbrdAPIError):
+            await manager._validate_board_token()
+
+    @pytest.mark.asyncio
+    async def test_start_calls_validate_board_token(self):
+        """Test that start() calls _validate_board_token before other operations."""
+        manager = _make_manager()
+        manager._validate_board_token = AsyncMock()
+        manager._ensure_bot_card = MagicMock()
+        manager._ensure_wizard_card = AsyncMock()
+
+        call_order = []
+        manager._validate_board_token.side_effect = lambda: call_order.append("validate")
+        manager._ensure_wizard_card.side_effect = lambda: call_order.append("wizard")
+
+        def record_bot_card():
+            call_order.append("bot_card")
+
+        manager._ensure_bot_card.side_effect = record_bot_card
+
+        with (
+            patch("kardbrd_agent.manager.KardbrdClient"),
+            patch("kardbrd_agent.manager.ClaudeExecutor") as mock_exec_cls,
+            patch("kardbrd_agent.manager.WorktreeManager"),
+            patch("kardbrd_agent.manager.WebSocketAgentConnection") as mock_ws,
+        ):
+            mock_exec_cls.return_value.check_auth = AsyncMock(
+                return_value=AuthStatus(authenticated=True, email="t@t.com", auth_method="api_key")
+            )
+            mock_conn = MagicMock()
+            mock_conn.connect = AsyncMock()
+            mock_ws.return_value = mock_conn
+
+            async def stop_after_start(*args):
+                manager._running = False
+
+            mock_conn.connect.side_effect = stop_after_start
+
+            await manager.start()
+
+        # validate_board_token should be called before wizard and bot card
+        assert call_order == ["validate", "wizard", "bot_card"]
