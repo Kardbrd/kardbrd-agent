@@ -1,7 +1,9 @@
 """ProxyManager - WebSocket-based agent that spawns Claude for @mentions."""
 
 import asyncio
+import importlib.metadata
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -9,7 +11,7 @@ from pathlib import Path
 
 from kardbrd_client import KardbrdClient, WebSocketAgentConnection
 
-from .executor import ClaudeExecutor
+from .executor import AuthStatus, ClaudeExecutor
 from .rules import Rule, RuleEngine, Schedule
 from .scheduler import ScheduleManager
 from .wizard import ensure_wizard_card
@@ -77,6 +79,7 @@ class ProxyManager:
         self.rule_engine = rule_engine or RuleEngine()
         self.executor_type = executor_type
         self._schedules = schedules or []
+        self._auth_status: AuthStatus | None = None  # set in start()
 
         # Will be initialized in start()
         self.connection: WebSocketAgentConnection | None = None
@@ -130,6 +133,7 @@ class ProxyManager:
 
         # Check agent authentication
         auth_status = await self.executor.check_auth()
+        self._auth_status = auth_status
         if auth_status.authenticated:
             logger.info(
                 f"Agent auth OK (method={auth_status.auth_method}, "
@@ -235,23 +239,68 @@ class ProxyManager:
         """Return the expected title for this agent's bot card."""
         return f"\U0001f916 {self.agent_name}"
 
+    def _discover_skills(self) -> list[tuple[str, str]]:
+        """Scan .claude/commands/*.md and return [(command_name, title), ...]."""
+        commands_dir = self.cwd / ".claude" / "commands"
+        if not commands_dir.is_dir():
+            return []
+        skills = []
+        for md_file in sorted(commands_dir.glob("*.md")):
+            cmd_name = md_file.stem
+            title = cmd_name  # fallback
+            try:
+                with open(md_file) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("# "):
+                            title = line[2:].strip()
+                            break
+            except OSError:
+                pass
+            skills.append((cmd_name, title))
+        return skills
+
     def _build_bot_card_description(self) -> str:
         """Build the markdown description for the bot card."""
         now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
         rules_count = len(self.rule_engine.rules) if self.rule_engine else 0
+        schedules_count = len(self._schedules)
+
+        # Executor + auth status
+        auth_status = self._auth_status
+        if auth_status and auth_status.authenticated:
+            executor_display = f"{self.executor_type} (authenticated \u2705)"
+        elif auth_status and not auth_status.authenticated:
+            executor_display = f"{self.executor_type} (auth failed \U0001f6d1)"
+        else:
+            executor_display = f"{self.executor_type} (unchecked)"
+
+        # GH token
+        gh_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        gh_display = "\u2705 present" if gh_token else "\U0001f6d1 absent"
+
+        # Version
+        try:
+            version = importlib.metadata.version("kardbrd-agent")
+        except importlib.metadata.PackageNotFoundError:
+            version = "unknown"
 
         lines = [
             "| **Setting** | **Value** |",
             "| --- | --- |",
             f"| Agent | @{self.agent_name} |",
+            f"| Version | {version} |",
+            f"| Executor | {executor_display} |",
             f"| Board | `{self.board_id}` |",
             f"| API | {self.api_url} |",
+            f"| GH Token | {gh_display} |",
             f"| Working directory | `{self.cwd}` |",
             f"| Timeout | {self.timeout}s |",
             f"| Max concurrent | {self.max_concurrent} |",
             "| MCP | kardbrd-mcp (stdio per session) |",
             f"| Setup command | {self.setup_command or 'none'} |",
             f"| Rules | {rules_count} |",
+            f"| Schedules | {schedules_count} |",
             f"| Last started | {now} |",
         ]
 
@@ -293,6 +342,33 @@ class ProxyManager:
                     action_display = rule.action[:80] + "..."
                 lines.append(f"- **Action:** {action_display}")
                 lines.append("")
+
+        # Schedules section
+        if self._schedules:
+            lines.append("")
+            lines.append("## Schedules")
+            lines.append("")
+            for schedule in self._schedules:
+                lines.append(f"### {schedule.name}")
+                lines.append("")
+                lines.append(f"- **Cron:** `{schedule.cron}`")
+                if schedule.model:
+                    lines.append(f"- **Model:** {schedule.model}")
+                action_display = schedule.action
+                if len(schedule.action) > 80:
+                    action_display = schedule.action[:80] + "..."
+                lines.append(f"- **Action:** {action_display}")
+                lines.append("")
+
+        # Skills section
+        skills = self._discover_skills()
+        if skills:
+            lines.append("")
+            lines.append("## Skills")
+            lines.append("")
+            for cmd_name, title in skills:
+                lines.append(f"- `/{cmd_name}` \u2014 {title}")
+            lines.append("")
 
         return "\n".join(lines)
 

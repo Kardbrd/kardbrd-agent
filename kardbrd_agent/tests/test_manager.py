@@ -8,7 +8,7 @@ import pytest
 
 from kardbrd_agent.executor import AuthStatus, ClaudeResult
 from kardbrd_agent.manager import ActiveSession, ProxyManager, _sanitize_name
-from kardbrd_agent.rules import Rule, RuleEngine
+from kardbrd_agent.rules import Rule, RuleEngine, Schedule
 
 # Default test values for ProxyManager constructor
 _DEFAULTS = {
@@ -1821,3 +1821,133 @@ class TestBotCard:
             await manager.start()
 
         manager._ensure_bot_card.assert_called_once()
+
+    def test_build_bot_card_description_executor_authenticated(self):
+        """Test executor shows authenticated status."""
+        manager = _make_manager()
+        manager._auth_status = AuthStatus(authenticated=True, email="t@t.com")
+        desc = manager._build_bot_card_description()
+        assert "claude (authenticated \u2705)" in desc
+
+    def test_build_bot_card_description_executor_auth_failed(self):
+        """Test executor shows auth failed status."""
+        manager = _make_manager()
+        manager._auth_status = AuthStatus(authenticated=False, error="Not logged in")
+        desc = manager._build_bot_card_description()
+        assert "claude (auth failed \U0001f6d1)" in desc
+
+    def test_build_bot_card_description_executor_unchecked(self):
+        """Test executor shows unchecked when auth_status is None."""
+        manager = _make_manager()
+        desc = manager._build_bot_card_description()
+        assert "claude (unchecked)" in desc
+
+    def test_build_bot_card_description_executor_type_goose(self):
+        """Test executor type goose is displayed correctly."""
+        manager = _make_manager(executor_type="goose")
+        manager._auth_status = AuthStatus(authenticated=True, email="t@t.com")
+        desc = manager._build_bot_card_description()
+        assert "goose (authenticated \u2705)" in desc
+
+    def test_build_bot_card_description_gh_token_present(self):
+        """Test GH token shows present when env var is set."""
+        manager = _make_manager()
+        with patch.dict("os.environ", {"GITHUB_TOKEN": "ghp_xxx"}):
+            desc = manager._build_bot_card_description()
+        assert "\u2705 present" in desc
+
+    def test_build_bot_card_description_gh_token_absent(self):
+        """Test GH token shows absent when env vars are missing."""
+        manager = _make_manager()
+        excluded = ("GITHUB_TOKEN", "GH_TOKEN")
+        env = {k: v for k, v in __import__("os").environ.items() if k not in excluded}
+        with patch.dict("os.environ", env, clear=True):
+            desc = manager._build_bot_card_description()
+        assert "\U0001f6d1 absent" in desc
+
+    def test_build_bot_card_description_version(self):
+        """Test version is shown from package metadata."""
+        manager = _make_manager()
+        with patch("importlib.metadata.version", return_value="1.2.3"):
+            desc = manager._build_bot_card_description()
+        assert "| Version | 1.2.3 |" in desc
+
+    def test_build_bot_card_description_schedules_section(self):
+        """Test schedules section is rendered when schedules exist."""
+        schedules = [
+            Schedule(
+                name="Daily Summary", cron="0 0 * * *", action="Summarize board", model="haiku"
+            ),
+        ]
+        manager = _make_manager(schedules=schedules)
+        desc = manager._build_bot_card_description()
+
+        assert "| Schedules | 1 |" in desc
+        assert "## Schedules" in desc
+        assert "### Daily Summary" in desc
+        assert "**Cron:** `0 0 * * *`" in desc
+        assert "**Model:** haiku" in desc
+
+    def test_build_bot_card_description_schedules_no_model(self):
+        """Test schedule without model omits model line."""
+        schedules = [
+            Schedule(name="Nightly", cron="0 0 * * *", action="Do stuff"),
+        ]
+        manager = _make_manager(schedules=schedules)
+        desc = manager._build_bot_card_description()
+
+        # The schedules section should exist but not contain **Model:** in the schedule block
+        assert "### Nightly" in desc
+        # Split out just the schedules section to check model absence
+        sched_section = desc.split("## Schedules")[1] if "## Schedules" in desc else ""
+        assert "**Model:**" not in sched_section
+
+    def test_build_bot_card_description_schedules_long_action(self):
+        """Test long schedule action is truncated."""
+        long_action = "x" * 100
+        schedules = [
+            Schedule(name="Long", cron="0 0 * * *", action=long_action),
+        ]
+        manager = _make_manager(schedules=schedules)
+        desc = manager._build_bot_card_description()
+
+        assert "**Action:** " + "x" * 80 + "..." in desc
+
+    def test_build_bot_card_description_skills_section(self, tmp_path):
+        """Test skills section is rendered from .claude/commands/ directory."""
+        commands_dir = tmp_path / ".claude" / "commands"
+        commands_dir.mkdir(parents=True)
+        (commands_dir / "ke.md").write_text("# Explore\n\nExplore the codebase.")
+        manager = _make_manager(cwd=str(tmp_path))
+        desc = manager._build_bot_card_description()
+
+        assert "## Skills" in desc
+        assert "`/ke` \u2014 Explore" in desc
+
+    def test_build_bot_card_description_no_skills_dir(self, tmp_path):
+        """Test skills section is omitted when .claude/commands/ doesn't exist."""
+        manager = _make_manager(cwd=str(tmp_path))
+        desc = manager._build_bot_card_description()
+        assert "## Skills" not in desc
+
+    def test_discover_skills_reads_titles(self, tmp_path):
+        """Test _discover_skills extracts titles from # heading."""
+        commands_dir = tmp_path / ".claude" / "commands"
+        commands_dir.mkdir(parents=True)
+        (commands_dir / "ke.md").write_text("# Explore\n\nBody.")
+        (commands_dir / "ki.md").write_text("# Implement\n\nBody.")
+        manager = _make_manager(cwd=str(tmp_path))
+        skills = manager._discover_skills()
+
+        assert ("ke", "Explore") in skills
+        assert ("ki", "Implement") in skills
+
+    def test_discover_skills_fallback_to_filename(self, tmp_path):
+        """Test _discover_skills falls back to filename when no # heading."""
+        commands_dir = tmp_path / ".claude" / "commands"
+        commands_dir.mkdir(parents=True)
+        (commands_dir / "custom.md").write_text("No heading here, just text.")
+        manager = _make_manager(cwd=str(tmp_path))
+        skills = manager._discover_skills()
+
+        assert ("custom", "custom") in skills
