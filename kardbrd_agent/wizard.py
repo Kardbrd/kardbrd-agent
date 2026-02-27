@@ -196,12 +196,12 @@ def _find_target_list(board: dict) -> dict | None:
 def _card_already_exists(board: dict, title: str) -> str | None:
     """Scan board cards for a card with the exact *title*.
 
-    Returns the card's ``public_id`` if found, ``None`` otherwise.
+    Returns the card's ``id`` if found, ``None`` otherwise.
     """
     for lst in board.get("lists", []):
         for card in lst.get("cards", []):
             if card.get("title") == title:
-                return card.get("public_id")
+                return card.get("id")
     return None
 
 
@@ -213,7 +213,7 @@ def ensure_wizard_card(
     """Create the onboarding wizard card if the bot has no rules configured.
 
     This is **idempotent**: if a card with the wizard title already exists on
-    the board the function returns its ``public_id`` without creating a
+    the board the function returns its ``id`` without creating a
     duplicate.
 
     Args:
@@ -222,7 +222,7 @@ def ensure_wizard_card(
         agent_name: The bot's display name (used in the welcome comment).
 
     Returns:
-        The ``public_id`` of the wizard card (existing or newly created),
+        The ``id`` of the wizard card (existing or newly created),
         or ``None`` if the board has no lists.
     """
     board = client.get_board(board_id)
@@ -238,7 +238,7 @@ def ensure_wizard_card(
         logger.warning("Board %s has no lists — skipping wizard card creation", board_id)
         return None
 
-    list_id = target_list["public_id"]
+    list_id = target_list["id"]
     logger.info(
         "Creating wizard card in list '%s' (%s)",
         target_list.get("name", "unknown"),
@@ -252,7 +252,7 @@ def ensure_wizard_card(
         description=WIZARD_CARD_DESCRIPTION,
     )
 
-    card_id = card["public_id"]
+    card_id = card["id"]
     logger.info("Created onboarding wizard card: %s", card_id)
 
     # Post a welcome comment so the agent gets notified

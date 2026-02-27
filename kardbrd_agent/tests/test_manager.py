@@ -1705,13 +1705,13 @@ class TestBotCard:
         manager.client.get_board.return_value = {
             "lists": [
                 {
-                    "public_id": "list1",
+                    "id": "list1",
                     "name": "To Do",
                     "cards": [],
                 }
             ]
         }
-        manager.client.create_card.return_value = {"public_id": "new-card-1"}
+        manager.client.create_card.return_value = {"id": "new-card-1"}
 
         manager._ensure_bot_card()
 
@@ -1729,10 +1729,10 @@ class TestBotCard:
         manager.client.get_board.return_value = {
             "lists": [
                 {
-                    "public_id": "list1",
+                    "id": "list1",
                     "name": "To Do",
                     "cards": [
-                        {"public_id": "existing-card", "title": "\U0001f916 TestBot"},
+                        {"id": "existing-card", "title": "\U0001f916 TestBot"},
                     ],
                 }
             ]
@@ -1752,12 +1752,12 @@ class TestBotCard:
         manager.client = MagicMock()
         manager.client.get_board.return_value = {
             "lists": [
-                {"public_id": "list1", "name": "To Do", "cards": []},
+                {"id": "list1", "name": "To Do", "cards": []},
                 {
-                    "public_id": "list2",
+                    "id": "list2",
                     "name": "In Progress",
                     "cards": [
-                        {"public_id": "card-in-list2", "title": "\U0001f916 TestBot"},
+                        {"id": "card-in-list2", "title": "\U0001f916 TestBot"},
                     ],
                 },
             ]

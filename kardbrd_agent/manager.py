@@ -318,7 +318,7 @@ class ProxyManager:
             for lst in lists:
                 for card in lst.get("cards", []):
                     if card.get("title") == title:
-                        existing_card_id = card.get("public_id") or card.get("id")
+                        existing_card_id = card.get("id")
                         break
                 if existing_card_id:
                     break
@@ -327,14 +327,14 @@ class ProxyManager:
                 self.client.update_card(existing_card_id, description=description)
                 logger.info(f"Updated bot card: {existing_card_id}")
             else:
-                first_list_id = lists[0].get("public_id") or lists[0].get("id")
+                first_list_id = lists[0].get("id")
                 card = self.client.create_card(
                     board_id=self.board_id,
                     list_id=first_list_id,
                     title=title,
                     description=description,
                 )
-                card_id = card.get("public_id") or card.get("id")
+                card_id = card.get("id")
                 logger.info(f"Created bot card: {card_id}")
 
         except Exception as e:
