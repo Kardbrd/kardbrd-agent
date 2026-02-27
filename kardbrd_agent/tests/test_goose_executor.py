@@ -453,6 +453,55 @@ class TestGooseExecutorAsync:
             assert env.get("GOOSE_DISABLE_SESSION_NAMING") == "true"
 
 
+class TestGooseExecutorStdinPiping:
+    """Tests for prompt piping via stdin to avoid ARG_MAX limits."""
+
+    @pytest.mark.asyncio
+    async def test_prompt_not_in_command_args(self):
+        """Test that the prompt text is NOT passed as a CLI argument."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        executor = GooseExecutor(cwd="/tmp", timeout=60)
+        long_prompt = "x" * 100_000  # 100KB prompt
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_process = MagicMock()
+            mock_process.communicate = AsyncMock(return_value=(b"", b""))
+            mock_process.returncode = 0
+            mock_exec.return_value = mock_process
+
+            await executor.execute(long_prompt)
+
+            call_args = list(mock_exec.call_args[0])
+            # Prompt should NOT be in positional args
+            assert long_prompt not in call_args
+            # "-" placeholder should be used for -t flag
+            t_idx = call_args.index("-t")
+            assert call_args[t_idx + 1] == "-"
+
+    @pytest.mark.asyncio
+    async def test_prompt_piped_via_stdin(self):
+        """Test that the prompt is sent via stdin pipe."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        executor = GooseExecutor(cwd="/tmp", timeout=60)
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_process = MagicMock()
+            mock_process.communicate = AsyncMock(return_value=(b"", b""))
+            mock_process.returncode = 0
+            mock_exec.return_value = mock_process
+
+            await executor.execute("test prompt")
+
+            # stdin=PIPE should be in kwargs
+            call_kwargs = mock_exec.call_args[1]
+            assert call_kwargs.get("stdin") == -1  # asyncio.subprocess.PIPE == -1
+
+            # communicate() should be called with input=prompt.encode()
+            mock_process.communicate.assert_called_once_with(input=b"test prompt")
+
+
 class TestGooseExecutorGracefulTimeout:
     """Tests for ST4: graceful timeout with terminate() before kill()."""
 
