@@ -101,7 +101,7 @@ class ScheduleManager:
         as the title, optionally in the specified list with an assignee.
 
         Returns:
-            The card_id (public_id) of the found or created card.
+            The card_id of the found or created card.
         """
         # Search the board for a card with matching title
         board = self._client.get_board(self._board_id)
@@ -110,7 +110,7 @@ class ScheduleManager:
         for lst in lists:
             for card in lst.get("cards", []):
                 if card.get("title", "").strip().lower() == schedule.name.strip().lower():
-                    card_id = card.get("public_id") or card.get("id")
+                    card_id = card.get("id")
                     logger.info(f"Schedule '{schedule.name}': found existing card {card_id}")
                     return card_id
 
@@ -139,7 +139,7 @@ class ScheduleManager:
             list_id=target_list_id,
             title=schedule.name,
         )
-        card_id = new_card.get("public_id") or new_card.get("id")
+        card_id = new_card.get("id")
         logger.info(f"Schedule '{schedule.name}': created card {card_id}")
 
         # Assign if specified

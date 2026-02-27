@@ -376,8 +376,8 @@ class TestScheduleManager:
                     "id": "list1",
                     "name": "To Do",
                     "cards": [
-                        {"public_id": "card123", "title": "Daily Report"},
-                        {"public_id": "card456", "title": "Other Card"},
+                        {"id": "card123", "title": "Daily Report"},
+                        {"id": "card456", "title": "Other Card"},
                     ],
                 }
             ]
@@ -403,7 +403,7 @@ class TestScheduleManager:
                 {
                     "id": "list1",
                     "name": "To Do",
-                    "cards": [{"public_id": "card123", "title": "Daily Report"}],
+                    "cards": [{"id": "card123", "title": "Daily Report"}],
                 }
             ]
         }
@@ -422,7 +422,7 @@ class TestScheduleManager:
         schedule = Schedule(name="Daily Report", cron="0 9 * * *", action="Summarize")
         client = MagicMock()
         client.get_board.return_value = {"lists": [{"id": "list1", "name": "To Do", "cards": []}]}
-        client.create_card.return_value = {"public_id": "new_card_id"}
+        client.create_card.return_value = {"id": "new_card_id"}
 
         mgr = ScheduleManager(
             schedules=[schedule],
@@ -446,7 +446,7 @@ class TestScheduleManager:
                 {"id": "list2", "name": "Plans", "cards": []},
             ]
         }
-        client.create_card.return_value = {"public_id": "new_id"}
+        client.create_card.return_value = {"id": "new_id"}
 
         mgr = ScheduleManager(
             schedules=[schedule],
@@ -464,7 +464,7 @@ class TestScheduleManager:
         schedule = Schedule(name="Report", cron="0 9 * * *", action="Do stuff", assignee="user123")
         client = MagicMock()
         client.get_board.return_value = {"lists": [{"id": "list1", "name": "To Do", "cards": []}]}
-        client.create_card.return_value = {"public_id": "new_id"}
+        client.create_card.return_value = {"id": "new_id"}
 
         mgr = ScheduleManager(
             schedules=[schedule],
@@ -484,7 +484,7 @@ class TestScheduleManager:
                 {
                     "id": "list1",
                     "name": "To Do",
-                    "cards": [{"public_id": "existing_id", "title": "Report"}],
+                    "cards": [{"id": "existing_id", "title": "Report"}],
                 }
             ]
         }
@@ -510,7 +510,7 @@ class TestScheduleManager:
                 {
                     "id": "list1",
                     "name": "To Do",
-                    "cards": [{"public_id": "card1", "title": "Every minute"}],
+                    "cards": [{"id": "card1", "title": "Every minute"}],
                 }
             ]
         }
@@ -570,7 +570,7 @@ class TestScheduleManager:
                 {
                     "id": "list1",
                     "name": "To Do",
-                    "cards": [{"public_id": "card1", "title": "Failing"}],
+                    "cards": [{"id": "card1", "title": "Failing"}],
                 }
             ]
         }

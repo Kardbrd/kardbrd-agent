@@ -119,7 +119,7 @@ def build_prompt(
     Build the prompt for an executor from card context and user request.
 
     Args:
-        card_id: The public_id of the card (for posting comments)
+        card_id: The id of the card (for posting comments)
         card_markdown: Full card content in markdown format
         command: The extracted command (e.g., "/kp", "/ki", or free-form)
         comment_content: The full comment that triggered the proxy

@@ -22,12 +22,12 @@ def _make_board(lists=None):
     return {"lists": lists or []}
 
 
-def _make_list(name, public_id, cards=None):
-    return {"name": name, "public_id": public_id, "cards": cards or []}
+def _make_list(name, id, cards=None):
+    return {"name": name, "id": id, "cards": cards or []}
 
 
-def _make_card(title, public_id="card1"):
-    return {"title": title, "public_id": public_id}
+def _make_card(title, id="card1"):
+    return {"title": title, "id": id}
 
 
 # ---------------------------------------------------------------------------
@@ -46,37 +46,37 @@ class TestFindTargetList:
             _make_list("Done", "l3"),
         ]
         result = _find_target_list(_make_board(lists))
-        assert result["public_id"] == "l1"
+        assert result["id"] == "l1"
 
     def test_matches_todo_no_space(self):
         lists = [_make_list("todo", "l1"), _make_list("Done", "l2")]
         result = _find_target_list(_make_board(lists))
-        assert result["public_id"] == "l1"
+        assert result["id"] == "l1"
 
     def test_matches_backlog(self):
         lists = [_make_list("Backlog", "l1"), _make_list("Done", "l2")]
         result = _find_target_list(_make_board(lists))
-        assert result["public_id"] == "l1"
+        assert result["id"] == "l1"
 
     def test_matches_inbox(self):
         lists = [_make_list("Inbox", "l1")]
         result = _find_target_list(_make_board(lists))
-        assert result["public_id"] == "l1"
+        assert result["id"] == "l1"
 
     def test_matches_ideas(self):
         lists = [_make_list("Ideas", "l1")]
         result = _find_target_list(_make_board(lists))
-        assert result["public_id"] == "l1"
+        assert result["id"] == "l1"
 
     def test_falls_back_to_first_list(self):
         lists = [_make_list("Active", "l1"), _make_list("Review", "l2")]
         result = _find_target_list(_make_board(lists))
-        assert result["public_id"] == "l1"
+        assert result["id"] == "l1"
 
     def test_case_insensitive_match(self):
         lists = [_make_list("TO DO", "l1")]
         result = _find_target_list(_make_board(lists))
-        assert result["public_id"] == "l1"
+        assert result["id"] == "l1"
 
     def test_priority_order(self):
         """'to do' should beat 'backlog' per heuristic order."""
@@ -85,7 +85,7 @@ class TestFindTargetList:
             _make_list("To Do", "l1"),
         ]
         result = _find_target_list(_make_board(lists))
-        assert result["public_id"] == "l1"
+        assert result["id"] == "l1"
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +133,7 @@ class TestEnsureWizardCard:
     def _mock_client(self, board):
         client = MagicMock(spec=["get_board", "create_card", "add_comment"])
         client.get_board.return_value = board
-        client.create_card.return_value = {"public_id": "new_wiz"}
+        client.create_card.return_value = {"id": "new_wiz"}
         return client
 
     def test_creates_card_when_none_exists(self):
@@ -250,7 +250,7 @@ class TestManagerEnsureWizardCard:
         board = _make_board([_make_list("To Do", "l1")])
         mock_client = MagicMock()
         mock_client.get_board.return_value = board
-        mock_client.create_card.return_value = {"public_id": "wiz1"}
+        mock_client.create_card.return_value = {"id": "wiz1"}
         manager.client = mock_client
 
         await manager._ensure_wizard_card()
