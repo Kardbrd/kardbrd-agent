@@ -145,13 +145,21 @@ class ProxyManager:
         # Create onboarding wizard card if bot has no rules configured
         await self._ensure_wizard_card()
 
-        # Initialize worktree manager
-        self.worktree_manager = WorktreeManager(
-            self.cwd,
-            worktrees_dir=self.worktrees_dir,
-            setup_command=self.setup_command,
-            executor_type=self.executor_type,
-        )
+        # Initialize worktree manager (only if cwd is a git repo)
+        is_git_repo = (self.cwd / ".git").exists()
+        if is_git_repo:
+            self.worktree_manager = WorktreeManager(
+                self.cwd,
+                worktrees_dir=self.worktrees_dir,
+                setup_command=self.setup_command,
+                executor_type=self.executor_type,
+            )
+            logger.info(f"Git repo detected, worktrees enabled (base: {self.cwd})")
+        else:
+            self.worktree_manager = None
+            logger.info(
+                f"No git repo at {self.cwd}, worktrees disabled — agent will run in cwd directly"
+            )
 
         # Create or update bot card on the board
         self._ensure_bot_card()
@@ -612,9 +620,13 @@ class ProxyManager:
                     )
                     return
 
-                # Create worktree for this card
-                worktree_path = self.worktree_manager.create_worktree(card_id)
-                logger.info(f"Using worktree: {worktree_path}")
+                # Create worktree for this card (or use cwd if no git repo)
+                if self.worktree_manager:
+                    worktree_path = self.worktree_manager.create_worktree(card_id)
+                    logger.info(f"Using worktree: {worktree_path}")
+                else:
+                    worktree_path = self.cwd
+                    logger.info(f"No worktree isolation, using cwd: {worktree_path}")
 
                 # Track active session (including triggering comment for stop-by-reaction)
                 session = ActiveSession(
@@ -886,8 +898,13 @@ DO NOT do any new work - just publish what you already did."""
                     )
                     return
 
-                worktree_path = self.worktree_manager.create_worktree(card_id)
-                logger.info(f"Rule '{rule.name}': using worktree {worktree_path}")
+                # Create worktree (or use cwd if no git repo)
+                if self.worktree_manager:
+                    worktree_path = self.worktree_manager.create_worktree(card_id)
+                    logger.info(f"Rule '{rule.name}': using worktree {worktree_path}")
+                else:
+                    worktree_path = self.cwd
+                    logger.info(f"Rule '{rule.name}': using cwd {worktree_path}")
 
                 session = ActiveSession(card_id=card_id, worktree_path=worktree_path)
                 self._active_sessions[card_id] = session

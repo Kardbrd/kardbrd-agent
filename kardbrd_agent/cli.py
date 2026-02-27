@@ -127,9 +127,21 @@ def start(
     config_table.add_column("Key", style="dim")
     config_table.add_column("Value")
 
-    config_table.add_row("Working directory", str(cwd or Path.cwd()))
-    if worktrees_dir:
-        config_table.add_row("Worktrees directory", str(worktrees_dir))
+    resolved_cwd = cwd or Path.cwd()
+    is_git_repo = (resolved_cwd / ".git").exists()
+
+    config_table.add_row("Working directory", str(resolved_cwd))
+    if is_git_repo:
+        config_table.add_row("Worktree isolation", "[green]enabled[/green] (git repo detected)")
+        if worktrees_dir:
+            config_table.add_row("Worktrees directory", str(worktrees_dir))
+    else:
+        config_table.add_row("Worktree isolation", "[yellow]disabled[/yellow] (no git repo)")
+        if worktrees_dir or setup_cmd:
+            console.print(
+                "[yellow]Warning: --worktrees-dir and --setup-cmd are ignored "
+                "when working directory is not a git repository[/yellow]"
+            )
     config_table.add_row("Timeout", f"{timeout}s")
     config_table.add_row("Max concurrent", str(max_concurrent))
     config_table.add_row("Executor", executor)

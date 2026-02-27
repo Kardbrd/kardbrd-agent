@@ -1951,3 +1951,123 @@ class TestBotCard:
         skills = manager._discover_skills()
 
         assert ("custom", "custom") in skills
+
+
+class TestNonGitRepo:
+    """Tests for non-git repo (worktree-disabled) mode."""
+
+    @pytest.mark.asyncio
+    async def test_start_without_git_repo_sets_worktree_manager_none(self, tmp_path):
+        """Test worktree_manager is None when cwd is not a git repo."""
+        from unittest.mock import patch
+
+        manager = _make_manager(cwd=tmp_path)
+        manager._ensure_bot_card = MagicMock()
+        manager._ensure_wizard_card = AsyncMock()
+
+        mock_conn = MagicMock()
+        mock_conn.register_handler = MagicMock()
+        mock_conn.connect = AsyncMock(return_value=None)
+
+        mock_executor = MagicMock()
+        mock_executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
+        mock_executor_cls = MagicMock(return_value=mock_executor)
+
+        with (
+            patch("kardbrd_agent.manager.KardbrdClient"),
+            patch("kardbrd_agent.manager.ClaudeExecutor", mock_executor_cls),
+            patch("kardbrd_agent.manager.WebSocketAgentConnection", return_value=mock_conn),
+            patch("asyncio.gather", new_callable=AsyncMock),
+        ):
+            await manager.start()
+
+        assert manager.worktree_manager is None
+
+    @pytest.mark.asyncio
+    async def test_start_with_git_repo_sets_worktree_manager(self, git_repo):
+        """Test worktree_manager is set when cwd is a git repo."""
+        from unittest.mock import patch
+
+        manager = _make_manager(cwd=git_repo)
+        manager._ensure_bot_card = MagicMock()
+        manager._ensure_wizard_card = AsyncMock()
+
+        mock_conn = MagicMock()
+        mock_conn.register_handler = MagicMock()
+        mock_conn.connect = AsyncMock(return_value=None)
+
+        mock_executor = MagicMock()
+        mock_executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
+        mock_executor_cls = MagicMock(return_value=mock_executor)
+
+        with (
+            patch("kardbrd_agent.manager.KardbrdClient"),
+            patch("kardbrd_agent.manager.ClaudeExecutor", mock_executor_cls),
+            patch("kardbrd_agent.manager.WebSocketAgentConnection", return_value=mock_conn),
+            patch("asyncio.gather", new_callable=AsyncMock),
+        ):
+            await manager.start()
+
+        assert manager.worktree_manager is not None
+
+    @pytest.mark.asyncio
+    async def test_process_mention_uses_cwd_when_no_worktree_manager(self):
+        """Test _process_mention falls back to cwd when worktree_manager is None."""
+        manager = _make_manager(cwd="/tmp/no-git")
+
+        manager.client = MagicMock()
+        manager.client.get_card_markdown.return_value = "# Card"
+        manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
+        manager.executor.extract_command.return_value = "/kp"
+        manager.executor.build_prompt.return_value = "prompt"
+        manager.executor.execute = AsyncMock(
+            return_value=ClaudeResult(success=True, result_text="Done")
+        )
+        manager.worktree_manager = None  # No git repo
+        manager._has_recent_bot_comment = MagicMock(return_value=False)
+
+        await manager._process_mention("abc12345", "comm1", "@coder hi", "Paul")
+
+        # executor should receive cwd, not a worktree path
+        call_kwargs = manager.executor.execute.call_args[1]
+        assert call_kwargs["cwd"] == Path("/tmp/no-git")
+
+    @pytest.mark.asyncio
+    async def test_process_rule_uses_cwd_when_no_worktree_manager(self):
+        """Test _process_rule falls back to cwd when worktree_manager is None."""
+        rule = Rule(name="ideas", events=["card_moved"], action="/ke")
+        manager = _make_manager(cwd="/tmp/no-git")
+
+        manager.client = MagicMock()
+        manager.client.get_card_markdown.return_value = "# Card"
+        manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
+        manager.executor.build_prompt.return_value = "prompt"
+        manager.executor.execute = AsyncMock(
+            return_value=ClaudeResult(success=True, result_text="Done")
+        )
+        manager.worktree_manager = None  # No git repo
+        manager._has_recent_bot_comment = MagicMock(return_value=True)
+
+        await manager._process_rule("abc12345", rule, {"card_id": "abc12345"})
+
+        call_kwargs = manager.executor.execute.call_args[1]
+        assert call_kwargs["cwd"] == Path("/tmp/no-git")
+
+    @pytest.mark.asyncio
+    async def test_cleanup_worktree_noop_when_no_worktree_manager(self):
+        """Test _cleanup_worktree does nothing when worktree_manager is None."""
+        manager = _make_manager()
+        manager.worktree_manager = None
+
+        # Should not raise
+        await manager._cleanup_worktree("abc12345")
