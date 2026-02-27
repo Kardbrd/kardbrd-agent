@@ -372,7 +372,7 @@ class ClaudeExecutor:
         cmd = [
             "claude",
             "-p",
-            prompt,
+            "-",
             "--output-format=stream-json",
             "--verbose",
             "--dangerously-skip-permissions",
@@ -400,15 +400,16 @@ class ClaudeExecutor:
         try:
             process = await asyncio.create_subprocess_exec(
                 *cmd,
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=working_dir,
             )
 
-            # Collect output with timeout
+            # Collect output with timeout — pipe prompt via stdin to avoid ARG_MAX
             try:
                 stdout, stderr = await asyncio.wait_for(
-                    process.communicate(),
+                    process.communicate(input=prompt.encode()),
                     timeout=self.timeout,
                 )
             except TimeoutError:
