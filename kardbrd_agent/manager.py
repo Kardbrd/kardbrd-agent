@@ -558,19 +558,22 @@ class ProxyManager:
             if not session or not session.stream_ws:
                 return
             try:
-                await session.stream_ws.send(
-                    json.dumps(
-                        {
-                            "type": "stream_chunk",
-                            "card_id": card_id,
-                            "text": content,
-                            "chunk_type": chunk_type,
-                            "sequence": seq,
-                        }
-                    )
+                msg = json.dumps(
+                    {
+                        "type": "stream_chunk",
+                        "card_id": card_id,
+                        "text": content,
+                        "chunk_type": chunk_type,
+                        "sequence": seq,
+                    }
+                )
+                await session.stream_ws.send(msg)
+                logger.debug(
+                    f"Stream chunk sent: card={card_id} seq={seq} type={chunk_type} len={len(msg)}"
                 )
                 seq += 1
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Stream chunk send failed for card {card_id} seq={seq}: {e}")
                 session.stream_ws = None
 
         return on_chunk
@@ -583,6 +586,7 @@ class ProxyManager:
                 await session.stream_ws.close()
             session.stream_ws = None
             session.streaming = False
+            logger.info(f"Closed stream WebSocket for card {card_id}")
 
     async def _handle_comment_created(self, message: dict) -> None:
         """Handle new comment events."""
