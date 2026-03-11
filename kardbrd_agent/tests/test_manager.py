@@ -1953,6 +1953,126 @@ class TestBotCard:
 
         assert ("custom", "custom") in skills
 
+    def test_discover_skills_from_skills_dir(self, tmp_path):
+        """Test _discover_skills scans .claude/skills/<name>/*.md."""
+        skills_dir = tmp_path / ".claude" / "skills" / "deploy"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "deploy.md").write_text("# Deploy to prod\n\nDeploy instructions.")
+        manager = _make_manager(cwd=str(tmp_path))
+        skills = manager._discover_skills()
+
+        assert ("deploy", "Deploy to prod") in skills
+
+    def test_discover_skills_both_commands_and_skills(self, tmp_path):
+        """Test _discover_skills merges both directories, commands win on conflict."""
+        commands_dir = tmp_path / ".claude" / "commands"
+        commands_dir.mkdir(parents=True)
+        (commands_dir / "ke.md").write_text("# Explore\n\nBody.")
+
+        skills_dir = tmp_path / ".claude" / "skills" / "deploy"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "deploy.md").write_text("# Deploy\n\nBody.")
+
+        # Same name in skills — commands should take precedence
+        ke_skill = tmp_path / ".claude" / "skills" / "ke"
+        ke_skill.mkdir(parents=True)
+        (ke_skill / "ke.md").write_text("# Explore Override\n\nDifferent.")
+
+        manager = _make_manager(cwd=str(tmp_path))
+        skills = manager._discover_skills()
+
+        assert ("ke", "Explore") in skills  # commands wins
+        assert ("deploy", "Deploy") in skills
+        # Ensure no duplicate ke entry
+        names = [name for name, _ in skills]
+        assert names.count("ke") == 1
+
+    def test_discover_skills_empty_skills_subdir(self, tmp_path):
+        """Test _discover_skills skips skill subdirectories with no .md files."""
+        skills_dir = tmp_path / ".claude" / "skills" / "empty-skill"
+        skills_dir.mkdir(parents=True)
+        manager = _make_manager(cwd=str(tmp_path))
+        skills = manager._discover_skills()
+
+        assert skills == []
+
+    def test_register_skills_success(self, tmp_path):
+        """Test _register_skills PUTs skills to the API."""
+        commands_dir = tmp_path / ".claude" / "commands"
+        commands_dir.mkdir(parents=True)
+        (commands_dir / "ke.md").write_text("# Explore\n\nBody.")
+        (commands_dir / "ki.md").write_text("# Implement\n\nBody.")
+
+        manager = _make_manager(cwd=str(tmp_path))
+        mock_client = MagicMock()
+        mock_client._request.return_value = {"count": 2}
+        manager.client = mock_client
+
+        manager._register_skills()
+
+        mock_client._request.assert_called_once_with(
+            "PUT",
+            "/api/bots/skills/",
+            json={
+                "skills": [
+                    {"name": "ke", "description": "Explore"},
+                    {"name": "ki", "description": "Implement"},
+                ]
+            },
+        )
+
+    def test_register_skills_no_skills_clears_stale(self, tmp_path):
+        """Test _register_skills PUTs empty list to clear stale skills."""
+        manager = _make_manager(cwd=str(tmp_path))
+        mock_client = MagicMock()
+        mock_client._request.return_value = {"count": 0}
+        manager.client = mock_client
+
+        manager._register_skills()
+
+        mock_client._request.assert_called_once_with(
+            "PUT",
+            "/api/bots/skills/",
+            json={"skills": []},
+        )
+
+    def test_register_skills_api_failure_is_non_fatal(self, tmp_path):
+        """Test _register_skills logs warning but does not raise on API error."""
+        commands_dir = tmp_path / ".claude" / "commands"
+        commands_dir.mkdir(parents=True)
+        (commands_dir / "ke.md").write_text("# Explore\n\nBody.")
+
+        manager = _make_manager(cwd=str(tmp_path))
+        mock_client = MagicMock()
+        mock_client._request.side_effect = Exception("API down")
+        manager.client = mock_client
+
+        # Should not raise
+        manager._register_skills()
+
+    @pytest.mark.asyncio
+    async def test_skills_refresh_loop_calls_register(self, tmp_path):
+        """Test _skills_refresh_loop re-registers skills periodically."""
+        commands_dir = tmp_path / ".claude" / "commands"
+        commands_dir.mkdir(parents=True)
+        (commands_dir / "ke.md").write_text("# Explore\n\nBody.")
+
+        manager = _make_manager(cwd=str(tmp_path))
+        manager._running = True
+        mock_client = MagicMock()
+        mock_client._request.return_value = {"count": 1}
+        manager.client = mock_client
+
+        async def fake_sleep(seconds):
+            # Stop the loop after the first iteration completes
+            manager._running = False
+
+        with patch("kardbrd_agent.manager.asyncio.sleep", side_effect=fake_sleep):
+            await manager._skills_refresh_loop()
+
+        # Should have called _register_skills once (after the single sleep)
+        mock_client._request.assert_called_once()
+
 
 class TestNonGitRepo:
     """Tests for non-git repo (worktree-disabled) mode."""

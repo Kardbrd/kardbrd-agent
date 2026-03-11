@@ -167,6 +167,9 @@ class ProxyManager:
         # Create or update bot card on the board
         self._ensure_bot_card()
 
+        # Register skills with the server (non-fatal)
+        self._register_skills()
+
         # Initialize WebSocket connection
         self.connection = WebSocketAgentConnection(
             base_url=self.api_url,
@@ -183,7 +186,11 @@ class ProxyManager:
         logger.info(f"Listening for {self.mention_keyword} mentions...")
 
         # Start schedule manager if schedules configured
-        tasks = [self.connection.connect(), self._status_ping_loop()]
+        tasks = [
+            self.connection.connect(),
+            self._status_ping_loop(),
+            self._skills_refresh_loop(),
+        ]
         if self._schedules:
             self.schedule_manager = ScheduleManager(
                 schedules=self._schedules,
@@ -270,26 +277,57 @@ class ProxyManager:
         """Return the expected title for this agent's bot card."""
         return f"\U0001f916 {self.agent_name}"
 
+    @staticmethod
+    def _extract_skill_title(md_file: Path) -> str:
+        """Extract the title from a skill markdown file.
+
+        Returns the first ``# Heading`` found, or the filename stem as
+        fallback.
+        """
+        title = md_file.stem
+        try:
+            with open(md_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("# "):
+                        title = line[2:].strip()
+                        break
+        except OSError:
+            pass
+        return title
+
     def _discover_skills(self) -> list[tuple[str, str]]:
-        """Scan .claude/commands/*.md and return [(command_name, title), ...]."""
-        commands_dir = self.cwd / ".claude" / "commands"
-        if not commands_dir.is_dir():
-            return []
-        skills = []
-        for md_file in sorted(commands_dir.glob("*.md")):
-            cmd_name = md_file.stem
-            title = cmd_name  # fallback
-            try:
-                with open(md_file) as f:
-                    for line in f:
-                        line = line.strip()
-                        if line.startswith("# "):
-                            title = line[2:].strip()
-                            break
-            except OSError:
-                pass
-            skills.append((cmd_name, title))
-        return skills
+        """Scan .claude/commands/*.md and .claude/skills/*/*.md.
+
+        Returns ``[(command_name, title), ...]`` with duplicates removed
+        (commands take precedence over skills with the same name).
+        """
+        seen: dict[str, str] = {}  # name → title (first wins)
+        claude_dir = self.cwd / ".claude"
+
+        # 1. .claude/commands/*.md  (flat files, name = stem)
+        commands_dir = claude_dir / "commands"
+        if commands_dir.is_dir():
+            for md_file in sorted(commands_dir.glob("*.md")):
+                name = md_file.stem
+                if name not in seen:
+                    seen[name] = self._extract_skill_title(md_file)
+
+        # 2. .claude/skills/<skill-name>/*.md  (subdirectories, name = dir name)
+        skills_dir = claude_dir / "skills"
+        if skills_dir.is_dir():
+            for skill_subdir in sorted(skills_dir.iterdir()):
+                if not skill_subdir.is_dir():
+                    continue
+                name = skill_subdir.name
+                if name in seen:
+                    continue
+                # Use the first .md file found in the subdirectory
+                md_files = sorted(skill_subdir.glob("*.md"))
+                if md_files:
+                    seen[name] = self._extract_skill_title(md_files[0])
+
+        return [(name, title) for name, title in sorted(seen.items())]
 
     def _build_bot_card_description(self) -> str:
         """Build the markdown description for the bot card."""
@@ -474,6 +512,33 @@ class ProxyManager:
 
             # Wait 30 seconds before next ping
             await asyncio.sleep(30)
+
+    # ------------------------------------------------------------------
+    # Skills registration
+    # ------------------------------------------------------------------
+
+    def _register_skills(self) -> None:
+        """PUT discovered skills to ``/api/bots/skills/``.
+
+        Non-fatal: logs a warning on failure so startup is never blocked.
+        """
+        skills = self._discover_skills()
+        payload = {"skills": [{"name": name, "description": title} for name, title in skills]}
+        try:
+            result = self.client._request("PUT", "/api/bots/skills/", json=payload)
+            count = result.get("count", len(skills)) if isinstance(result, dict) else len(skills)
+            logger.info(f"Registered {count} skill(s) with server")
+        except Exception as e:
+            logger.warning(f"Failed to register skills: {e}")
+
+    async def _skills_refresh_loop(self) -> None:
+        """Re-register skills every 12 hours to stay within the 24h TTL."""
+        while self._running:
+            await asyncio.sleep(12 * 3600)  # 12 hours
+            try:
+                await asyncio.to_thread(self._register_skills)
+            except Exception as e:
+                logger.warning(f"Skills refresh failed: {e}")
 
     async def _handle_board_event(self, message: dict) -> None:
         """
