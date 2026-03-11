@@ -1004,17 +1004,34 @@ DO NOT do any new work - just publish what you already did."""
         if not self.rule_engine.rules:
             return
 
-        # Enrich message with card labels when rules need them (exclude_label or require_label)
-        needs_labels = any(r.exclude_label or r.require_label for r in self.rule_engine.rules)
-        card_id = message.get("card_id")
-        if needs_labels and card_id and "card_labels" not in message:
-            try:
-                card = self.client.get_card(card_id)
-                labels = card.get("labels", [])
-                message["card_labels"] = [lbl.get("name", "") for lbl in labels]
-            except Exception as e:
-                logger.warning(f"Failed to fetch card labels for {card_id}: {e}")
-                message["card_labels"] = []
+        # Populate card data for rules that need API-fetched fields
+        needs_labels = any(
+            r.exclude_label or r.require_label for r in self.rule_engine.rules
+        )
+        needs_assignee = any(r.assignee for r in self.rule_engine.rules)
+        needs_card_fetch = (needs_labels and "card_labels" not in message) or (
+            needs_assignee and "card_assignee_id" not in message
+        )
+
+        if needs_card_fetch:
+            card_id = message.get("card_id")
+            if card_id:
+                try:
+                    card = self.client.get_card(card_id)
+                    if needs_labels and "card_labels" not in message:
+                        label_names = [lbl.get("name", "") for lbl in card.get("labels", [])]
+                        message["card_labels"] = label_names
+                    if needs_assignee and "card_assignee_id" not in message:
+                        assignee_data = card.get("assignee")
+                        message["card_assignee_id"] = (
+                            assignee_data.get("id", "") if assignee_data else ""
+                        )
+                except Exception:
+                    logger.warning(f"Failed to fetch card data for {card_id}")
+                    if needs_labels and "card_labels" not in message:
+                        message["card_labels"] = []
+                    if needs_assignee and "card_assignee_id" not in message:
+                        message["card_assignee_id"] = ""
 
         matched_rules = self.rule_engine.match(event_type, message)
         if not matched_rules:
