@@ -1,13 +1,16 @@
 """ProxyManager - WebSocket-based agent that spawns Claude for @mentions."""
 
 import asyncio
+import contextlib
 import importlib.metadata
+import json
 import logging
 import os
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from kardbrd_client import KardbrdAPIError, KardbrdClient, WebSocketAgentConnection
 
@@ -39,6 +42,8 @@ class ActiveSession:
     comment_id: str | None = field(default=None)
     process: asyncio.subprocess.Process | None = field(default=None)
     session_id: str | None = field(default=None)
+    stream_ws: Any | None = field(default=None)
+    streaming: bool = field(default=False)
 
 
 class ProxyManager:
@@ -564,11 +569,89 @@ class ProxyManager:
             list_name = message.get("list_name", "unknown")
             logger.info(f"Signal received: card_moved for card {card_id} to '{list_name}'")
             await self._handle_card_moved(message)
+        elif event_type == "stream_requested":
+            stream_url = message.get("stream_url", "")
+            logger.info(f"Signal received: stream_requested for card {card_id}")
+            await self._handle_stream_requested(card_id, stream_url)
         else:
             logger.debug(f"Ignoring event type: {event_type}")
 
         # Check kardbrd.yml rules for matching automation
         await self._check_rules(event_type, message)
+
+    async def _handle_stream_requested(self, card_id: str, stream_url: str) -> None:
+        """Handle stream_requested events by connecting to the stream WebSocket.
+
+        If there is an active session for the card, opens a new WebSocket to
+        the signed stream URL so that subsequent executor output can be
+        forwarded to watchers.
+
+        Args:
+            card_id: The card that should be streamed.
+            stream_url: Signed WebSocket URL to connect to.
+        """
+        import websockets
+
+        session = self._active_sessions.get(card_id)
+        if not session:
+            logger.info(f"No active session for card {card_id}, ignoring stream_requested")
+            return
+
+        if session.stream_ws:
+            logger.debug(f"Stream WS already open for card {card_id}")
+            return
+
+        try:
+            session.stream_ws = await websockets.connect(stream_url)
+            session.streaming = True
+            logger.info(f"Opened stream WebSocket for card {card_id}")
+        except Exception as e:
+            logger.warning(f"Failed to open stream WebSocket for card {card_id}: {e}")
+
+    def _make_on_chunk(self, card_id: str):
+        """Create an on_chunk callback that sends chunks to the stream WebSocket.
+
+        Returns:
+            An async callback ``(content, chunk_type) -> None`` suitable for
+            passing to ``executor.execute(on_chunk=...)``.
+        """
+        seq = 0
+
+        async def on_chunk(content: str, chunk_type: str) -> None:
+            nonlocal seq
+            session = self._active_sessions.get(card_id)
+            if not session or not session.stream_ws:
+                return
+            try:
+                msg = json.dumps(
+                    {
+                        "type": "stream_chunk",
+                        "card_id": card_id,
+                        "text": content,
+                        "chunk_type": chunk_type,
+                        "sequence": seq,
+                    }
+                )
+                await session.stream_ws.send(msg)
+                logger.debug(
+                    f"Stream chunk sent: card={card_id} seq={seq} type={chunk_type} len={len(msg)}"
+                )
+                seq += 1
+            except Exception as e:
+                logger.warning(f"Stream chunk send failed for card {card_id} seq={seq}: {e}")
+                session.stream_ws = None
+
+        return on_chunk
+
+    async def _close_stream_ws(self, card_id: str) -> None:
+        """Close the stream WebSocket for a card if open."""
+        session = self._active_sessions.get(card_id)
+        if session and session.stream_ws:
+            with contextlib.suppress(Exception):
+                await session.stream_ws.close()
+            session.stream_ws = None
+            session.streaming = False
+            logger.info(f"Closed stream WebSocket for card {card_id}")
 
     async def _handle_comment_created(self, message: dict) -> None:
         """Handle new comment events."""
@@ -742,7 +825,8 @@ class ProxyManager:
 
                 # Execute agent in worktree directory
                 logger.info(f"Spawning agent in {worktree_path}...")
-                result = await self.executor.execute(prompt, cwd=worktree_path)
+                on_chunk = self._make_on_chunk(card_id)
+                result = await self.executor.execute(prompt, cwd=worktree_path, on_chunk=on_chunk)
 
                 # Store session_id in active session
                 if session:
@@ -797,6 +881,8 @@ class ProxyManager:
                     logger.error("Failed to post error comment")
 
             finally:
+                # Clean up stream WebSocket if open
+                await self._close_stream_ws(card_id)
                 # Clear processing flag and remove from active sessions
                 self._processing = False
                 self._active_sessions.pop(card_id, None)
@@ -1010,10 +1096,12 @@ DO NOT do any new work - just publish what you already did."""
                 )
 
                 logger.info(f"Rule '{rule.name}': spawning agent in {worktree_path}")
+                on_chunk = self._make_on_chunk(card_id)
                 result = await self.executor.execute(
                     prompt,
                     cwd=worktree_path,
                     model=rule.model_id,
+                    on_chunk=on_chunk,
                 )
 
                 if session:
@@ -1050,6 +1138,7 @@ DO NOT do any new work - just publish what you already did."""
                     logger.error("Failed to post error comment for rule")
 
             finally:
+                await self._close_stream_ws(card_id)
                 self._processing = False
                 self._active_sessions.pop(card_id, None)
 

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from .executor import AuthStatus, ExecutorResult, build_prompt, extract_command
@@ -176,6 +177,7 @@ class GooseExecutor:
         resume_session_id: str | None = None,
         cwd: Path | None = None,
         model: str | None = None,
+        on_chunk: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> ExecutorResult:
         """
         Execute Goose CLI with the given prompt.
@@ -185,6 +187,9 @@ class GooseExecutor:
             resume_session_id: Optional session name to resume
             cwd: Optional working directory override
             model: Optional model specification
+            on_chunk: Optional async callback for streaming output chunks.
+                Called with (content: str, chunk_type: str) where chunk_type
+                is "assistant" or "tool_use".
 
         Returns:
             ExecutorResult with the execution outcome
@@ -241,10 +246,16 @@ class GooseExecutor:
 
             # Pipe prompt via stdin to avoid ARG_MAX limit
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(input=prompt.encode()),
-                    timeout=self.timeout,
-                )
+                if on_chunk:
+                    stdout, stderr = await asyncio.wait_for(
+                        self._read_with_chunks(process, prompt, on_chunk),
+                        timeout=self.timeout,
+                    )
+                else:
+                    stdout, stderr = await asyncio.wait_for(
+                        process.communicate(input=prompt.encode()),
+                        timeout=self.timeout,
+                    )
             except TimeoutError:
                 # Graceful shutdown: SIGTERM first, then SIGKILL after 5s
                 process.terminate()
@@ -278,6 +289,41 @@ class GooseExecutor:
                 result_text="",
                 error=str(e),
             )
+
+    @staticmethod
+    async def _read_with_chunks(
+        process: asyncio.subprocess.Process,
+        prompt: str,
+        on_chunk: Callable[[str, str], Awaitable[None]],
+    ) -> tuple[bytes, bytes]:
+        """Read subprocess output line-by-line, forwarding chunks via callback.
+
+        Goose emits ``AgentMessageChunk`` for text and ``ToolCallUpdate`` for
+        tool invocations.
+
+        Returns:
+            Tuple of (stdout_bytes, stderr_bytes).
+        """
+        process.stdin.write(prompt.encode())
+        await process.stdin.drain()
+        process.stdin.close()
+
+        lines: list[bytes] = []
+        async for line in process.stdout:
+            lines.append(line)
+            try:
+                parsed = json.loads(line)
+                msg_type = parsed.get("type")
+                if msg_type == "AgentMessageChunk":
+                    await on_chunk(parsed.get("content", ""), "assistant")
+                elif msg_type == "ToolCallUpdate":
+                    await on_chunk(json.dumps(parsed), "tool_use")
+            except (json.JSONDecodeError, Exception):
+                pass
+
+        stderr_data = await process.stderr.read()
+        await process.wait()
+        return b"".join(lines), stderr_data
 
     def _parse_output(self, stdout: str, stderr: str, returncode: int | None) -> ExecutorResult:
         """
