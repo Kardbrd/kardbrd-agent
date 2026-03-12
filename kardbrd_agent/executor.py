@@ -410,6 +410,7 @@ class ClaudeExecutor:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=working_dir,
+                limit=10 * 1024 * 1024,  # 10 MiB — stream-json lines can exceed default 64 KB
             )
 
             # Collect output with timeout — pipe prompt via stdin to avoid ARG_MAX

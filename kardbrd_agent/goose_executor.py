@@ -242,6 +242,7 @@ class GooseExecutor:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=working_dir,
                 env=env,
+                limit=10 * 1024 * 1024,  # 10 MiB — stream-json lines can exceed default 64 KB
             )
 
             # Pipe prompt via stdin to avoid ARG_MAX limit
