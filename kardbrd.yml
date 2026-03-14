@@ -1,70 +1,54 @@
-# kardbrd.yml — KABot workflow rules for kardbrd-agent repository
+# kardbrd.yml — MBPBot workflow rules for Agents & Clients board
 #
-# All list-based rules use require_label: Agent so KABot only acts on
-# Agent-labeled cards. Server cards (without Agent label) are left to MBPBot.
-# @mentions always work regardless of labels (built-in handler).
+# Board has 3 lists: To Do, In Progress, Done
+# All list-based rules use require_label: Agent so MBPBot only acts on
+# Agent-labeled cards. @mentions always work regardless of labels.
 #
 # Reaction rules use require_user to restrict who can trigger actions.
 # Paul's user ID: E21K9jmv
 ---
 board_id: 0gl5MlBZ
-agent: KABot
+agent: MBPBot
 api_url: http://app.kardbrd.com
 
 rules:
-  # ── Stop active agent session ────────────────────────────────────
+  # ── Stop active agent session ──────────────────────────────────
   - name: Stop agent
     event: reaction_added
     emoji: "🛑"
     action: __stop__
 
-  # ── List-based workflow rules (Agent-labeled cards only) ─────────
+  # ── List-based workflow (Agent-labeled cards only) ─────────────
 
-  # Card lands in Ideas → deep exploration
-  - name: Explore new ideas
+  # Card lands in To Do → explore and plan
+  - name: Explore and plan new cards
     event:
       - card_created
       - card_moved
-    list: Ideas
-    model: opus
+    list: To Do
     require_label: Agent
+    model: opus
     action: /ke
 
-  # Card moves to Plans → create detailed implementation plan
-  - name: Plan on move to Plans
+  # Card moves to In Progress → implement
+  - name: Implement on move to In Progress
     event: card_moved
-    list: Plans
-    model: opus
+    list: In Progress
     require_label: Agent
-    action: /kp
-
-  # Card moves to In progress → implement the plan
-  - name: Implement on move to In progress
-    event: card_moved
-    list: In progress
     model: sonnet
-    require_label: Agent
     action: /ki
 
-  # Card moves to Review → full code review
-  - name: Review on move to Review
-    event: card_moved
-    list: Review
-    model: opus
-    require_label: Agent
-    action: /kr
+  # ── Reaction-based triggers ────────────────────────────────────
 
-  # ── Reaction-based triggers ──────────────────────────────────────
-
-  # Paul reacts ✅ on a review comment → merge PR to main
-  - name: Ship card via review approval
+  # ✅ reaction → review and merge PR
+  - name: Ship card via approval
     event: reaction_added
     emoji: "✅"
     require_label: Agent
     require_user: E21K9jmv
     model: sonnet
     action: |
-      The operator approved the review by reacting with ✅.
+      The operator approved this card by reacting with ✅.
       Ship this card to production (merge the PR into main):
       1. Run `git status` and `git log --oneline main..HEAD` to see what's on this branch
       2. If there are uncommitted changes, commit them

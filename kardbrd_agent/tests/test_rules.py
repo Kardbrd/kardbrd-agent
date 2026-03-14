@@ -1167,7 +1167,7 @@ class TestLoadRules:
         engine, config = load_rules(own)
         assert len(engine.rules) > 0, "kardbrd.yml should contain at least one rule"
         assert config.board_id == "0gl5MlBZ"
-        assert config.agent_name == "KABot"
+        assert config.agent_name == "MBPBot"
 
     def test_load_mbpbot_kardbrd_yml(self):
         """Test MBPBot's kardbrd.yml fixture loads without errors."""
