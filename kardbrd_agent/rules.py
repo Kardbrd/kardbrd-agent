@@ -86,6 +86,7 @@ KNOWN_FIELDS = frozenset(
         "emoji",
         "require_user",
         "assignee",
+        "comment_author",
     }
 )
 
@@ -159,6 +160,7 @@ class Rule:
     emoji: str | None = None
     require_user: str | None = None
     assignee: list[str] | None = None
+    comment_author: str | None = None
 
     @property
     def is_stop(self) -> bool:
@@ -283,6 +285,15 @@ class RuleEngine:
             if not card_assignee_id or card_assignee_id not in rule.assignee:
                 return False
 
+        if rule.comment_author is not None:
+            if rule.comment_author == "__self__":
+                if not message.get("comment_author_is_bot", False):
+                    return False
+            else:
+                comment_author_id = message.get("comment_author_id", "")
+                if comment_author_id != rule.comment_author:
+                    return False
+
         return True
 
     def _event_matches(self, rule: Rule, event_type: str) -> bool:
@@ -369,6 +380,7 @@ def parse_rules(data: list[dict]) -> list[Rule]:
             emoji=entry.get("emoji"),
             require_user=entry.get("require_user"),
             assignee=assignee,
+            comment_author=entry.get("comment_author"),
         )
         rules.append(rule)
 

@@ -405,6 +405,8 @@ class ProxyManager:
                     conditions.append(f"exclude label `{rule.exclude_label}`")
                 if rule.require_user:
                     conditions.append(f"require user `{rule.require_user}`")
+                if rule.comment_author:
+                    conditions.append(f"comment author `{rule.comment_author}`")
                 if conditions:
                     lines.append(f"- **Conditions:** {', '.join(conditions)}")
                 if rule.model:
@@ -1005,9 +1007,7 @@ DO NOT do any new work - just publish what you already did."""
             return
 
         # Populate card data for rules that need API-fetched fields
-        needs_labels = any(
-            r.exclude_label or r.require_label for r in self.rule_engine.rules
-        )
+        needs_labels = any(r.exclude_label or r.require_label for r in self.rule_engine.rules)
         needs_assignee = any(r.assignee for r in self.rule_engine.rules)
         needs_card_fetch = (needs_labels and "card_labels" not in message) or (
             needs_assignee and "card_assignee_id" not in message
@@ -1032,6 +1032,22 @@ DO NOT do any new work - just publish what you already did."""
                         message["card_labels"] = []
                     if needs_assignee and "card_assignee_id" not in message:
                         message["card_assignee_id"] = ""
+
+        # Enrich comment author data for comment_author conditions
+        needs_comment_author = any(r.comment_author for r in self.rule_engine.rules)
+        if needs_comment_author and "comment_author_is_bot" not in message:
+            card_id = message.get("card_id")
+            comment_id = message.get("comment_id")
+            if card_id and comment_id:
+                try:
+                    comment = self.client.get_comment(card_id, comment_id)
+                    author = comment.get("author", {})
+                    message["comment_author_is_bot"] = author.get("is_bot", False)
+                    message["comment_author_id"] = author.get("id", "")
+                except Exception:
+                    logger.warning(f"Failed to fetch comment {comment_id} for {card_id}")
+                    message["comment_author_is_bot"] = False
+                    message["comment_author_id"] = ""
 
         matched_rules = self.rule_engine.match(event_type, message)
         if not matched_rules:

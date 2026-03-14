@@ -2410,3 +2410,134 @@ class TestCheckRulesAssigneeFetch:
         manager.client.get_card.assert_called_once_with("abc123")
         assert message["card_assignee_id"] == "user-alice"
         assert message["card_labels"] == ["Bug"]
+
+
+class TestCheckRulesCommentAuthorFetch:
+    """Tests for _check_rules fetching comment author data from API."""
+
+    @pytest.mark.asyncio
+    async def test_fetches_comment_author_when_rules_use_comment_author(self):
+        """Test _check_rules fetches comment author from API."""
+        rule = Rule(
+            name="bot reaction",
+            events=["reaction_added"],
+            action="/ship",
+            emoji="✅",
+            comment_author="__self__",
+        )
+        engine = RuleEngine(rules=[rule])
+        manager = _make_manager(rule_engine=engine)
+        manager.client = MagicMock()
+        manager.client.get_comment.return_value = {
+            "content": "Here is my plan...",
+            "author": {"id": "bot123", "is_bot": True},
+        }
+        manager._process_rule = AsyncMock()
+
+        message = {
+            "card_id": "abc123",
+            "comment_id": "comment456",
+            "emoji": "✅",
+        }
+        await manager._check_rules("reaction_added", message)
+
+        manager.client.get_comment.assert_called_once_with("abc123", "comment456")
+        assert message["comment_author_is_bot"] is True
+        assert message["comment_author_id"] == "bot123"
+        manager._process_rule.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_skips_fetch_when_no_comment_author_rules(self):
+        """Test _check_rules skips comment fetch when no rules use comment_author."""
+        rule = Rule(name="all", events=["reaction_added"], action="/ke", emoji="✅")
+        engine = RuleEngine(rules=[rule])
+        manager = _make_manager(rule_engine=engine)
+        manager.client = MagicMock()
+        manager._process_rule = AsyncMock()
+
+        message = {"card_id": "abc123", "comment_id": "c1", "emoji": "✅"}
+        await manager._check_rules("reaction_added", message)
+
+        manager.client.get_comment.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_fetch_when_already_in_message(self):
+        """Test _check_rules skips fetch when comment_author_is_bot already present."""
+        rule = Rule(
+            name="bot reaction",
+            events=["reaction_added"],
+            action="/ship",
+            emoji="✅",
+            comment_author="__self__",
+        )
+        engine = RuleEngine(rules=[rule])
+        manager = _make_manager(rule_engine=engine)
+        manager.client = MagicMock()
+        manager._process_rule = AsyncMock()
+
+        message = {
+            "card_id": "abc123",
+            "comment_id": "c1",
+            "emoji": "✅",
+            "comment_author_is_bot": True,
+        }
+        await manager._check_rules("reaction_added", message)
+
+        manager.client.get_comment.assert_not_called()
+        manager._process_rule.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_no_match_when_comment_not_by_bot(self):
+        """Test rule doesn't match when comment is not by bot."""
+        rule = Rule(
+            name="bot reaction",
+            events=["reaction_added"],
+            action="/ship",
+            emoji="✅",
+            comment_author="__self__",
+        )
+        engine = RuleEngine(rules=[rule])
+        manager = _make_manager(rule_engine=engine)
+        manager.client = MagicMock()
+        manager.client.get_comment.return_value = {
+            "content": "Human comment",
+            "author": {"id": "user321", "is_bot": False},
+        }
+        manager._process_rule = AsyncMock()
+
+        message = {
+            "card_id": "abc123",
+            "comment_id": "c1",
+            "emoji": "✅",
+        }
+        await manager._check_rules("reaction_added", message)
+
+        assert message["comment_author_is_bot"] is False
+        manager._process_rule.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_api_error_defaults_to_not_bot(self):
+        """Test API error defaults to not-bot (rule won't match)."""
+        rule = Rule(
+            name="bot reaction",
+            events=["reaction_added"],
+            action="/ship",
+            emoji="✅",
+            comment_author="__self__",
+        )
+        engine = RuleEngine(rules=[rule])
+        manager = _make_manager(rule_engine=engine)
+        manager.client = MagicMock()
+        manager.client.get_comment.side_effect = Exception("API error")
+        manager._process_rule = AsyncMock()
+
+        message = {
+            "card_id": "abc123",
+            "comment_id": "c1",
+            "emoji": "✅",
+        }
+        await manager._check_rules("reaction_added", message)
+
+        assert message["comment_author_is_bot"] is False
+        assert message["comment_author_id"] == ""
+        manager._process_rule.assert_not_called()
