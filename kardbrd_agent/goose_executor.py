@@ -381,6 +381,7 @@ class GooseExecutor:
         comment_content: str,
         author_name: str,
         board_id: str | None = None,
+        cwd: str | Path | None = None,
     ) -> str:
         """Delegate to module-level build_prompt()."""
         return build_prompt(
@@ -390,6 +391,7 @@ class GooseExecutor:
             comment_content=comment_content,
             author_name=author_name,
             board_id=board_id,
+            cwd=cwd,
         )
 
     def extract_command(self, comment_content: str, mention_keyword: str) -> str:

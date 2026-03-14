@@ -885,3 +885,217 @@ class TestModuleLevelFunctions:
         assert executor.extract_command("@coder /kp", "@coder") == extract_command(
             "@coder /kp", "@coder"
         )
+
+
+class TestLoadAgentFiles:
+    """Tests for load_agent_files()."""
+
+    def test_load_soul_md(self, tmp_path):
+        """SOUL.md content is returned when present."""
+        from kardbrd_agent.executor import load_agent_files
+
+        (tmp_path / "SOUL.md").write_text("You are a helpful bot.")
+        soul, rules = load_agent_files(tmp_path)
+        assert soul == "You are a helpful bot."
+        assert rules == ""
+
+    def test_load_rules_md(self, tmp_path):
+        """RULES.md content is returned when present."""
+        from kardbrd_agent.executor import load_agent_files
+
+        (tmp_path / "RULES.md").write_text("Never push to main.")
+        soul, rules = load_agent_files(tmp_path)
+        assert soul == ""
+        assert rules == "Never push to main."
+
+    def test_load_both(self, tmp_path):
+        """Both SOUL.md and RULES.md are returned when present."""
+        from kardbrd_agent.executor import load_agent_files
+
+        (tmp_path / "SOUL.md").write_text("Identity text")
+        (tmp_path / "RULES.md").write_text("Rules text")
+        soul, rules = load_agent_files(tmp_path)
+        assert soul == "Identity text"
+        assert rules == "Rules text"
+
+    def test_no_files(self, tmp_path):
+        """Empty strings when neither file exists."""
+        from kardbrd_agent.executor import load_agent_files
+
+        soul, rules = load_agent_files(tmp_path)
+        assert soul == ""
+        assert rules == ""
+
+    def test_none_cwd(self):
+        """cwd=None returns empty strings."""
+        from kardbrd_agent.executor import load_agent_files
+
+        soul, rules = load_agent_files(None)
+        assert soul == ""
+        assert rules == ""
+
+
+class TestLoadKnowledge:
+    """Tests for load_knowledge()."""
+
+    def test_no_knowledge_dir(self, tmp_path):
+        """Returns empty string when knowledge/ doesn't exist."""
+        from kardbrd_agent.executor import load_knowledge
+
+        assert load_knowledge(tmp_path) == ""
+
+    def test_knowledge_with_index(self, tmp_path):
+        """index.yaml with always_load doc is included."""
+        from kardbrd_agent.executor import load_knowledge
+
+        knowledge_dir = tmp_path / "knowledge"
+        knowledge_dir.mkdir()
+        (knowledge_dir / "api.md").write_text("API docs here.")
+        (knowledge_dir / "index.yaml").write_text(
+            "documents:\n"
+            "  - path: api.md\n"
+            "    title: API Reference\n"
+            "    always_load: true\n"
+            "  - path: internal.md\n"
+            "    title: Internal\n"
+            "    priority: low\n"
+        )
+        (knowledge_dir / "internal.md").write_text("Internal stuff.")
+
+        result = load_knowledge(tmp_path)
+        assert "## Knowledge" in result
+        assert "### API Reference" in result
+        assert "API docs here." in result
+        assert "Internal" not in result
+
+    def test_knowledge_without_index(self, tmp_path):
+        """All .md files loaded when no index.yaml exists."""
+        from kardbrd_agent.executor import load_knowledge
+
+        knowledge_dir = tmp_path / "knowledge"
+        knowledge_dir.mkdir()
+        (knowledge_dir / "alpha.md").write_text("Alpha content.")
+        (knowledge_dir / "beta.md").write_text("Beta content.")
+
+        result = load_knowledge(tmp_path)
+        assert "## Knowledge" in result
+        assert "### alpha" in result
+        assert "Alpha content." in result
+        assert "### beta" in result
+        assert "Beta content." in result
+
+    def test_knowledge_priority_filtering(self, tmp_path):
+        """Only high-priority and always_load docs included."""
+        from kardbrd_agent.executor import load_knowledge
+
+        knowledge_dir = tmp_path / "knowledge"
+        knowledge_dir.mkdir()
+        (knowledge_dir / "high.md").write_text("High priority.")
+        (knowledge_dir / "low.md").write_text("Low priority.")
+        (knowledge_dir / "always.md").write_text("Always loaded.")
+        (knowledge_dir / "index.yaml").write_text(
+            "documents:\n"
+            "  - path: high.md\n"
+            "    title: High\n"
+            "    priority: high\n"
+            "  - path: low.md\n"
+            "    title: Low\n"
+            "    priority: low\n"
+            "  - path: always.md\n"
+            "    title: Always\n"
+            "    always_load: true\n"
+        )
+
+        result = load_knowledge(tmp_path)
+        assert "High priority." in result
+        assert "Always loaded." in result
+        assert "Low priority." not in result
+
+    def test_knowledge_empty_dir(self, tmp_path):
+        """Empty knowledge/ returns empty string."""
+        from kardbrd_agent.executor import load_knowledge
+
+        (tmp_path / "knowledge").mkdir()
+        assert load_knowledge(tmp_path) == ""
+
+    def test_none_cwd(self):
+        """cwd=None returns empty string."""
+        from kardbrd_agent.executor import load_knowledge
+
+        assert load_knowledge(None) == ""
+
+
+class TestBuildPromptWithAgentFiles:
+    """Tests for build_prompt() with SOUL.md, RULES.md, and knowledge."""
+
+    def test_build_prompt_includes_soul(self, tmp_path):
+        """SOUL.md content appears in prompt."""
+        (tmp_path / "SOUL.md").write_text("I am a coding assistant.")
+        prompt = build_prompt(
+            card_id="abc123",
+            card_markdown="# Card",
+            command="fix bug",
+            comment_content="@coder fix bug",
+            author_name="Paul",
+            cwd=tmp_path,
+        )
+        assert "Agent Identity" in prompt
+        assert "I am a coding assistant." in prompt
+
+    def test_build_prompt_includes_rules(self, tmp_path):
+        """RULES.md content appears in prompt."""
+        (tmp_path / "RULES.md").write_text("Never delete production data.")
+        prompt = build_prompt(
+            card_id="abc123",
+            card_markdown="# Card",
+            command="fix bug",
+            comment_content="@coder fix bug",
+            author_name="Paul",
+            cwd=tmp_path,
+        )
+        assert "Agent Rules" in prompt
+        assert "Never delete production data." in prompt
+
+    def test_build_prompt_includes_knowledge(self, tmp_path):
+        """Knowledge content appears in prompt."""
+        knowledge_dir = tmp_path / "knowledge"
+        knowledge_dir.mkdir()
+        (knowledge_dir / "standards.md").write_text("Coding standards here.")
+        prompt = build_prompt(
+            card_id="abc123",
+            card_markdown="# Card",
+            command="fix bug",
+            comment_content="@coder fix bug",
+            author_name="Paul",
+            cwd=tmp_path,
+        )
+        assert "## Knowledge" in prompt
+        assert "Coding standards here." in prompt
+
+    def test_build_prompt_skill_with_agent_files(self, tmp_path):
+        """Skill command + agent files are combined."""
+        (tmp_path / "SOUL.md").write_text("Bot identity.")
+        prompt = build_prompt(
+            card_id="abc123",
+            card_markdown="# Card",
+            command="/kp",
+            comment_content="@coder /kp",
+            author_name="Paul",
+            cwd=tmp_path,
+        )
+        assert "Agent Identity" in prompt
+        assert "Bot identity." in prompt
+        assert "/kp" in prompt
+
+    def test_build_prompt_no_cwd_no_agent_files(self):
+        """Without cwd, no agent file content appears."""
+        prompt = build_prompt(
+            card_id="abc123",
+            card_markdown="# Card",
+            command="fix bug",
+            comment_content="@coder fix bug",
+            author_name="Paul",
+        )
+        assert "Agent Identity" not in prompt
+        assert "Agent Rules" not in prompt
+        assert "## Knowledge" not in prompt

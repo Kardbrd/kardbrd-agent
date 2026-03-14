@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kardbrd_agent.executor import AuthStatus, ClaudeResult
-from kardbrd_agent.manager import ActiveSession, ProxyManager, _sanitize_name
+from kardbrd_agent.manager import ActiveSession, ProxyManager, SkillInfo, _sanitize_name
 from kardbrd_agent.rules import Rule, RuleEngine, Schedule
 
 # Default test values for ProxyManager constructor
@@ -1923,7 +1923,7 @@ class TestBotCard:
         desc = manager._build_bot_card_description()
 
         assert "## Skills" in desc
-        assert "`/ke` \u2014 Explore" in desc
+        assert "`/ke` — Explore" in desc
 
     def test_build_bot_card_description_no_skills_dir(self, tmp_path):
         """Test skills section is omitted when .claude/commands/ doesn't exist."""
@@ -1940,8 +1940,9 @@ class TestBotCard:
         manager = _make_manager(cwd=str(tmp_path))
         skills = manager._discover_skills()
 
-        assert ("ke", "Explore") in skills
-        assert ("ki", "Implement") in skills
+        skill_dict = {name: info for name, info in skills}
+        assert skill_dict["ke"].name == "Explore"
+        assert skill_dict["ki"].name == "Implement"
 
     def test_discover_skills_fallback_to_filename(self, tmp_path):
         """Test _discover_skills falls back to filename when no # heading."""
@@ -1951,7 +1952,8 @@ class TestBotCard:
         manager = _make_manager(cwd=str(tmp_path))
         skills = manager._discover_skills()
 
-        assert ("custom", "custom") in skills
+        skill_dict = {name: info for name, info in skills}
+        assert skill_dict["custom"].name == "custom"
 
     def test_discover_skills_from_skills_dir(self, tmp_path):
         """Test _discover_skills scans .claude/skills/<name>/*.md."""
@@ -1961,7 +1963,8 @@ class TestBotCard:
         manager = _make_manager(cwd=str(tmp_path))
         skills = manager._discover_skills()
 
-        assert ("deploy", "Deploy to prod") in skills
+        skill_dict = {name: info for name, info in skills}
+        assert skill_dict["deploy"].name == "Deploy to prod"
 
     def test_discover_skills_both_commands_and_skills(self, tmp_path):
         """Test _discover_skills merges both directories, commands win on conflict."""
@@ -1981,8 +1984,9 @@ class TestBotCard:
         manager = _make_manager(cwd=str(tmp_path))
         skills = manager._discover_skills()
 
-        assert ("ke", "Explore") in skills  # commands wins
-        assert ("deploy", "Deploy") in skills
+        skill_dict = {name: info for name, info in skills}
+        assert skill_dict["ke"].name == "Explore"  # commands wins
+        assert skill_dict["deploy"].name == "Deploy"
         # Ensure no duplicate ke entry
         names = [name for name, _ in skills]
         assert names.count("ke") == 1
@@ -2410,3 +2414,107 @@ class TestCheckRulesAssigneeFetch:
         manager.client.get_card.assert_called_once_with("abc123")
         assert message["card_assignee_id"] == "user-alice"
         assert message["card_labels"] == ["Bug"]
+
+
+class TestSkillInfo:
+    """Tests for SkillInfo and _extract_skill_info with YAML frontmatter."""
+
+    def test_extract_skill_info_frontmatter(self, tmp_path):
+        """File with YAML frontmatter returns SkillInfo with name+description."""
+        md_file = tmp_path / "explore.md"
+        md_file.write_text(
+            "---\n"
+            "name: explore-codebase\n"
+            "description: Deep codebase exploration with architectural analysis\n"
+            "allowed-tools: Grep Glob Read Agent\n"
+            "---\n"
+            "\n"
+            "# Explore\n"
+            "\nBody text."
+        )
+        info = ProxyManager._extract_skill_info(md_file)
+        assert info.name == "explore-codebase"
+        assert info.description == "Deep codebase exploration with architectural analysis"
+
+    def test_extract_skill_info_heading_fallback(self, tmp_path):
+        """File without frontmatter uses # Heading as name."""
+        md_file = tmp_path / "deploy.md"
+        md_file.write_text("# Deploy to Production\n\nDeploy instructions.")
+        info = ProxyManager._extract_skill_info(md_file)
+        assert info.name == "Deploy to Production"
+        assert info.description == ""
+
+    def test_extract_skill_info_filename_fallback(self, tmp_path):
+        """File with neither frontmatter nor heading uses filename stem."""
+        md_file = tmp_path / "custom.md"
+        md_file.write_text("Just some text, no heading, no frontmatter.")
+        info = ProxyManager._extract_skill_info(md_file)
+        assert info.name == "custom"
+        assert info.description == ""
+
+    def test_extract_skill_info_invalid_frontmatter(self, tmp_path):
+        """Malformed YAML frontmatter falls back gracefully."""
+        md_file = tmp_path / "broken.md"
+        md_file.write_text("---\n: invalid: yaml: [[\n---\n\n# Fallback Title\n")
+        info = ProxyManager._extract_skill_info(md_file)
+        assert info.name == "Fallback Title"
+
+    def test_extract_skill_info_frontmatter_no_name(self, tmp_path):
+        """Frontmatter without name field uses filename stem."""
+        md_file = tmp_path / "noname.md"
+        md_file.write_text("---\ndescription: Some description\n---\n\nBody.")
+        info = ProxyManager._extract_skill_info(md_file)
+        assert info.name == "noname"
+        assert info.description == "Some description"
+
+    def test_discover_skills_returns_skill_info(self, tmp_path):
+        """_discover_skills returns SkillInfo objects with frontmatter data."""
+        commands_dir = tmp_path / ".claude" / "commands"
+        commands_dir.mkdir(parents=True)
+        (commands_dir / "ke.md").write_text(
+            "---\nname: Explore\ndescription: Deep codebase exploration\n---\n\nBody."
+        )
+        manager = _make_manager(cwd=str(tmp_path))
+        skills = manager._discover_skills()
+
+        assert len(skills) == 1
+        cmd_name, info = skills[0]
+        assert cmd_name == "ke"
+        assert isinstance(info, SkillInfo)
+        assert info.name == "Explore"
+        assert info.description == "Deep codebase exploration"
+
+    def test_bot_card_description_with_skill_description(self, tmp_path):
+        """Bot card description includes skill description from frontmatter."""
+        commands_dir = tmp_path / ".claude" / "commands"
+        commands_dir.mkdir(parents=True)
+        (commands_dir / "ke.md").write_text(
+            "---\nname: Explore\ndescription: Deep codebase exploration\n---\n\nBody."
+        )
+        manager = _make_manager(cwd=str(tmp_path))
+        desc = manager._build_bot_card_description()
+        assert "`/ke` — Explore — Deep codebase exploration" in desc
+
+    def test_register_skills_with_frontmatter_description(self, tmp_path):
+        """_register_skills sends frontmatter description to API."""
+        commands_dir = tmp_path / ".claude" / "commands"
+        commands_dir.mkdir(parents=True)
+        (commands_dir / "ke.md").write_text(
+            "---\nname: Explore\ndescription: Deep codebase exploration\n---\n\nBody."
+        )
+        manager = _make_manager(cwd=str(tmp_path))
+        mock_client = MagicMock()
+        mock_client._request.return_value = {"count": 1}
+        manager.client = mock_client
+
+        manager._register_skills()
+
+        mock_client._request.assert_called_once_with(
+            "PUT",
+            "/api/bots/skills/",
+            json={
+                "skills": [
+                    {"name": "ke", "description": "Deep codebase exploration"},
+                ]
+            },
+        )
