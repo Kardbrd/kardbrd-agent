@@ -1238,6 +1238,7 @@ class TestKnownFields:
             "emoji",
             "require_user",
             "assignee",
+            "comment_author",
         }
         assert expected == KNOWN_FIELDS
 
@@ -2467,3 +2468,225 @@ class TestReloadableRuleEngineConfig:
 
         # Access config — should trigger reload
         assert engine.config.agent_name == "Bot2"
+
+
+class TestCommentAuthor:
+    """Tests for the comment_author condition."""
+
+    def test_self_matches_when_bot_authored(self):
+        """Test __self__ matches when comment_author_is_bot is True."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="approve bot plan",
+                    events=["reaction_added"],
+                    action="ship",
+                    emoji="✅",
+                    comment_author="__self__",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "reaction_added",
+            {
+                "card_id": "abc",
+                "emoji": "✅",
+                "comment_author_is_bot": True,
+            },
+        )
+        assert len(matches) == 1
+
+    def test_self_no_match_when_not_bot(self):
+        """Test __self__ doesn't match when comment_author_is_bot is False."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="approve bot plan",
+                    events=["reaction_added"],
+                    action="ship",
+                    emoji="✅",
+                    comment_author="__self__",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "reaction_added",
+            {
+                "card_id": "abc",
+                "emoji": "✅",
+                "comment_author_is_bot": False,
+            },
+        )
+        assert len(matches) == 0
+
+    def test_self_no_match_when_field_missing(self):
+        """Test __self__ doesn't match when comment_author_is_bot is absent."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="approve bot plan",
+                    events=["reaction_added"],
+                    action="ship",
+                    emoji="✅",
+                    comment_author="__self__",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "reaction_added",
+            {"card_id": "abc", "emoji": "✅"},
+        )
+        assert len(matches) == 0
+
+    def test_specific_user_id_matches(self):
+        """Test comment_author with a specific user ID matches."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="react to paul comment",
+                    events=["reaction_added"],
+                    action="respond",
+                    comment_author="user321",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "reaction_added",
+            {
+                "card_id": "abc",
+                "comment_author_id": "user321",
+            },
+        )
+        assert len(matches) == 1
+
+    def test_specific_user_id_no_match(self):
+        """Test comment_author with wrong user ID doesn't match."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="react to paul comment",
+                    events=["reaction_added"],
+                    action="respond",
+                    comment_author="user321",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "reaction_added",
+            {
+                "card_id": "abc",
+                "comment_author_id": "user999",
+            },
+        )
+        assert len(matches) == 0
+
+    def test_specific_user_id_missing_field(self):
+        """Test comment_author doesn't match when comment_author_id is absent."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="react to paul comment",
+                    events=["reaction_added"],
+                    action="respond",
+                    comment_author="user321",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "reaction_added",
+            {"card_id": "abc"},
+        )
+        assert len(matches) == 0
+
+    def test_self_combined_with_emoji(self):
+        """Test __self__ works with emoji condition."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="approve plan",
+                    events=["reaction_added"],
+                    action="implement",
+                    emoji="✅",
+                    comment_author="__self__",
+                ),
+            ]
+        )
+        # Correct emoji + bot comment
+        matches = engine.match(
+            "reaction_added",
+            {
+                "card_id": "abc",
+                "emoji": "✅",
+                "comment_author_is_bot": True,
+            },
+        )
+        assert len(matches) == 1
+
+        # Wrong emoji
+        matches = engine.match(
+            "reaction_added",
+            {
+                "card_id": "abc",
+                "emoji": "📦",
+                "comment_author_is_bot": True,
+            },
+        )
+        assert len(matches) == 0
+
+        # Not bot comment
+        matches = engine.match(
+            "reaction_added",
+            {
+                "card_id": "abc",
+                "emoji": "✅",
+                "comment_author_is_bot": False,
+            },
+        )
+        assert len(matches) == 0
+
+    def test_rule_without_comment_author_matches_any(self):
+        """Test rules without comment_author match regardless."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="any reaction",
+                    events=["reaction_added"],
+                    action="do",
+                    emoji="📦",
+                ),
+            ]
+        )
+        matches = engine.match(
+            "reaction_added",
+            {
+                "card_id": "abc",
+                "emoji": "📦",
+                "comment_author_is_bot": False,
+            },
+        )
+        assert len(matches) == 1
+
+    def test_parse_comment_author_from_yaml(self):
+        """Test comment_author is parsed from YAML rule data."""
+        rules = parse_rules(
+            [
+                {
+                    "name": "bot reaction",
+                    "event": "reaction_added",
+                    "emoji": "✅",
+                    "comment_author": "__self__",
+                    "action": "ship",
+                }
+            ]
+        )
+        assert len(rules) == 1
+        assert rules[0].comment_author == "__self__"
+
+    def test_parse_without_comment_author(self):
+        """Test comment_author defaults to None when not specified."""
+        rules = parse_rules([{"name": "t", "event": "card_moved", "action": "/ke"}])
+        assert rules[0].comment_author is None
+
+    def test_comment_author_in_known_fields(self):
+        """Test comment_author is in KNOWN_FIELDS for validation."""
+        assert "comment_author" in KNOWN_FIELDS
