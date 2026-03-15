@@ -1,6 +1,7 @@
 """Claude CLI executor for running Claude as a subprocess."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -10,7 +11,82 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+import yaml
+
 logger = logging.getLogger("kardbrd_agent")
+
+
+def load_agent_files(cwd: Path | None = None) -> tuple[str, str]:
+    """Load optional SOUL.md and RULES.md from the working directory.
+
+    Returns:
+        Tuple of (soul_content, rules_content) — empty strings if files don't exist.
+    """
+    soul = ""
+    rules = ""
+    if cwd is None:
+        return soul, rules
+    soul_path = Path(cwd) / "SOUL.md"
+    rules_path = Path(cwd) / "RULES.md"
+    if soul_path.is_file():
+        with contextlib.suppress(OSError):
+            soul = soul_path.read_text()
+    if rules_path.is_file():
+        with contextlib.suppress(OSError):
+            rules = rules_path.read_text()
+    return soul, rules
+
+
+def load_knowledge(cwd: Path | None = None) -> str:
+    """Load knowledge documents from knowledge/ directory.
+
+    Reads an optional knowledge/index.yaml for metadata (priority, always_load).
+    Files marked always_load: true or priority: high are included.
+    Falls back to loading all .md files if no index exists.
+
+    Returns:
+        Concatenated knowledge content, or empty string.
+    """
+    if cwd is None:
+        return ""
+    knowledge_dir = Path(cwd) / "knowledge"
+    if not knowledge_dir.is_dir():
+        return ""
+
+    index_path = knowledge_dir / "index.yaml"
+    documents: list[str] = []
+
+    if index_path.is_file():
+        try:
+            with open(index_path) as f:
+                index = yaml.safe_load(f)
+            if isinstance(index, dict) and "documents" in index:
+                for doc in index["documents"]:
+                    if not isinstance(doc, dict):
+                        continue
+                    if doc.get("always_load") or doc.get("priority") == "high":
+                        doc_path = knowledge_dir / doc.get("path", "")
+                        if doc_path.is_file():
+                            try:
+                                content = doc_path.read_text()
+                                title = doc.get("title", doc_path.stem)
+                                documents.append(f"### {title}\n\n{content}")
+                            except OSError:
+                                pass
+        except Exception:
+            pass
+    else:
+        # No index — load all .md files
+        for md_file in sorted(knowledge_dir.glob("*.md")):
+            try:
+                content = md_file.read_text()
+                documents.append(f"### {md_file.stem}\n\n{content}")
+            except OSError:
+                pass
+
+    if not documents:
+        return ""
+    return "## Knowledge\n\n" + "\n\n".join(documents) + "\n\n"
 
 
 def create_mcp_config(api_url: str, bot_token: str) -> Path:
@@ -101,6 +177,7 @@ class Executor(Protocol):
         comment_content: str,
         author_name: str,
         board_id: str | None = None,
+        cwd: str | Path | None = None,
     ) -> str: ...
 
     def extract_command(self, comment_content: str, mention_keyword: str) -> str: ...
@@ -116,6 +193,7 @@ def build_prompt(
     comment_content: str,
     author_name: str,
     board_id: str | None = None,
+    cwd: str | Path | None = None,
 ) -> str:
     """
     Build the prompt for an executor from card context and user request.
@@ -127,10 +205,24 @@ def build_prompt(
         comment_content: The full comment that triggered the proxy
         author_name: Name of the user who triggered the proxy
         board_id: Optional board ID for label operations
+        cwd: Optional working directory for loading SOUL.md, RULES.md, knowledge/
 
     Returns:
         Formatted prompt string
     """
+    # Load agent identity, rules, and knowledge files
+    cwd_path = Path(cwd) if cwd else None
+    soul, rules = load_agent_files(cwd_path)
+    knowledge = load_knowledge(cwd_path)
+
+    agent_preamble = ""
+    if soul:
+        agent_preamble += f"## Agent Identity\n\n{soul}\n\n"
+    if rules:
+        agent_preamble += f"## Agent Rules\n\n{rules}\n\n"
+    if knowledge:
+        agent_preamble += knowledge
+
     # Common response instructions
     response_instructions = f"""
 ## IMPORTANT: How to Respond
@@ -164,7 +256,7 @@ first read current labels, then send the full list.
     # Determine if this is a skill command or free-form request
     if command.startswith("/"):
         # Skill command - let Claude Code handle it
-        prompt = f"""{command}
+        prompt = f"""{agent_preamble}{command}
 
 ---
 
@@ -181,7 +273,7 @@ first read current labels, then send the full list.
 """
     else:
         # Free-form request - provide card context and the request
-        prompt = f"""## Task Request
+        prompt = f"""{agent_preamble}## Task Request
 
 {comment_content}
 
@@ -569,6 +661,7 @@ class ClaudeExecutor:
         comment_content: str,
         author_name: str,
         board_id: str | None = None,
+        cwd: str | Path | None = None,
     ) -> str:
         """Delegate to module-level build_prompt()."""
         return build_prompt(
@@ -578,6 +671,7 @@ class ClaudeExecutor:
             comment_content=comment_content,
             author_name=author_name,
             board_id=board_id,
+            cwd=cwd,
         )
 
     def extract_command(self, comment_content: str, mention_keyword: str) -> str:

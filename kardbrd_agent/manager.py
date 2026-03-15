@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import yaml
 from kardbrd_client import KardbrdAPIError, KardbrdClient, WebSocketAgentConnection
 
 from .executor import AuthStatus, ClaudeExecutor
@@ -31,6 +32,14 @@ def _sanitize_name(name: str) -> str:
     hyphens, underscores, and periods.
     """
     return re.sub(r"[^\w\s\-.]", "", name).strip() or "Unknown"
+
+
+@dataclass
+class SkillInfo:
+    """Metadata extracted from a skill markdown file."""
+
+    name: str
+    description: str = ""
 
 
 @dataclass
@@ -283,31 +292,47 @@ class ProxyManager:
         return f"\U0001f916 {self.agent_name}"
 
     @staticmethod
-    def _extract_skill_title(md_file: Path) -> str:
-        """Extract the title from a skill markdown file.
+    def _extract_skill_info(md_file: Path) -> SkillInfo:
+        """Extract title and metadata from a skill markdown file.
 
-        Returns the first ``# Heading`` found, or the filename stem as
-        fallback.
+        Supports YAML frontmatter (delimited by ``---``) with fields:
+        ``name``, ``description``, ``allowed-tools``, ``metadata``.
+        Falls back to first ``# Heading``, then filename stem.
         """
-        title = md_file.stem
+        fallback_name = md_file.stem
         try:
-            with open(md_file) as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("# "):
-                        title = line[2:].strip()
-                        break
+            content = md_file.read_text()
         except OSError:
-            pass
-        return title
+            return SkillInfo(name=fallback_name)
 
-    def _discover_skills(self) -> list[tuple[str, str]]:
+        # Try YAML frontmatter
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) >= 3:
+                try:
+                    meta = yaml.safe_load(parts[1])
+                    if isinstance(meta, dict):
+                        name = meta.get("name", fallback_name)
+                        description = meta.get("description", "")
+                        return SkillInfo(name=str(name), description=str(description))
+                except Exception:
+                    pass
+
+        # Fallback: first # Heading
+        for line in content.splitlines():
+            line = line.strip()
+            if line.startswith("# "):
+                return SkillInfo(name=line[2:].strip())
+
+        return SkillInfo(name=fallback_name)
+
+    def _discover_skills(self) -> list[tuple[str, SkillInfo]]:
         """Scan .claude/commands/*.md and .claude/skills/*/*.md.
 
-        Returns ``[(command_name, title), ...]`` with duplicates removed
+        Returns ``[(command_name, SkillInfo), ...]`` with duplicates removed
         (commands take precedence over skills with the same name).
         """
-        seen: dict[str, str] = {}  # name → title (first wins)
+        seen: dict[str, SkillInfo] = {}  # name → SkillInfo (first wins)
         claude_dir = self.cwd / ".claude"
 
         # 1. .claude/commands/*.md  (flat files, name = stem)
@@ -316,7 +341,7 @@ class ProxyManager:
             for md_file in sorted(commands_dir.glob("*.md")):
                 name = md_file.stem
                 if name not in seen:
-                    seen[name] = self._extract_skill_title(md_file)
+                    seen[name] = self._extract_skill_info(md_file)
 
         # 2. .claude/skills/<skill-name>/*.md  (subdirectories, name = dir name)
         skills_dir = claude_dir / "skills"
@@ -330,9 +355,9 @@ class ProxyManager:
                 # Use the first .md file found in the subdirectory
                 md_files = sorted(skill_subdir.glob("*.md"))
                 if md_files:
-                    seen[name] = self._extract_skill_title(md_files[0])
+                    seen[name] = self._extract_skill_info(md_files[0])
 
-        return [(name, title) for name, title in sorted(seen.items())]
+        return [(name, info) for name, info in sorted(seen.items())]
 
     def _build_bot_card_description(self) -> str:
         """Build the markdown description for the bot card."""
@@ -442,8 +467,9 @@ class ProxyManager:
             lines.append("")
             lines.append("## Skills")
             lines.append("")
-            for cmd_name, title in skills:
-                lines.append(f"- `/{cmd_name}` \u2014 {title}")
+            for cmd_name, info in skills:
+                desc_suffix = f" — {info.description}" if info.description else ""
+                lines.append(f"- `/{cmd_name}` \u2014 {info.name}{desc_suffix}")
             lines.append("")
 
         return "\n".join(lines)
@@ -530,7 +556,15 @@ class ProxyManager:
         Non-fatal: logs a warning on failure so startup is never blocked.
         """
         skills = self._discover_skills()
-        payload = {"skills": [{"name": name, "description": title} for name, title in skills]}
+        payload = {
+            "skills": [
+                {
+                    "name": name,
+                    "description": info.description if info.description else info.name,
+                }
+                for name, info in skills
+            ]
+        }
         try:
             result = self.client._request("PUT", "/api/bots/skills/", json=payload)
             count = result.get("count", len(skills)) if isinstance(result, dict) else len(skills)
@@ -823,6 +857,7 @@ class ProxyManager:
                     comment_content=content,
                     author_name=author_name,
                     board_id=self.board_id,
+                    cwd=worktree_path,
                 )
 
                 # Execute agent in worktree directory
@@ -1126,6 +1161,7 @@ DO NOT do any new work - just publish what you already did."""
                     comment_content=f"[Automation: {rule.name}]",
                     author_name="automation",
                     board_id=self.board_id,
+                    cwd=worktree_path,
                 )
 
                 logger.info(f"Rule '{rule.name}': spawning agent in {worktree_path}")
