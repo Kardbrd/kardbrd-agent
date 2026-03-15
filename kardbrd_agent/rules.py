@@ -282,7 +282,13 @@ class RuleEngine:
 
         if rule.assignee is not None:
             card_assignee_id = message.get("card_assignee_id", "")
-            if not card_assignee_id or card_assignee_id not in rule.assignee:
+            if not card_assignee_id:
+                return False
+            # __self__ matches when the card is assigned to this bot
+            if "__self__" in rule.assignee:
+                if not message.get("card_assignee_is_bot", False):
+                    return False
+            elif card_assignee_id not in rule.assignee:
                 return False
 
         if rule.comment_author is not None:
