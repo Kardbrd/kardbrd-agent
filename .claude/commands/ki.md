@@ -1,3 +1,8 @@
+---
+name: Implement
+description: Execute an implementation plan from the card description
+---
+
 # Implement
 
 Execute the implementation plan from the card description.

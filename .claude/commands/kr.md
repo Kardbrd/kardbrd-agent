@@ -1,3 +1,8 @@
+---
+name: Review
+description: Full code review of changes on the card's branch
+---
+
 # Review
 
 Full code review of changes on the card's branch.

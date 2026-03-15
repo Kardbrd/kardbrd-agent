@@ -1,3 +1,8 @@
+---
+name: Plan
+description: Create a detailed implementation plan from exploration findings
+---
+
 # Plan
 
 Create a detailed implementation plan based on exploration findings.

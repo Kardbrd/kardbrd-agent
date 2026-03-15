@@ -1,3 +1,8 @@
+---
+name: Explore
+description: Deep codebase exploration and analysis for a card's topic
+---
+
 # Explore
 
 Deep-dive exploration of the card's topic in the context of the kardbrd-agent codebase.
