@@ -1026,12 +1026,16 @@ DO NOT do any new work - just publish what you already did."""
                         message["card_assignee_id"] = (
                             assignee_data.get("id", "") if assignee_data else ""
                         )
+                        message["card_assignee_is_bot"] = (
+                            assignee_data.get("is_bot", False) if assignee_data else False
+                        )
                 except Exception:
                     logger.warning(f"Failed to fetch card data for {card_id}")
                     if needs_labels and "card_labels" not in message:
                         message["card_labels"] = []
                     if needs_assignee and "card_assignee_id" not in message:
                         message["card_assignee_id"] = ""
+                        message["card_assignee_is_bot"] = False
 
         # Enrich comment author data for comment_author conditions
         needs_comment_author = any(r.comment_author for r in self.rule_engine.rules)

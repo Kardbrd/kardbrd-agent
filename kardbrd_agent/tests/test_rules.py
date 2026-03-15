@@ -852,6 +852,82 @@ class TestAssignee:
         assert len(matches) == 1
 
 
+class TestAssigneeSelf:
+    """Tests for __self__ support in assignee condition."""
+
+    def test_self_matches_when_bot_assigned(self):
+        """Test __self__ matches when card_assignee_is_bot is True."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="bot assigned",
+                    events=["card_moved"],
+                    action="/ke",
+                    assignee=["__self__"],
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "card_assignee_id": "bot-id", "card_assignee_is_bot": True},
+        )
+        assert len(matches) == 1
+
+    def test_self_no_match_when_not_bot(self):
+        """Test __self__ doesn't match when card_assignee_is_bot is False."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="bot assigned",
+                    events=["card_moved"],
+                    action="/ke",
+                    assignee=["__self__"],
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "card_assignee_id": "user-id", "card_assignee_is_bot": False},
+        )
+        assert len(matches) == 0
+
+    def test_self_no_match_when_unassigned(self):
+        """Test __self__ doesn't match when card is unassigned."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="bot assigned",
+                    events=["card_moved"],
+                    action="/ke",
+                    assignee=["__self__"],
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "card_assignee_id": ""},
+        )
+        assert len(matches) == 0
+
+    def test_self_no_match_when_field_missing(self):
+        """Test __self__ doesn't match when card_assignee_is_bot is absent."""
+        engine = RuleEngine(
+            rules=[
+                Rule(
+                    name="bot assigned",
+                    events=["card_moved"],
+                    action="/ke",
+                    assignee=["__self__"],
+                ),
+            ]
+        )
+        matches = engine.match(
+            "card_moved",
+            {"card_id": "abc", "card_assignee_id": "bot-id"},
+        )
+        assert len(matches) == 0
+
+
 class TestParseRulesAssignee:
     """Tests for parsing the assignee field."""
 

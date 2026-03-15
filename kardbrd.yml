@@ -1,11 +1,13 @@
 # kardbrd.yml — MBPBot workflow rules for Agents & Clients board
 #
 # Board has 3 lists: To Do, In Progress, Done
-# All list-based rules use require_label: Agent so MBPBot only acts on
-# Agent-labeled cards. @mentions always work regardless of labels.
+# The "Explore and plan" rule uses assignee to scope to MBPBot-assigned cards.
+# Other list-based rules use require_label: Agent for multi-agent scoping.
+# @mentions always work regardless of labels or assignees.
 #
 # Reaction rules use require_user to restrict who can trigger actions.
 # Paul's user ID: E21K9jmv
+# MBPBot's user ID: NpjMZJO5
 ---
 board_id: 0gl5MlBZ
 agent: MBPBot
@@ -18,15 +20,16 @@ rules:
     emoji: "🛑"
     action: __stop__
 
-  # ── List-based workflow (Agent-labeled cards only) ─────────────
+  # ── List-based workflow ───────────────────────────────────────
 
-  # Card lands in To Do → explore and plan
+  # Card lands in To Do → explore and plan (only if assigned to MBPBot)
   - name: Explore and plan new cards
     event:
       - card_created
       - card_moved
     list: To Do
-    require_label: Agent
+    assignee:
+      - __self__
     model: opus
     action: /ke
 
