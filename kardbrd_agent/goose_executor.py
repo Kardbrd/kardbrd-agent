@@ -224,12 +224,10 @@ class GooseExecutor:
             cmd = [c for c in cmd if c != "--no-session"]
             cmd.extend(["-r", "-n", resume_session_id])
 
-        # Add MCP extension for kardbrd if credentials are set
-        # Pass bot_token via env var (not CLI args) to avoid exposure in ps/proc
+        # Set env vars for kardbrd CLI access
         if self.api_url and self.bot_token:
-            extension_cmd = f"kardbrd-mcp --api-url {self.api_url}"
-            cmd.extend(["--with-extension", extension_cmd])
             env["KARDBRD_TOKEN"] = self.bot_token
+            env["KARDBRD_API_URL"] = self.api_url
 
         logger.info(f"Spawning Goose in {working_dir}")
         logger.debug(f"Prompt length: {len(prompt)} chars")

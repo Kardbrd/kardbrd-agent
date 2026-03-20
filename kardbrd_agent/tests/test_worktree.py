@@ -108,16 +108,15 @@ class TestWorktreeManagerSiblingPaths:
 class TestWorktreeManagerSymlinks:
     """Tests for symlink setup."""
 
-    def test_setup_symlinks_creates_mcp_json(self, git_repo: Path):
-        """Test .mcp.json symlink creation."""
+    def test_setup_symlinks_does_not_create_mcp_json(self, git_repo: Path):
+        """Test .mcp.json symlink is no longer created (replaced by CLI)."""
         worktree = git_repo.parent / "card-abc12345"
         worktree.mkdir()
 
         manager = WorktreeManager(git_repo)
         manager._setup_symlinks(worktree)
 
-        assert (worktree / ".mcp.json").is_symlink()
-        assert (worktree / ".mcp.json").resolve() == git_repo / ".mcp.json"
+        assert not (worktree / ".mcp.json").exists()
 
     def test_setup_symlinks_creates_env(self, git_repo: Path):
         """Test .env symlink creation."""
@@ -147,10 +146,10 @@ class TestWorktreeManagerSymlinks:
         manager = WorktreeManager(git_repo, executor_type="goose")
         manager._setup_symlinks(worktree)
 
-        # .mcp.json and .env should still be created
-        assert (worktree / ".mcp.json").is_symlink()
+        # .env should still be created
         assert (worktree / ".env").is_symlink()
-        # .claude/ should NOT be created
+        # .mcp.json and .claude/ should NOT be created
+        assert not (worktree / ".mcp.json").exists()
         assert not (worktree / ".claude").exists()
 
     def test_setup_symlinks_skips_missing_files(self, tmp_path: Path):
@@ -177,7 +176,7 @@ class TestWorktreeManagerSymlinks:
         manager._setup_symlinks(worktree)
         manager._setup_symlinks(worktree)  # Should not raise
 
-        assert (worktree / ".mcp.json").is_symlink()
+        assert (worktree / ".env").is_symlink()
 
 
 class TestWorktreeManagerSetupCommand:
