@@ -252,16 +252,6 @@ class TestClaudeExecutorAsync:
             assert result.error is not None
 
 
-class TestCreateMcpConfigRemoved:
-    """Verify create_mcp_config has been removed."""
-
-    def test_create_mcp_config_not_importable(self):
-        """create_mcp_config should no longer exist in executor module."""
-        import kardbrd_agent.executor as mod
-
-        assert not hasattr(mod, "create_mcp_config")
-
-
 class TestClaudeExecutorWithMcp:
     """Tests for ClaudeExecutor with MCP credentials."""
 

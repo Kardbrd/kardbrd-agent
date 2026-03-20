@@ -223,17 +223,19 @@ Available CLI commands:
 first read current labels, then send the full list.
 """
 
-    # CLI reference for kardbrd operations
-    cli_instructions = """
+    # CLI reference for kardbrd operations (only when board access is configured)
+    cli_instructions = ""
+    if board_id:
+        cli_instructions = f"""
 ## kardbrd CLI Reference
 
 The `kardbrd` CLI is available for board operations. Key commands:
-- `kardbrd md card CARD_ID` — get card as markdown
-- `kardbrd md board BOARD_ID` — get board as markdown
-- `kardbrd comment add CARD_ID "message"` — add comment
-- `kardbrd card update CARD_ID --title "..." --description "..."` — update card
-- `kardbrd card create --board BOARD_ID --list LIST_ID --title "..."` — create card
-- `kardbrd card move CARD_ID --list LIST_ID` — move card
+- `kardbrd md card {card_id}` — get this card as markdown
+- `kardbrd md board {board_id}` — get board as markdown
+- `kardbrd comment add {card_id} "message"` — add comment to this card
+- `kardbrd card update {card_id} --title "..." --description "..."` — update card
+- `kardbrd card create --board {board_id} --list LIST_ID --title "..."` — create card
+- `kardbrd card move {card_id} --list LIST_ID` — move card
 
 Environment variables `KARDBRD_TOKEN` and `KARDBRD_API_URL` are pre-configured.
 """
