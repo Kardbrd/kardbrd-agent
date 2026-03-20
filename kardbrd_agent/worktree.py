@@ -62,11 +62,11 @@ class WorktreeManager:
         """
         Set up symlinks for shared configuration files.
 
-        Creates symlinks for .mcp.json, .env, and .claude/settings.local.json
+        Creates symlinks for .env and .claude/settings.local.json
         from the base repo to the worktree.
         """
         # Symlink shared configs
-        for config_file in [".mcp.json", ".env"]:
+        for config_file in [".env"]:
             src = self.base_repo / config_file
             dst = worktree_path / config_file
             if src.exists() and not dst.exists():

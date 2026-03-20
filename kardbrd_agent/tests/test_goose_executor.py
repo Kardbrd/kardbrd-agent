@@ -321,8 +321,8 @@ class TestGooseExecutorAsync:
             assert call_args[model_idx + 1] == "gpt-4"
 
     @pytest.mark.asyncio
-    async def test_execute_with_mcp_extension(self):
-        """Test execute includes MCP extension when credentials are set."""
+    async def test_execute_passes_kardbrd_env_vars_when_credentials_set(self):
+        """When credentials are provided, KARDBRD_TOKEN and KARDBRD_API_URL should be in env."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         executor = GooseExecutor(
@@ -340,14 +340,14 @@ class TestGooseExecutorAsync:
 
             await executor.execute("test")
 
+            call_kwargs = mock_exec.call_args[1]
+            env = call_kwargs.get("env", {})
+            assert env.get("KARDBRD_TOKEN") == "test-token"
+            assert env.get("KARDBRD_API_URL") == "http://localhost:8000"
+
+            # --with-extension should NOT be present
             call_args = list(mock_exec.call_args[0])
-            assert "--with-extension" in call_args
-            ext_idx = call_args.index("--with-extension")
-            ext_cmd = call_args[ext_idx + 1]
-            assert "kardbrd-mcp" in ext_cmd
-            assert "http://localhost:8000" in ext_cmd
-            # Token should be in env, NOT in extension command args
-            assert "test-token" not in ext_cmd
+            assert "--with-extension" not in call_args
 
     @pytest.mark.asyncio
     async def test_execute_bot_token_in_env_not_args(self):
@@ -378,10 +378,11 @@ class TestGooseExecutorAsync:
             call_kwargs = mock_exec.call_args[1]
             env = call_kwargs.get("env", {})
             assert env.get("KARDBRD_TOKEN") == "secret-token-123"
+            assert env.get("KARDBRD_API_URL") == "http://localhost:8000"
 
     @pytest.mark.asyncio
-    async def test_execute_no_mcp_without_credentials(self):
-        """Test execute does NOT include MCP extension without credentials."""
+    async def test_execute_no_kardbrd_env_without_credentials(self):
+        """Test execute does NOT set KARDBRD_TOKEN/KARDBRD_API_URL without credentials."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         executor = GooseExecutor(cwd="/tmp", timeout=60)

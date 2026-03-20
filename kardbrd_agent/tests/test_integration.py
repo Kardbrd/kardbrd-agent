@@ -28,13 +28,12 @@ class TestWorktreeIntegration:
         # Call _setup_symlinks directly
         manager._setup_symlinks(worktree_path)
 
-        # Verify symlinks created
-        assert (worktree_path / ".mcp.json").is_symlink()
+        # Verify symlinks created (.mcp.json no longer symlinked — replaced by CLI)
+        assert not (worktree_path / ".mcp.json").exists()
         assert (worktree_path / ".env").is_symlink()
         assert (worktree_path / ".claude" / "settings.local.json").is_symlink()
 
         # Verify symlinks point to base repo
-        assert (worktree_path / ".mcp.json").resolve() == git_repo / ".mcp.json"
         assert (worktree_path / ".env").resolve() == git_repo / ".env"
 
     @patch("kardbrd_agent.worktree.subprocess.run")

@@ -5,7 +5,6 @@ import contextlib
 import json
 import logging
 import os
-import tempfile
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -87,45 +86,6 @@ def load_knowledge(cwd: Path | None = None) -> str:
     if not documents:
         return ""
     return "## Knowledge\n\n" + "\n\n".join(documents) + "\n\n"
-
-
-def create_mcp_config(api_url: str, bot_token: str) -> Path:
-    """
-    Create a temporary MCP config file for Claude Code.
-
-    The config tells Claude to spawn kardbrd-mcp as a stdio subprocess
-    with the bot's credentials.
-
-    Args:
-        api_url: The kardbrd API base URL
-        bot_token: The bot's authentication token
-
-    Returns:
-        Path to the temporary config file
-    """
-    config = {
-        "mcpServers": {
-            "kardbrd": {
-                "command": "kardbrd-mcp",
-                "args": [
-                    "--api-url",
-                    api_url,
-                ],
-                "env": {
-                    "KARDBRD_TOKEN": bot_token,
-                },
-            }
-        }
-    }
-
-    # Create temp file (will be cleaned up after Claude exits)
-    fd, path = tempfile.mkstemp(suffix=".json", prefix="mcp-config-")
-    os.chmod(path, 0o600)  # Restrict to owner-only (contains bot token)
-    with open(fd, "w") as f:
-        json.dump(config, f, indent=2)
-
-    logger.debug(f"Created MCP config at {path}")
-    return Path(path)
 
 
 @dataclass
@@ -228,13 +188,24 @@ def build_prompt(
 ## IMPORTANT: How to Respond
 
 When you complete this task, you MUST post your response as a comment on the card.
-Use the `mcp__kardbrd__add_comment` tool with:
-- card_id: "{card_id}"
-- content: Your response (markdown supported)
+Use the kardbrd CLI via the Bash tool:
+```
+kardbrd comment add {card_id} "Your response here"
+```
+
+For multi-line or markdown responses, use a heredoc:
+```
+kardbrd comment add {card_id} "$(cat <<'EOF'
+Your markdown response here.
+
+@{author_name}
+EOF
+)"
+```
 
 End your comment by mentioning the requester: @{author_name}
 
-DO NOT just output text - you must use the add_comment tool to post your response.
+DO NOT just output text - you must use the kardbrd CLI to post your response.
 """
 
     # Label instructions when board_id is available
@@ -244,13 +215,27 @@ DO NOT just output text - you must use the add_comment tool to post your respons
 ## Labels
 
 Cards may have labels (shown as "Labels: ..." in card markdown).
-Available tools:
-- `mcp__kardbrd__get_board_labels` with board_id "{board_id}" \
-to discover available labels
-- `mcp__kardbrd__update_card` with `label_ids` (list of label IDs)
+Available CLI commands:
+- `kardbrd board labels {board_id}` to discover available labels
+- `kardbrd card update {card_id} --label-ids ID1 ID2` to set labels
 
-**Important:** `label_ids` does a full replace — to add a label, \
+**Important:** `--label-ids` does a full replace — to add a label, \
 first read current labels, then send the full list.
+"""
+
+    # CLI reference for kardbrd operations
+    cli_instructions = """
+## kardbrd CLI Reference
+
+The `kardbrd` CLI is available for board operations. Key commands:
+- `kardbrd md card CARD_ID` — get card as markdown
+- `kardbrd md board BOARD_ID` — get board as markdown
+- `kardbrd comment add CARD_ID "message"` — add comment
+- `kardbrd card update CARD_ID --title "..." --description "..."` — update card
+- `kardbrd card create --board BOARD_ID --list LIST_ID --title "..."` — create card
+- `kardbrd card move CARD_ID --list LIST_ID` — move card
+
+Environment variables `KARDBRD_TOKEN` and `KARDBRD_API_URL` are pre-configured.
 """
 
     # Determine if this is a skill command or free-form request
@@ -269,7 +254,7 @@ first read current labels, then send the full list.
 ## Card Content
 
 {card_markdown}
-{label_instructions}{response_instructions}
+{label_instructions}{cli_instructions}{response_instructions}
 """
     else:
         # Free-form request - provide card context and the request
@@ -284,7 +269,7 @@ first read current labels, then send the full list.
 **Card ID:** {card_id}
 
 {card_markdown}
-{label_instructions}
+{label_instructions}{cli_instructions}
 ---
 
 **Requested by:** @{author_name}
@@ -428,8 +413,8 @@ class ClaudeExecutor:
         Args:
             cwd: Working directory for Claude (defaults to current directory)
             timeout: Maximum execution time in seconds (default 1 hour)
-            api_url: API base URL for kardbrd-mcp (if set with bot_token, enables --mcp-config)
-            bot_token: Bot authentication token for kardbrd-mcp
+            api_url: API base URL for kardbrd (passed as KARDBRD_API_URL env var to subprocess)
+            bot_token: Bot authentication token (passed as KARDBRD_TOKEN env var to subprocess)
         """
         self.cwd = Path(cwd) if cwd else Path.cwd()
         self.timeout = timeout
@@ -462,11 +447,6 @@ class ClaudeExecutor:
         # Use passed cwd or default
         working_dir = cwd or self.cwd
 
-        # Create MCP config if credentials are set
-        mcp_config_path: Path | None = None
-        if self.api_url and self.bot_token:
-            mcp_config_path = create_mcp_config(self.api_url, self.bot_token)
-
         cmd = [
             "claude",
             "-p",
@@ -484,16 +464,14 @@ class ClaudeExecutor:
         if resume_session_id:
             cmd.extend(["--resume", resume_session_id])
 
-        # Add MCP config if created
-        if mcp_config_path:
-            cmd.extend(["--mcp-config", str(mcp_config_path)])
-            # Only use our kardbrd MCP server, ignore all others (e.g. claude.ai MCP)
-            cmd.append("--strict-mcp-config")
+        # Set env vars for kardbrd CLI access
+        env = os.environ.copy()
+        if self.api_url and self.bot_token:
+            env["KARDBRD_TOKEN"] = self.bot_token
+            env["KARDBRD_API_URL"] = self.api_url
 
         logger.info(f"Spawning Claude in {working_dir}")
         logger.debug(f"Prompt length: {len(prompt)} chars")
-        if mcp_config_path:
-            logger.debug(f"MCP config: {mcp_config_path}")
 
         try:
             process = await asyncio.create_subprocess_exec(
@@ -502,6 +480,7 @@ class ClaudeExecutor:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=working_dir,
+                env=env,
                 limit=10 * 1024 * 1024,  # 10 MiB — stream-json lines can exceed default 64 KB
             )
 
@@ -550,14 +529,6 @@ class ClaudeExecutor:
                 result_text="",
                 error=str(e),
             )
-        finally:
-            # Clean up temp MCP config file
-            if mcp_config_path and mcp_config_path.exists():
-                try:
-                    mcp_config_path.unlink()
-                    logger.debug(f"Cleaned up MCP config: {mcp_config_path}")
-                except OSError:
-                    pass
 
     @staticmethod
     async def _read_with_chunks(

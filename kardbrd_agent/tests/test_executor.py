@@ -107,7 +107,7 @@ class TestClaudeExecutor:
         assert "Card Title" in prompt
         assert "@coder /kp" in prompt
         assert "abc123" in prompt
-        assert "add_comment" in prompt
+        assert "kardbrd comment add" in prompt
 
     def test_build_prompt_free_form(self):
         """Test building prompt for a free-form request."""
@@ -126,7 +126,7 @@ class TestClaudeExecutor:
         assert "Card Title" in prompt
         assert "Task Request" in prompt
         assert "xyz789" in prompt
-        assert "add_comment" in prompt
+        assert "kardbrd comment add" in prompt
 
     def test_build_prompt_with_board_id_includes_label_instructions(self):
         """Test building prompt with board_id includes label instructions."""
@@ -141,9 +141,9 @@ class TestClaudeExecutor:
             board_id="board456",
         )
 
-        assert "get_board_labels" in prompt
+        assert "kardbrd board labels" in prompt
         assert "board456" in prompt
-        assert "label_ids" in prompt
+        assert "--label-ids" in prompt
         assert "full replace" in prompt
 
     def test_build_prompt_without_board_id_no_label_instructions(self):
@@ -175,7 +175,7 @@ class TestClaudeExecutor:
         )
 
         assert "/kp" in prompt
-        assert "get_board_labels" in prompt
+        assert "kardbrd board labels" in prompt
         assert "board456" in prompt
 
     def test_parse_output_success(self):
@@ -252,84 +252,14 @@ class TestClaudeExecutorAsync:
             assert result.error is not None
 
 
-class TestCreateMcpConfig:
-    """Tests for the create_mcp_config function."""
+class TestCreateMcpConfigRemoved:
+    """Verify create_mcp_config has been removed."""
 
-    def test_creates_temp_file(self):
-        """Test that create_mcp_config creates a temp file."""
-        from kardbrd_agent.executor import create_mcp_config
+    def test_create_mcp_config_not_importable(self):
+        """create_mcp_config should no longer exist in executor module."""
+        import kardbrd_agent.executor as mod
 
-        config_path = create_mcp_config(api_url="http://localhost:8000", bot_token="test-token")
-        try:
-            assert config_path.exists()
-            assert config_path.suffix == ".json"
-        finally:
-            config_path.unlink(missing_ok=True)
-
-    def test_config_file_permissions(self):
-        """Test that MCP config file has owner-only permissions (0o600)."""
-        import stat
-
-        from kardbrd_agent.executor import create_mcp_config
-
-        config_path = create_mcp_config(api_url="http://localhost:8000", bot_token="test-token")
-        try:
-            mode = config_path.stat().st_mode
-            # Check that only owner has read/write, no group/other access
-            assert mode & stat.S_IRWXG == 0, "Group should have no permissions"
-            assert mode & stat.S_IRWXO == 0, "Others should have no permissions"
-            assert mode & stat.S_IRUSR, "Owner should have read permission"
-            assert mode & stat.S_IWUSR, "Owner should have write permission"
-        finally:
-            config_path.unlink(missing_ok=True)
-
-    def test_config_has_stdio_transport(self):
-        """Test that the config uses stdio transport with kardbrd-mcp command."""
-        import json
-
-        from kardbrd_agent.executor import create_mcp_config
-
-        config_path = create_mcp_config(api_url="http://localhost:8000", bot_token="test-token")
-        try:
-            with open(config_path) as f:
-                config = json.load(f)
-
-            assert "mcpServers" in config
-            assert "kardbrd" in config["mcpServers"]
-            server = config["mcpServers"]["kardbrd"]
-            assert server["command"] == "kardbrd-mcp"
-            assert "--api-url" in server["args"]
-            assert "http://localhost:8000" in server["args"]
-            # Token should be in env, NOT in args (S1: avoid ps exposure)
-            assert "--token" not in server["args"]
-            assert "test-token" not in server["args"]
-            assert server["env"]["KARDBRD_TOKEN"] == "test-token"
-            # Should NOT have SSE-style keys
-            assert "type" not in server
-            assert "url" not in server
-        finally:
-            config_path.unlink(missing_ok=True)
-
-    def test_config_uses_provided_credentials(self):
-        """Test that credentials are correctly embedded in config."""
-        import json
-
-        from kardbrd_agent.executor import create_mcp_config
-
-        config_path = create_mcp_config(
-            api_url="https://api.example.com", bot_token="secret-bot-123"
-        )
-        try:
-            with open(config_path) as f:
-                config = json.load(f)
-
-            server = config["mcpServers"]["kardbrd"]
-            assert "https://api.example.com" in server["args"]
-            # Token passed via env, not args (S1: avoid ps exposure)
-            assert "secret-bot-123" not in server["args"]
-            assert server["env"]["KARDBRD_TOKEN"] == "secret-bot-123"
-        finally:
-            config_path.unlink(missing_ok=True)
+        assert not hasattr(mod, "create_mcp_config")
 
 
 class TestClaudeExecutorWithMcp:
@@ -348,12 +278,12 @@ class TestClaudeExecutorWithMcp:
         assert executor.bot_token is None
 
 
-class TestStrictMcpConfig:
-    """Tests for --strict-mcp-config flag."""
+class TestKardbrdEnvVars:
+    """Tests for kardbrd CLI env vars passed to subprocess."""
 
     @pytest.mark.asyncio
-    async def test_execute_includes_strict_mcp_config_when_credentials_set(self):
-        """When MCP credentials are provided, --strict-mcp-config should be in the command."""
+    async def test_execute_passes_kardbrd_env_vars_when_credentials_set(self):
+        """When credentials are provided, KARDBRD_TOKEN and KARDBRD_API_URL should be in env."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         executor = ClaudeExecutor(
@@ -371,14 +301,19 @@ class TestStrictMcpConfig:
 
             await executor.execute("test prompt")
 
-            # Get the positional args passed to create_subprocess_exec
-            call_args = mock_exec.call_args[0]
-            assert "--strict-mcp-config" in call_args
-            assert "--mcp-config" in call_args
+            call_kwargs = mock_exec.call_args[1]
+            env = call_kwargs.get("env", {})
+            assert env.get("KARDBRD_TOKEN") == "test-token"
+            assert env.get("KARDBRD_API_URL") == "http://localhost:8000"
+
+            # MCP flags should NOT be present
+            call_args = list(mock_exec.call_args[0])
+            assert "--mcp-config" not in call_args
+            assert "--strict-mcp-config" not in call_args
 
     @pytest.mark.asyncio
-    async def test_execute_no_strict_mcp_config_without_credentials(self):
-        """Without MCP credentials, --strict-mcp-config should NOT be in the command."""
+    async def test_execute_no_mcp_flags_without_credentials(self):
+        """Without credentials, MCP flags should NOT be in the command."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         executor = ClaudeExecutor(cwd="/tmp", timeout=60)
@@ -391,34 +326,9 @@ class TestStrictMcpConfig:
 
             await executor.execute("test prompt")
 
-            call_args = mock_exec.call_args[0]
+            call_args = list(mock_exec.call_args[0])
             assert "--strict-mcp-config" not in call_args
             assert "--mcp-config" not in call_args
-
-    @pytest.mark.asyncio
-    async def test_strict_mcp_config_comes_after_mcp_config(self):
-        """--strict-mcp-config should appear after --mcp-config in the command."""
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        executor = ClaudeExecutor(
-            cwd="/tmp",
-            timeout=60,
-            api_url="http://localhost:8000",
-            bot_token="test-token",
-        )
-
-        with patch("asyncio.create_subprocess_exec") as mock_exec:
-            mock_process = MagicMock()
-            mock_process.communicate = AsyncMock(return_value=(b"", b""))
-            mock_process.returncode = 0
-            mock_exec.return_value = mock_process
-
-            await executor.execute("test prompt")
-
-            call_args = list(mock_exec.call_args[0])
-            mcp_config_idx = call_args.index("--mcp-config")
-            strict_idx = call_args.index("--strict-mcp-config")
-            assert strict_idx > mcp_config_idx
 
 
 class TestModelFlag:
@@ -632,7 +542,7 @@ class TestClaudeExecutorTimeout:
 
     @pytest.mark.asyncio
     async def test_bot_token_not_in_command_args(self):
-        """Test S1: bot_token is passed via MCP config env, not CLI args."""
+        """Test S1: bot_token is passed via env var, not CLI args."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         executor = ClaudeExecutor(
@@ -654,6 +564,11 @@ class TestClaudeExecutorTimeout:
             call_args = list(mock_exec.call_args[0])
             for arg in call_args:
                 assert "secret-token-xyz" not in str(arg), f"Token found in command arg: {arg}"
+
+            # Token must be in env vars
+            call_kwargs = mock_exec.call_args[1]
+            env = call_kwargs.get("env", {})
+            assert env.get("KARDBRD_TOKEN") == "secret-token-xyz"
 
 
 class TestAuthStatus:
@@ -856,7 +771,7 @@ class TestModuleLevelFunctions:
             author_name="Paul",
             board_id="board456",
         )
-        assert "get_board_labels" in prompt
+        assert "kardbrd board labels" in prompt
         assert "board456" in prompt
 
     def test_module_level_extract_command_skill(self):
