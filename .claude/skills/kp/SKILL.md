@@ -1,6 +1,7 @@
 ---
 name: Plan
 description: Create a detailed implementation plan from exploration findings
+user-invocable: true
 ---
 
 # Plan

@@ -292,14 +292,14 @@ class ProxyManager:
         return f"\U0001f916 {self.agent_name}"
 
     @staticmethod
-    def _extract_skill_info(md_file: Path) -> SkillInfo:
+    def _extract_skill_info(md_file: Path, fallback_name: str | None = None) -> SkillInfo:
         """Extract title and metadata from a skill markdown file.
 
         Supports YAML frontmatter (delimited by ``---``) with fields:
         ``name``, ``description``, ``allowed-tools``, ``metadata``.
-        Falls back to first ``# Heading``, then filename stem.
+        Falls back to first ``# Heading``, then *fallback_name* (default: filename stem).
         """
-        fallback_name = md_file.stem
+        fallback_name = fallback_name or md_file.stem
         try:
             content = md_file.read_text()
         except OSError:
@@ -327,23 +327,15 @@ class ProxyManager:
         return SkillInfo(name=fallback_name)
 
     def _discover_skills(self) -> list[tuple[str, SkillInfo]]:
-        """Scan .claude/commands/*.md and .claude/skills/*/*.md.
+        """Scan .claude/skills/*/*.md and .claude/commands/*.md.
 
-        Returns ``[(command_name, SkillInfo), ...]`` with duplicates removed
-        (commands take precedence over skills with the same name).
+        Returns ``[(skill_name, SkillInfo), ...]`` with duplicates removed
+        (skills take precedence over commands with the same name).
         """
         seen: dict[str, SkillInfo] = {}  # name → SkillInfo (first wins)
         claude_dir = self.cwd / ".claude"
 
-        # 1. .claude/commands/*.md  (flat files, name = stem)
-        commands_dir = claude_dir / "commands"
-        if commands_dir.is_dir():
-            for md_file in sorted(commands_dir.glob("*.md")):
-                name = md_file.stem
-                if name not in seen:
-                    seen[name] = self._extract_skill_info(md_file)
-
-        # 2. .claude/skills/<skill-name>/*.md  (subdirectories, name = dir name)
+        # 1. .claude/skills/<skill-name>/*.md  (subdirectories, name = dir name)
         skills_dir = claude_dir / "skills"
         if skills_dir.is_dir():
             for skill_subdir in sorted(skills_dir.iterdir()):
@@ -355,7 +347,15 @@ class ProxyManager:
                 # Use the first .md file found in the subdirectory
                 md_files = sorted(skill_subdir.glob("*.md"))
                 if md_files:
-                    seen[name] = self._extract_skill_info(md_files[0])
+                    seen[name] = self._extract_skill_info(md_files[0], fallback_name=name)
+
+        # 2. .claude/commands/*.md  (legacy flat files, name = stem)
+        commands_dir = claude_dir / "commands"
+        if commands_dir.is_dir():
+            for md_file in sorted(commands_dir.glob("*.md")):
+                name = md_file.stem
+                if name not in seen:
+                    seen[name] = self._extract_skill_info(md_file)
 
         return [(name, info) for name, info in sorted(seen.items())]
 

@@ -1,6 +1,7 @@
 ---
 name: Explore
 description: Deep codebase exploration and analysis for a card's topic
+user-invocable: true
 ---
 
 # Explore
