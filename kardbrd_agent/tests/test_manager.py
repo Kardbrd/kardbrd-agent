@@ -1915,10 +1915,10 @@ class TestBotCard:
         assert "**Action:** " + "x" * 80 + "..." in desc
 
     def test_build_bot_card_description_skills_section(self, tmp_path):
-        """Test skills section is rendered from .claude/commands/ directory."""
-        commands_dir = tmp_path / ".claude" / "commands"
-        commands_dir.mkdir(parents=True)
-        (commands_dir / "ke.md").write_text("# Explore\n\nExplore the codebase.")
+        """Test skills section is rendered from .claude/skills/ directory."""
+        skills_dir = tmp_path / ".claude" / "skills" / "ke"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text("# Explore\n\nExplore the codebase.")
         manager = _make_manager(cwd=str(tmp_path))
         desc = manager._build_bot_card_description()
 
@@ -1926,17 +1926,19 @@ class TestBotCard:
         assert "`/ke` — Explore" in desc
 
     def test_build_bot_card_description_no_skills_dir(self, tmp_path):
-        """Test skills section is omitted when .claude/commands/ doesn't exist."""
+        """Test skills section is omitted when no skills exist."""
         manager = _make_manager(cwd=str(tmp_path))
         desc = manager._build_bot_card_description()
         assert "## Skills" not in desc
 
     def test_discover_skills_reads_titles(self, tmp_path):
         """Test _discover_skills extracts titles from # heading."""
-        commands_dir = tmp_path / ".claude" / "commands"
-        commands_dir.mkdir(parents=True)
-        (commands_dir / "ke.md").write_text("# Explore\n\nBody.")
-        (commands_dir / "ki.md").write_text("# Implement\n\nBody.")
+        ke_dir = tmp_path / ".claude" / "skills" / "ke"
+        ke_dir.mkdir(parents=True)
+        (ke_dir / "SKILL.md").write_text("# Explore\n\nBody.")
+        ki_dir = tmp_path / ".claude" / "skills" / "ki"
+        ki_dir.mkdir(parents=True)
+        (ki_dir / "SKILL.md").write_text("# Implement\n\nBody.")
         manager = _make_manager(cwd=str(tmp_path))
         skills = manager._discover_skills()
 
@@ -1945,10 +1947,10 @@ class TestBotCard:
         assert skill_dict["ki"].name == "Implement"
 
     def test_discover_skills_fallback_to_filename(self, tmp_path):
-        """Test _discover_skills falls back to filename when no # heading."""
-        commands_dir = tmp_path / ".claude" / "commands"
-        commands_dir.mkdir(parents=True)
-        (commands_dir / "custom.md").write_text("No heading here, just text.")
+        """Test _discover_skills falls back to directory name when no # heading."""
+        custom_dir = tmp_path / ".claude" / "skills" / "custom"
+        custom_dir.mkdir(parents=True)
+        (custom_dir / "SKILL.md").write_text("No heading here, just text.")
         manager = _make_manager(cwd=str(tmp_path))
         skills = manager._discover_skills()
 
@@ -1967,25 +1969,25 @@ class TestBotCard:
         assert skill_dict["deploy"].name == "Deploy to prod"
 
     def test_discover_skills_both_commands_and_skills(self, tmp_path):
-        """Test _discover_skills merges both directories, commands win on conflict."""
+        """Test _discover_skills merges both directories, skills win on conflict."""
         commands_dir = tmp_path / ".claude" / "commands"
         commands_dir.mkdir(parents=True)
-        (commands_dir / "ke.md").write_text("# Explore\n\nBody.")
+        (commands_dir / "ke.md").write_text("# Explore Legacy\n\nBody.")
 
         skills_dir = tmp_path / ".claude" / "skills" / "deploy"
         skills_dir.mkdir(parents=True)
         (skills_dir / "deploy.md").write_text("# Deploy\n\nBody.")
 
-        # Same name in skills — commands should take precedence
+        # Same name in skills — skills should take precedence
         ke_skill = tmp_path / ".claude" / "skills" / "ke"
         ke_skill.mkdir(parents=True)
-        (ke_skill / "ke.md").write_text("# Explore Override\n\nDifferent.")
+        (ke_skill / "SKILL.md").write_text("# Explore\n\nSkills version.")
 
         manager = _make_manager(cwd=str(tmp_path))
         skills = manager._discover_skills()
 
         skill_dict = {name: info for name, info in skills}
-        assert skill_dict["ke"].name == "Explore"  # commands wins
+        assert skill_dict["ke"].name == "Explore"  # skills wins
         assert skill_dict["deploy"].name == "Deploy"
         # Ensure no duplicate ke entry
         names = [name for name, _ in skills]
@@ -2002,10 +2004,12 @@ class TestBotCard:
 
     def test_register_skills_success(self, tmp_path):
         """Test _register_skills PUTs skills to the API."""
-        commands_dir = tmp_path / ".claude" / "commands"
-        commands_dir.mkdir(parents=True)
-        (commands_dir / "ke.md").write_text("# Explore\n\nBody.")
-        (commands_dir / "ki.md").write_text("# Implement\n\nBody.")
+        ke_dir = tmp_path / ".claude" / "skills" / "ke"
+        ke_dir.mkdir(parents=True)
+        (ke_dir / "SKILL.md").write_text("# Explore\n\nBody.")
+        ki_dir = tmp_path / ".claude" / "skills" / "ki"
+        ki_dir.mkdir(parents=True)
+        (ki_dir / "SKILL.md").write_text("# Implement\n\nBody.")
 
         manager = _make_manager(cwd=str(tmp_path))
         mock_client = MagicMock()
@@ -2042,9 +2046,9 @@ class TestBotCard:
 
     def test_register_skills_api_failure_is_non_fatal(self, tmp_path):
         """Test _register_skills logs warning but does not raise on API error."""
-        commands_dir = tmp_path / ".claude" / "commands"
-        commands_dir.mkdir(parents=True)
-        (commands_dir / "ke.md").write_text("# Explore\n\nBody.")
+        ke_dir = tmp_path / ".claude" / "skills" / "ke"
+        ke_dir.mkdir(parents=True)
+        (ke_dir / "SKILL.md").write_text("# Explore\n\nBody.")
 
         manager = _make_manager(cwd=str(tmp_path))
         mock_client = MagicMock()
@@ -2057,9 +2061,9 @@ class TestBotCard:
     @pytest.mark.asyncio
     async def test_skills_refresh_loop_calls_register(self, tmp_path):
         """Test _skills_refresh_loop re-registers skills periodically."""
-        commands_dir = tmp_path / ".claude" / "commands"
-        commands_dir.mkdir(parents=True)
-        (commands_dir / "ke.md").write_text("# Explore\n\nBody.")
+        ke_dir = tmp_path / ".claude" / "skills" / "ke"
+        ke_dir.mkdir(parents=True)
+        (ke_dir / "SKILL.md").write_text("# Explore\n\nBody.")
 
         manager = _make_manager(cwd=str(tmp_path))
         manager._running = True
@@ -2600,26 +2604,26 @@ class TestSkillInfo:
 
     def test_discover_skills_returns_skill_info(self, tmp_path):
         """_discover_skills returns SkillInfo objects with frontmatter data."""
-        commands_dir = tmp_path / ".claude" / "commands"
-        commands_dir.mkdir(parents=True)
-        (commands_dir / "ke.md").write_text(
+        ke_dir = tmp_path / ".claude" / "skills" / "ke"
+        ke_dir.mkdir(parents=True)
+        (ke_dir / "SKILL.md").write_text(
             "---\nname: Explore\ndescription: Deep codebase exploration\n---\n\nBody."
         )
         manager = _make_manager(cwd=str(tmp_path))
         skills = manager._discover_skills()
 
         assert len(skills) == 1
-        cmd_name, info = skills[0]
-        assert cmd_name == "ke"
+        skill_name, info = skills[0]
+        assert skill_name == "ke"
         assert isinstance(info, SkillInfo)
         assert info.name == "Explore"
         assert info.description == "Deep codebase exploration"
 
     def test_bot_card_description_with_skill_description(self, tmp_path):
         """Bot card description includes skill description from frontmatter."""
-        commands_dir = tmp_path / ".claude" / "commands"
-        commands_dir.mkdir(parents=True)
-        (commands_dir / "ke.md").write_text(
+        ke_dir = tmp_path / ".claude" / "skills" / "ke"
+        ke_dir.mkdir(parents=True)
+        (ke_dir / "SKILL.md").write_text(
             "---\nname: Explore\ndescription: Deep codebase exploration\n---\n\nBody."
         )
         manager = _make_manager(cwd=str(tmp_path))
@@ -2628,9 +2632,9 @@ class TestSkillInfo:
 
     def test_register_skills_with_frontmatter_description(self, tmp_path):
         """_register_skills sends frontmatter description to API."""
-        commands_dir = tmp_path / ".claude" / "commands"
-        commands_dir.mkdir(parents=True)
-        (commands_dir / "ke.md").write_text(
+        ke_dir = tmp_path / ".claude" / "skills" / "ke"
+        ke_dir.mkdir(parents=True)
+        (ke_dir / "SKILL.md").write_text(
             "---\nname: Explore\ndescription: Deep codebase exploration\n---\n\nBody."
         )
         manager = _make_manager(cwd=str(tmp_path))

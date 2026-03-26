@@ -1,6 +1,7 @@
 ---
 name: Implement
 description: Execute an implementation plan from the card description
+user-invocable: true
 ---
 
 # Implement

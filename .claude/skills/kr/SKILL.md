@@ -1,6 +1,7 @@
 ---
 name: Review
 description: Full code review of changes on the card's branch
+user-invocable: true
 ---
 
 # Review
