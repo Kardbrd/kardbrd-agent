@@ -18,7 +18,7 @@ Create a detailed implementation plan based on exploration findings.
    - **New files**: Any new files to create (with rationale)
    - **Tests**: What tests to add or modify
    - **Verification**: How to confirm the changes work (`pytest`, `pre-commit run --all-files`)
-4. Update the card description with the plan using `mcp__kardbrd__update_card`
+4. Update the card description with the plan using `kardbrd card update <card_id> --description "..."`
 5. Post a summary comment on the card
 
 ## Guidelines

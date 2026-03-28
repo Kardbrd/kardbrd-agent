@@ -947,8 +947,8 @@ class ProxyManager:
         resume_prompt = f"""You completed the task but forgot to publish your response.
 
 Please do ONE of the following:
-1. Post a summary comment using `mcp__kardbrd__add_comment` with card_id="{card_id}"
-2. Update the card description using `mcp__kardbrd__update_card` if appropriate
+1. Post a summary comment using `kardbrd comment add {card_id} "Your summary here"`
+2. Update the card description using `kardbrd card update {card_id} --description "..."`
 3. If you made code changes, commit them with git
 
 End your comment by mentioning @{author_name}
