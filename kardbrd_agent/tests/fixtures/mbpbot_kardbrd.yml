@@ -56,7 +56,7 @@ schedules:
     list: Ideas
     action: |
       Read the activity on the board for the previous day using
-      mcp__kardbrd__get_board_activity_markdown and summarize
+      `kardbrd md board 0gl5MlBZ` and summarize
       by human their activity on the board. Post the summary
       as a comment on this card.
 
@@ -130,7 +130,7 @@ rules:
          or overlapping scope (search by title keywords, look at descriptions)
       4. For each related active card found:
          - Add a bidirectional link between the Done card and the related card
-           using mcp__kardbrd__add_link (URL: http://app.kardbrd.com/c/{card_id})
+           using `kardbrd card link <card_id> <related_card_id>`
       5. Add a brief comment on the Done card listing which cards were linked
          and why, so the knowledge connection is documented
 
@@ -157,7 +157,7 @@ rules:
       1. Read the board using /kb
       2. Find all cards in the Done list
       3. For each card in Done, check when it was last updated
-         (use mcp__kardbrd__get_card to see the updated timestamp)
+         (use `kardbrd md card <card_id>` to see the updated timestamp)
       4. Identify cards that have been in Done for more than 3 days
       5. Create a checklist on this sponge card titled "Cards to archive"
          with one item per candidate card (use the card title as the item title)
@@ -187,7 +187,7 @@ rules:
          c. Create bidirectional links between related active cards
             so knowledge is preserved even after archiving
          d. Add an "Archived by 🧽" comment on the card
-         e. Archive the card using mcp__kardbrd__archive_card
+         e. Archive the card using `kardbrd card archive <card_id>`
       3. For each UNCHECKED item, skip it (the human wants to keep it)
       4. Add a summary comment on this sponge card:
          - How many cards were archived

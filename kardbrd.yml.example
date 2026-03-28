@@ -196,7 +196,7 @@ schedules:
     list: Ideas
     action: |
       Read the activity on the board for the previous day using
-      mcp__kardbrd__get_board_activity_markdown and summarize
+      `kardbrd md board <board_id>` and summarize
       by human their activity on the board. Post the summary
       as a comment on this card.
 

@@ -28,7 +28,7 @@ Full code review of changes on the card's branch.
 
 - [ ] No shell injection via `asyncio.create_subprocess_exec` args
 - [ ] Bot tokens not logged or exposed in error messages
-- [ ] Temporary files (MCP configs) cleaned up properly
+- [ ] Temporary files cleaned up properly
 - [ ] WebSocket messages validated before processing
 - [ ] No unbounded data in prompts or comments
 - [ ] Worktree paths sanitized (no path traversal)
