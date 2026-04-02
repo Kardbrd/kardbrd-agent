@@ -273,8 +273,20 @@ kardbrd-project/
 
 See [`examples/docker/`](examples/docker/) for the full setup guide with docker-compose.yml, environment variables, per-stack examples, and `Dockerfile.agent` for repos without an existing Dockerfile.
 
+### Running with uv (no Docker)
+
+Run kardbrd-agent directly on the host with `uvx` — no Docker required. Best for dev machines or when your project's toolchain is already installed locally:
+
+```bash
+uvx --from "git+https://github.com/Kardbrd/kardbrd-agent.git" \
+  kardbrd-agent start --cwd /path/to/your/repo
+```
+
+See [`examples/uv/`](examples/uv/) for the full guide: environment setup, systemd/launchd services, multi-project configs, and auto-updates.
+
 ### Platform-specific examples
 
+- **uv** (`examples/uv/`): Direct host execution with `uvx` or `uv run`, systemd/launchd services
 - **Linux** (`examples/linux/`): systemd services with Podman/Docker, auto-update
 - **macOS** (`examples/macos/`): launchd daemon with auto-update and rollback
 

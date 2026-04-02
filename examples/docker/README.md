@@ -244,6 +244,75 @@ ENTRYPOINT ["uvx", "--from", "git+https://github.com/kardbrd/kardbrd-agent.git",
 CMD ["start", "--cwd", "/home/agent/repository"]
 ```
 
+## Auto-Updates with Watchtower
+
+[Watchtower](https://containrrr.dev/watchtower/) monitors container registries and automatically pulls + restarts containers when a new image is published. See [`docker-compose.watchtower.yml`](docker-compose.watchtower.yml) for a complete example with agent, MySQL, and Watchtower.
+
+### How it works
+
+Watchtower polls the registry (e.g. GHCR) on an interval. When it detects a new image digest for a labeled container, it:
+
+1. Pulls the new image
+2. Gracefully stops the running container
+3. Starts a new container with the same options (env, volumes, etc.)
+
+### Requirements
+
+Watchtower only works with **registry-pulled images** (`image:` in compose). It cannot trigger `docker compose build`. Two patterns:
+
+| Pattern | Watchtower updates? | How agent updates |
+|---|---|---|
+| `image: ghcr.io/org/repo:agent` | Yes — full image swap | New image = new agent version |
+| `build: ./repository` + `uvx` entrypoint | Base image only | Restart container → `uvx` fetches latest |
+
+### Quick setup
+
+Add Watchtower to your existing compose file:
+
+```yaml
+services:
+  agent:
+    image: ghcr.io/yourorg/yourproject:agent   # must use image:, not build:
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+    # ... rest of your agent config
+
+  watchtower:
+    image: containrrr/watchtower
+    restart: unless-stopped
+    environment:
+      - WATCHTOWER_LABEL_ENABLE=true       # only update labeled containers
+      - WATCHTOWER_POLL_INTERVAL=300       # check every 5 minutes
+      - WATCHTOWER_CLEANUP=true            # remove old images
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # For private registries, mount Docker auth config:
+      # - $HOME/.docker/config.json:/config.json:ro
+```
+
+### Private registry auth (GHCR, ECR, etc.)
+
+Watchtower needs registry credentials to pull private images. The simplest approach is mounting the host's Docker config:
+
+```bash
+# Log in to GHCR on the host (uses a GitHub PAT with read:packages scope)
+echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin
+```
+
+Then uncomment the config.json volume mount in the Watchtower service. Alternatively, set `REPO_USER` and `REPO_PASS` environment variables on the Watchtower container.
+
+### Notifications
+
+Watchtower supports notifications via [Shoutrrr](https://containrrr.dev/shoutrrr/). Add to the Watchtower environment:
+
+```yaml
+environment:
+  - WATCHTOWER_NOTIFICATIONS=shoutrrr
+  - WATCHTOWER_NOTIFICATION_URL=slack://hook.slack.com/services/T00/B00/XXX
+```
+
+Supported: Slack, Discord, email, Telegram, Gotify, and more.
+
 ## Management
 
 ### View logs
