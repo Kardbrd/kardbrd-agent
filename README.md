@@ -171,7 +171,7 @@ rules:
     event: card_created
     list: Ideas
     model: opus
-    action: /ke
+    action: /explore
 
   - name: Stop on red flag
     event: reaction_added

@@ -31,7 +31,7 @@ rules:
     assignee:
       - __self__
     model: opus
-    action: /ke
+    action: /explore
 
   # Card moves to In Progress → implement
   - name: Implement on move to In Progress
@@ -39,7 +39,7 @@ rules:
     list: In Progress
     require_label: Agent
     model: sonnet
-    action: /ki
+    action: /implement
 
   # ── Reaction-based triggers ────────────────────────────────────
 

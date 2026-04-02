@@ -142,7 +142,7 @@ class TestLoadRulesWithSchedules:
             "rules:\n"
             "  - name: test\n"
             "    event: card_moved\n"
-            "    action: /ke\n"
+            "    action: /explore\n"
         )
         engine, config = load_rules(rules_file)
         assert len(engine.rules) == 1
@@ -159,7 +159,7 @@ class TestLoadRulesWithSchedules:
             "rules:\n"
             "  - name: test\n"
             "    event: card_moved\n"
-            "    action: /ke\n"
+            "    action: /explore\n"
         )
         engine, config = load_rules(rules_file)
         assert config.schedules == []
@@ -604,7 +604,7 @@ class TestReloadableRuleEngineSchedules:
             '    cron: "0 9 * * *"\n'
             "    action: Do stuff\n"
             "rules:\n"
-            "  - name: test\n    event: card_moved\n    action: /ke\n"
+            "  - name: test\n    event: card_moved\n    action: /explore\n"
         )
         engine = ReloadableRuleEngine(rules_file)
         assert len(engine.schedules) == 1
@@ -618,7 +618,7 @@ class TestReloadableRuleEngineSchedules:
         rules_file.write_text(
             "board_id: abc\nagent: Bot\n"
             "rules:\n"
-            "  - name: test\n    event: card_moved\n    action: /ke\n"
+            "  - name: test\n    event: card_moved\n    action: /explore\n"
         )
         engine = ReloadableRuleEngine(rules_file)
         assert engine.schedules == []

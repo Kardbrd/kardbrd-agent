@@ -137,7 +137,7 @@ class TestProxyManagerAsync:
                 "event_type": "comment_created",
                 "card_id": "abc123",
                 "comment_id": "comm123",
-                "content": "@coder /kp",
+                "content": "@coder /plan",
                 "author_name": "Paul",
             }
         )
@@ -145,7 +145,7 @@ class TestProxyManagerAsync:
         manager._process_mention.assert_called_once_with(
             card_id="abc123",
             comment_id="comm123",
-            content="@coder /kp",
+            content="@coder /plan",
             author_name="Paul",
         )
 
@@ -165,7 +165,7 @@ class TestProxyManagerAsync:
                 "event_type": "comment_created",
                 "card_id": "abc123",
                 "comment_id": "comm123",
-                "content": "@coder /kp",
+                "content": "@coder /plan",
                 "author_name": "Paul",
             }
         )
@@ -200,7 +200,7 @@ class TestProxyManagerAsync:
         manager.executor.check_auth = AsyncMock(
             return_value=AuthStatus(authenticated=True, email="test@test.com")
         )
-        manager.executor.extract_command.return_value = "/kp"
+        manager.executor.extract_command.return_value = "/plan"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = AsyncMock(
             return_value=ClaudeResult(success=True, result_text="Done")
@@ -224,7 +224,7 @@ class TestProxyManagerAsync:
         manager.executor.check_auth = AsyncMock(
             return_value=AuthStatus(authenticated=True, email="test@test.com")
         )
-        manager.executor.extract_command.return_value = "/kp"
+        manager.executor.extract_command.return_value = "/plan"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = AsyncMock(
             return_value=ClaudeResult(success=True, result_text="Done")
@@ -251,7 +251,7 @@ class TestProxyManagerAsync:
         manager.executor.check_auth = AsyncMock(
             return_value=AuthStatus(authenticated=True, email="test@test.com")
         )
-        manager.executor.extract_command.return_value = "/kp"
+        manager.executor.extract_command.return_value = "/plan"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = AsyncMock(
             return_value=ClaudeResult(success=True, result_text="Done")
@@ -276,7 +276,7 @@ class TestProxyManagerAsync:
         manager.executor.check_auth = AsyncMock(
             return_value=AuthStatus(authenticated=True, email="test@test.com")
         )
-        manager.executor.extract_command.return_value = "/kp"
+        manager.executor.extract_command.return_value = "/plan"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = AsyncMock(
             return_value=ClaudeResult(success=True, result_text="Done")
@@ -597,7 +597,7 @@ class TestProcessingAttribute:
         manager.executor.check_auth = AsyncMock(
             return_value=AuthStatus(authenticated=True, email="test@test.com")
         )
-        manager.executor.extract_command.return_value = "/kp"
+        manager.executor.extract_command.return_value = "/plan"
         manager.executor.build_prompt.return_value = "prompt"
         manager._has_recent_bot_comment = MagicMock(return_value=False)
 
@@ -883,7 +883,7 @@ class TestRuleEngineIntegration:
 
     def test_init_accepts_rule_engine(self):
         """Test ProxyManager accepts a custom RuleEngine."""
-        engine = RuleEngine(rules=[Rule(name="test", events=["card_moved"], action="/ke")])
+        engine = RuleEngine(rules=[Rule(name="test", events=["card_moved"], action="/explore")])
         manager = _make_manager(rule_engine=engine)
         assert len(manager.rule_engine.rules) == 1
 
@@ -923,7 +923,7 @@ class TestRuleEngineIntegration:
     @pytest.mark.asyncio
     async def test_check_rules_triggers_matching_rule(self):
         """Test matching rule triggers _process_rule."""
-        rule = Rule(name="ideas", events=["card_moved"], action="/ke", list="Ideas")
+        rule = Rule(name="ideas", events=["card_moved"], action="/explore", list="Ideas")
         engine = RuleEngine(rules=[rule])
         manager = _make_manager(rule_engine=engine)
         manager._process_rule = AsyncMock()
@@ -936,7 +936,7 @@ class TestRuleEngineIntegration:
     @pytest.mark.asyncio
     async def test_check_rules_skips_active_card(self):
         """Test rules are skipped if card is already being processed."""
-        rule = Rule(name="ideas", events=["card_moved"], action="/ke", list="Ideas")
+        rule = Rule(name="ideas", events=["card_moved"], action="/explore", list="Ideas")
         engine = RuleEngine(rules=[rule])
         manager = _make_manager(rule_engine=engine)
         manager.executor = MagicMock()
@@ -953,7 +953,7 @@ class TestRuleEngineIntegration:
     @pytest.mark.asyncio
     async def test_process_rule_spawns_claude(self):
         """Test _process_rule creates worktree and spawns Claude."""
-        rule = Rule(name="ideas", events=["card_moved"], action="/ke", model="haiku")
+        rule = Rule(name="ideas", events=["card_moved"], action="/explore", model="haiku")
         manager = _make_manager()
 
         manager.client = MagicMock()
@@ -980,7 +980,7 @@ class TestRuleEngineIntegration:
     @pytest.mark.asyncio
     async def test_process_rule_cleans_up_session(self):
         """Test _process_rule cleans up active session after completion."""
-        rule = Rule(name="ideas", events=["card_moved"], action="/ke")
+        rule = Rule(name="ideas", events=["card_moved"], action="/explore")
         manager = _make_manager()
 
         manager.client = MagicMock()
@@ -1004,7 +1004,7 @@ class TestRuleEngineIntegration:
     @pytest.mark.asyncio
     async def test_process_rule_posts_error_on_failure(self):
         """Test _process_rule posts error comment when Claude fails."""
-        rule = Rule(name="ideas", events=["card_moved"], action="/ke")
+        rule = Rule(name="ideas", events=["card_moved"], action="/explore")
         manager = _make_manager()
 
         manager.client = MagicMock()
@@ -1127,7 +1127,7 @@ class TestAuthCheckInMention:
         manager.executor.check_auth = AsyncMock(
             return_value=AuthStatus(authenticated=True, email="test@test.com")
         )
-        manager.executor.extract_command.return_value = "/kp"
+        manager.executor.extract_command.return_value = "/plan"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = AsyncMock(
             return_value=ClaudeResult(success=True, result_text="Done")
@@ -1144,7 +1144,7 @@ class TestAuthCheckInMention:
     @pytest.mark.asyncio
     async def test_process_rule_aborts_when_not_authenticated(self):
         """Test that _process_rule posts error when auth fails."""
-        rule = Rule(name="auto-ke", events=["card_moved"], action="/ke")
+        rule = Rule(name="auto-ke", events=["card_moved"], action="/explore")
         manager = _make_manager()
         manager.client = MagicMock()
         manager.worktree_manager = MagicMock()
@@ -1211,7 +1211,7 @@ class TestAuthCheckInMention:
     @pytest.mark.asyncio
     async def test_auth_hint_appears_in_rule_error_comment(self):
         """Test auth_hint from AuthStatus is included in rule error comment."""
-        rule = Rule(name="auto-ke", events=["card_moved"], action="/ke")
+        rule = Rule(name="auto-ke", events=["card_moved"], action="/explore")
         manager = _make_manager()
         manager.client = MagicMock()
         manager.worktree_manager = MagicMock()
@@ -1278,7 +1278,7 @@ class TestErrorSanitization:
     @pytest.mark.asyncio
     async def test_rule_exception_posts_sanitized_error(self):
         """Test _process_rule exception posts error type only, no traceback."""
-        rule = Rule(name="ideas", events=["card_moved"], action="/ke")
+        rule = Rule(name="ideas", events=["card_moved"], action="/explore")
         manager = _make_manager()
         manager.client = MagicMock()
         manager.executor = MagicMock()
@@ -1332,20 +1332,20 @@ class TestConcurrentDuplicatePrevention:
         manager.executor.check_auth = AsyncMock(
             return_value=AuthStatus(authenticated=True, email="test@test.com")
         )
-        manager.executor.extract_command.return_value = "/kp"
+        manager.executor.extract_command.return_value = "/plan"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = slow_execute
 
         # Start first mention (will block inside execute)
         task1 = asyncio.create_task(
-            manager._process_mention("card1", "comm1", "@coder /kp", "Paul")
+            manager._process_mention("card1", "comm1", "@coder /plan", "Paul")
         )
         # Wait for first one to start executing
         await execute_started.wait()
 
         # Start second mention for same card while first is still running
         task2 = asyncio.create_task(
-            manager._process_mention("card1", "comm2", "@coder /kp", "Paul")
+            manager._process_mention("card1", "comm2", "@coder /plan", "Paul")
         )
         # Give task2 time to reach the duplicate check
         await asyncio.sleep(0.05)
@@ -1363,7 +1363,7 @@ class TestConcurrentDuplicatePrevention:
         """Test two concurrent _process_rule calls for same card: only one executes."""
         import asyncio
 
-        rule = Rule(name="ideas", events=["card_moved"], action="/ke")
+        rule = Rule(name="ideas", events=["card_moved"], action="/explore")
         manager = _make_manager()
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
@@ -1619,7 +1619,7 @@ class TestBotCard:
     def test_build_bot_card_description_includes_rules(self):
         """Test description includes rule names when rules are loaded."""
         rules = [
-            Rule(name="Explore ideas", events=["card_moved"], action="/ke"),
+            Rule(name="Explore ideas", events=["card_moved"], action="/explore"),
             Rule(
                 name="Stop agent", events=["reaction_added"], action="__stop__", emoji="\U0001f6d1"
             ),
@@ -1655,7 +1655,7 @@ class TestBotCard:
             Rule(
                 name="Explore new ideas",
                 events=["card_created", "card_moved"],
-                action="/ke",
+                action="/explore",
                 list="Ideas",
                 exclude_label="Agent",
             ),
@@ -1916,14 +1916,14 @@ class TestBotCard:
 
     def test_build_bot_card_description_skills_section(self, tmp_path):
         """Test skills section is rendered from .claude/skills/ directory."""
-        skills_dir = tmp_path / ".claude" / "skills" / "ke"
+        skills_dir = tmp_path / ".claude" / "skills" / "explore"
         skills_dir.mkdir(parents=True)
         (skills_dir / "SKILL.md").write_text("# Explore\n\nExplore the codebase.")
         manager = _make_manager(cwd=str(tmp_path))
         desc = manager._build_bot_card_description()
 
         assert "## Skills" in desc
-        assert "`/ke` — Explore" in desc
+        assert "`/explore` — Explore" in desc
 
     def test_build_bot_card_description_no_skills_dir(self, tmp_path):
         """Test skills section is omitted when no skills exist."""
@@ -1933,18 +1933,18 @@ class TestBotCard:
 
     def test_discover_skills_reads_titles(self, tmp_path):
         """Test _discover_skills extracts titles from # heading."""
-        ke_dir = tmp_path / ".claude" / "skills" / "ke"
-        ke_dir.mkdir(parents=True)
-        (ke_dir / "SKILL.md").write_text("# Explore\n\nBody.")
-        ki_dir = tmp_path / ".claude" / "skills" / "ki"
-        ki_dir.mkdir(parents=True)
-        (ki_dir / "SKILL.md").write_text("# Implement\n\nBody.")
+        explore_dir = tmp_path / ".claude" / "skills" / "explore"
+        explore_dir.mkdir(parents=True)
+        (explore_dir / "SKILL.md").write_text("# Explore\n\nBody.")
+        implement_dir = tmp_path / ".claude" / "skills" / "implement"
+        implement_dir.mkdir(parents=True)
+        (implement_dir / "SKILL.md").write_text("# Implement\n\nBody.")
         manager = _make_manager(cwd=str(tmp_path))
         skills = manager._discover_skills()
 
         skill_dict = {name: info for name, info in skills}
-        assert skill_dict["ke"].name == "Explore"
-        assert skill_dict["ki"].name == "Implement"
+        assert skill_dict["explore"].name == "Explore"
+        assert skill_dict["implement"].name == "Implement"
 
     def test_discover_skills_fallback_to_filename(self, tmp_path):
         """Test _discover_skills falls back to directory name when no # heading."""
@@ -1972,26 +1972,26 @@ class TestBotCard:
         """Test _discover_skills merges both directories, skills win on conflict."""
         commands_dir = tmp_path / ".claude" / "commands"
         commands_dir.mkdir(parents=True)
-        (commands_dir / "ke.md").write_text("# Explore Legacy\n\nBody.")
+        (commands_dir / "explore.md").write_text("# Explore Legacy\n\nBody.")
 
         skills_dir = tmp_path / ".claude" / "skills" / "deploy"
         skills_dir.mkdir(parents=True)
         (skills_dir / "deploy.md").write_text("# Deploy\n\nBody.")
 
         # Same name in skills — skills should take precedence
-        ke_skill = tmp_path / ".claude" / "skills" / "ke"
-        ke_skill.mkdir(parents=True)
-        (ke_skill / "SKILL.md").write_text("# Explore\n\nSkills version.")
+        explore_skill = tmp_path / ".claude" / "skills" / "explore"
+        explore_skill.mkdir(parents=True)
+        (explore_skill / "SKILL.md").write_text("# Explore\n\nSkills version.")
 
         manager = _make_manager(cwd=str(tmp_path))
         skills = manager._discover_skills()
 
         skill_dict = {name: info for name, info in skills}
-        assert skill_dict["ke"].name == "Explore"  # skills wins
+        assert skill_dict["explore"].name == "Explore"  # skills wins
         assert skill_dict["deploy"].name == "Deploy"
         # Ensure no duplicate ke entry
         names = [name for name, _ in skills]
-        assert names.count("ke") == 1
+        assert names.count("explore") == 1
 
     def test_discover_skills_empty_skills_subdir(self, tmp_path):
         """Test _discover_skills skips skill subdirectories with no .md files."""
@@ -2004,12 +2004,12 @@ class TestBotCard:
 
     def test_register_skills_success(self, tmp_path):
         """Test _register_skills PUTs skills to the API."""
-        ke_dir = tmp_path / ".claude" / "skills" / "ke"
-        ke_dir.mkdir(parents=True)
-        (ke_dir / "SKILL.md").write_text("# Explore\n\nBody.")
-        ki_dir = tmp_path / ".claude" / "skills" / "ki"
-        ki_dir.mkdir(parents=True)
-        (ki_dir / "SKILL.md").write_text("# Implement\n\nBody.")
+        explore_dir = tmp_path / ".claude" / "skills" / "explore"
+        explore_dir.mkdir(parents=True)
+        (explore_dir / "SKILL.md").write_text("# Explore\n\nBody.")
+        implement_dir = tmp_path / ".claude" / "skills" / "implement"
+        implement_dir.mkdir(parents=True)
+        (implement_dir / "SKILL.md").write_text("# Implement\n\nBody.")
 
         manager = _make_manager(cwd=str(tmp_path))
         mock_client = MagicMock()
@@ -2023,8 +2023,8 @@ class TestBotCard:
             "/api/bots/skills/",
             json={
                 "skills": [
-                    {"name": "ke", "description": "Explore"},
-                    {"name": "ki", "description": "Implement"},
+                    {"name": "explore", "description": "Explore"},
+                    {"name": "implement", "description": "Implement"},
                 ]
             },
         )
@@ -2046,9 +2046,9 @@ class TestBotCard:
 
     def test_register_skills_api_failure_is_non_fatal(self, tmp_path):
         """Test _register_skills logs warning but does not raise on API error."""
-        ke_dir = tmp_path / ".claude" / "skills" / "ke"
-        ke_dir.mkdir(parents=True)
-        (ke_dir / "SKILL.md").write_text("# Explore\n\nBody.")
+        explore_dir = tmp_path / ".claude" / "skills" / "explore"
+        explore_dir.mkdir(parents=True)
+        (explore_dir / "SKILL.md").write_text("# Explore\n\nBody.")
 
         manager = _make_manager(cwd=str(tmp_path))
         mock_client = MagicMock()
@@ -2061,9 +2061,9 @@ class TestBotCard:
     @pytest.mark.asyncio
     async def test_skills_refresh_loop_calls_register(self, tmp_path):
         """Test _skills_refresh_loop re-registers skills periodically."""
-        ke_dir = tmp_path / ".claude" / "skills" / "ke"
-        ke_dir.mkdir(parents=True)
-        (ke_dir / "SKILL.md").write_text("# Explore\n\nBody.")
+        explore_dir = tmp_path / ".claude" / "skills" / "explore"
+        explore_dir.mkdir(parents=True)
+        (explore_dir / "SKILL.md").write_text("# Explore\n\nBody.")
 
         manager = _make_manager(cwd=str(tmp_path))
         manager._running = True
@@ -2154,7 +2154,7 @@ class TestNonGitRepo:
         manager.executor.check_auth = AsyncMock(
             return_value=AuthStatus(authenticated=True, email="test@test.com")
         )
-        manager.executor.extract_command.return_value = "/kp"
+        manager.executor.extract_command.return_value = "/plan"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = AsyncMock(
             return_value=ClaudeResult(success=True, result_text="Done")
@@ -2171,7 +2171,7 @@ class TestNonGitRepo:
     @pytest.mark.asyncio
     async def test_process_rule_uses_cwd_when_no_worktree_manager(self):
         """Test _process_rule falls back to cwd when worktree_manager is None."""
-        rule = Rule(name="ideas", events=["card_moved"], action="/ke")
+        rule = Rule(name="ideas", events=["card_moved"], action="/explore")
         manager = _make_manager(cwd="/tmp/no-git")
 
         manager.client = MagicMock()
@@ -2313,7 +2313,7 @@ class TestCheckRulesAssigneeFetch:
         rule = Rule(
             name="alice",
             events=["card_moved"],
-            action="/ke",
+            action="/explore",
             list="Ideas",
             assignee=["user-alice"],
         )
@@ -2336,7 +2336,7 @@ class TestCheckRulesAssigneeFetch:
     @pytest.mark.asyncio
     async def test_skips_fetch_when_no_assignee_rules(self):
         """Test _check_rules skips API fetch when no rules use assignee."""
-        rule = Rule(name="all", events=["card_moved"], action="/ke", list="Ideas")
+        rule = Rule(name="all", events=["card_moved"], action="/explore", list="Ideas")
         engine = RuleEngine(rules=[rule])
         manager = _make_manager(rule_engine=engine)
         manager.client = MagicMock()
@@ -2353,7 +2353,7 @@ class TestCheckRulesAssigneeFetch:
         rule = Rule(
             name="alice",
             events=["card_moved"],
-            action="/ke",
+            action="/explore",
             assignee=["user-alice"],
         )
         engine = RuleEngine(rules=[rule])
@@ -2377,7 +2377,7 @@ class TestCheckRulesAssigneeFetch:
         rule = Rule(
             name="alice",
             events=["card_moved"],
-            action="/ke",
+            action="/explore",
             assignee=["user-alice"],
         )
         engine = RuleEngine(rules=[rule])
@@ -2398,7 +2398,7 @@ class TestCheckRulesAssigneeFetch:
         rule = Rule(
             name="alice no agent",
             events=["card_moved"],
-            action="/ke",
+            action="/explore",
             assignee=["user-alice"],
             exclude_label="Agent",
         )
@@ -2457,7 +2457,7 @@ class TestCheckRulesCommentAuthorFetch:
     @pytest.mark.asyncio
     async def test_skips_fetch_when_no_comment_author_rules(self):
         """Test _check_rules skips comment fetch when no rules use comment_author."""
-        rule = Rule(name="all", events=["reaction_added"], action="/ke", emoji="✅")
+        rule = Rule(name="all", events=["reaction_added"], action="/explore", emoji="✅")
         engine = RuleEngine(rules=[rule])
         manager = _make_manager(rule_engine=engine)
         manager.client = MagicMock()
@@ -2604,9 +2604,9 @@ class TestSkillInfo:
 
     def test_discover_skills_returns_skill_info(self, tmp_path):
         """_discover_skills returns SkillInfo objects with frontmatter data."""
-        ke_dir = tmp_path / ".claude" / "skills" / "ke"
-        ke_dir.mkdir(parents=True)
-        (ke_dir / "SKILL.md").write_text(
+        explore_dir = tmp_path / ".claude" / "skills" / "explore"
+        explore_dir.mkdir(parents=True)
+        (explore_dir / "SKILL.md").write_text(
             "---\nname: Explore\ndescription: Deep codebase exploration\n---\n\nBody."
         )
         manager = _make_manager(cwd=str(tmp_path))
@@ -2614,27 +2614,27 @@ class TestSkillInfo:
 
         assert len(skills) == 1
         skill_name, info = skills[0]
-        assert skill_name == "ke"
+        assert skill_name == "explore"
         assert isinstance(info, SkillInfo)
         assert info.name == "Explore"
         assert info.description == "Deep codebase exploration"
 
     def test_bot_card_description_with_skill_description(self, tmp_path):
         """Bot card description includes skill description from frontmatter."""
-        ke_dir = tmp_path / ".claude" / "skills" / "ke"
-        ke_dir.mkdir(parents=True)
-        (ke_dir / "SKILL.md").write_text(
+        explore_dir = tmp_path / ".claude" / "skills" / "explore"
+        explore_dir.mkdir(parents=True)
+        (explore_dir / "SKILL.md").write_text(
             "---\nname: Explore\ndescription: Deep codebase exploration\n---\n\nBody."
         )
         manager = _make_manager(cwd=str(tmp_path))
         desc = manager._build_bot_card_description()
-        assert "`/ke` — Explore — Deep codebase exploration" in desc
+        assert "`/explore` — Explore — Deep codebase exploration" in desc
 
     def test_register_skills_with_frontmatter_description(self, tmp_path):
         """_register_skills sends frontmatter description to API."""
-        ke_dir = tmp_path / ".claude" / "skills" / "ke"
-        ke_dir.mkdir(parents=True)
-        (ke_dir / "SKILL.md").write_text(
+        explore_dir = tmp_path / ".claude" / "skills" / "explore"
+        explore_dir.mkdir(parents=True)
+        (explore_dir / "SKILL.md").write_text(
             "---\nname: Explore\ndescription: Deep codebase exploration\n---\n\nBody."
         )
         manager = _make_manager(cwd=str(tmp_path))
@@ -2649,7 +2649,7 @@ class TestSkillInfo:
             "/api/bots/skills/",
             json={
                 "skills": [
-                    {"name": "ke", "description": "Deep codebase exploration"},
+                    {"name": "explore", "description": "Deep codebase exploration"},
                 ]
             },
         )

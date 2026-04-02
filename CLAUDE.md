@@ -47,7 +47,7 @@ uv run kardbrd-agent validate path/to/kardbrd.yml
 
 **ScheduleManager** (`scheduler.py`) — Cron-based automation. Runs as a third `asyncio.gather()` task alongside WebSocket and status ping. Each schedule's `name` is the card title — finds existing card (case-insensitive) or creates one. New cards can be placed in a specific list and assigned to a user. Fires actions via `_process_schedule()` which creates a synthetic Rule and delegates to `_process_rule()`.
 
-**Executor Protocol** (`executor.py`) — Defines the `Executor` Protocol (runtime_checkable) with methods: `execute()`, `build_prompt()`, `extract_command()`, `check_auth()`. Contains `ExecutorResult` (aliased as `ClaudeResult` for backwards compat) and `AuthStatus` (with `auth_hint` for executor-specific re-auth instructions). `ClaudeExecutor` implements the protocol: spawns `claude -p` subprocess with `--output-format=stream-json`, parses streaming output, extracts session IDs for resumption, enforces timeouts. Builds prompts with card context and detects skill commands ("/kp", "/ki"). Accepts per-rule model via `--model` flag.
+**Executor Protocol** (`executor.py`) — Defines the `Executor` Protocol (runtime_checkable) with methods: `execute()`, `build_prompt()`, `extract_command()`, `check_auth()`. Contains `ExecutorResult` (aliased as `ClaudeResult` for backwards compat) and `AuthStatus` (with `auth_hint` for executor-specific re-auth instructions). `ClaudeExecutor` implements the protocol: spawns `claude -p` subprocess with `--output-format=stream-json`, parses streaming output, extracts session IDs for resumption, enforces timeouts. Builds prompts with card context and detects skill commands ("/plan", "/implement"). Accepts per-rule model via `--model` flag.
 
 **GooseExecutor** (`goose_executor.py`) — Alternative executor that wraps [Goose](https://block.github.io/goose/) CLI. Spawns `goose run -t` with `--output-format stream-json`. Uses `--with-extension` for MCP (no temp config file needed). Provider-aware auth checking via `PROVIDER_KEY_MAP` validates `GOOSE_PROVIDER` and provider-specific API keys. Named sessions (`-n "card-{card_id}"`) for resumption. Delegates `build_prompt()` and `extract_command()` to `ClaudeExecutor`'s implementation.
 
@@ -84,7 +84,7 @@ rules:
     list: Ideas            # match list name (case-insensitive)
     exclude_label: Agent   # skip cards with this label
     model: opus            # opus | sonnet | haiku
-    action: /ke            # skill command or inline prompt
+    action: /explore       # skill command or inline prompt
 
   - name: Stop agent
     event: reaction_added

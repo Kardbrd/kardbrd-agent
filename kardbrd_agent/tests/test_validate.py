@@ -18,7 +18,7 @@ class TestValidateRulesFile:
             "  - name: test\n"
             "    event: card_moved\n"
             "    list: Ideas\n"
-            "    action: /ke\n"
+            "    action: /explore\n"
         )
         result = validate_rules_file(f)
         assert result.is_valid
@@ -36,7 +36,7 @@ class TestValidateRulesFile:
             "      - card_moved\n"
             "      - card_created\n"
             "    list: Ideas\n"
-            "    action: /ke\n"
+            "    action: /explore\n"
             "  - name: rule2\n"
             "    event: comment_created\n"
             "    content_contains: '@claude'\n"
@@ -91,7 +91,9 @@ class TestValidateRulesFile:
     def test_missing_name(self, tmp_path):
         """Test missing name field reports error."""
         f = tmp_path / "kardbrd.yml"
-        f.write_text("board_id: test\nagent: Bot\nrules:\n  - event: card_moved\n    action: /ke\n")
+        f.write_text(
+            "board_id: test\nagent: Bot\nrules:\n  - event: card_moved\n    action: /explore\n"
+        )
         result = validate_rules_file(f)
         assert not result.is_valid
         assert any("'name'" in e.message for e in result.errors)
@@ -99,7 +101,7 @@ class TestValidateRulesFile:
     def test_missing_event(self, tmp_path):
         """Test missing event field reports error."""
         f = tmp_path / "kardbrd.yml"
-        f.write_text("board_id: test\nagent: Bot\nrules:\n  - name: test\n    action: /ke\n")
+        f.write_text("board_id: test\nagent: Bot\nrules:\n  - name: test\n    action: /explore\n")
         result = validate_rules_file(f)
         assert not result.is_valid
         assert any("'event'" in e.message for e in result.errors)
@@ -128,7 +130,7 @@ class TestValidateRulesFile:
         f = tmp_path / "kardbrd.yml"
         f.write_text(
             "board_id: test\nagent: Bot\nrules:\n"
-            "  - name: test\n    event: made_up_event\n    action: /ke\n"
+            "  - name: test\n    event: made_up_event\n    action: /explore\n"
         )
         result = validate_rules_file(f)
         assert result.is_valid  # warnings don't invalidate
@@ -140,7 +142,7 @@ class TestValidateRulesFile:
         f = tmp_path / "kardbrd.yml"
         f.write_text(
             "board_id: test\nagent: Bot\nrules:\n"
-            "  - name: test\n    event: card_moved\n    model: gpt4\n    action: /ke\n"
+            "  - name: test\n    event: card_moved\n    model: gpt4\n    action: /explore\n"
         )
         result = validate_rules_file(f)
         assert result.is_valid
@@ -152,7 +154,7 @@ class TestValidateRulesFile:
         f = tmp_path / "kardbrd.yml"
         f.write_text(
             "board_id: test\nagent: Bot\nrules:\n"
-            "  - name: test\n    event: card_moved\n    action: /ke\n"
+            "  - name: test\n    event: card_moved\n    action: /explore\n"
             "    priority: high\n    timeout: 30\n"
         )
         result = validate_rules_file(f)
@@ -167,7 +169,7 @@ class TestValidateRulesFile:
         f.write_text(
             "board_id: test\nagent: Bot\nrules:\n"
             "  - name: test\n    event:\n"
-            "      - card_moved\n      - card_created\n    action: /ke\n"
+            "      - card_moved\n      - card_created\n    action: /explore\n"
         )
         result = validate_rules_file(f)
         assert result.is_valid
@@ -178,7 +180,7 @@ class TestValidateRulesFile:
         f = tmp_path / "kardbrd.yml"
         f.write_text(
             "board_id: test\nagent: Bot\nrules:\n"
-            "  - name: test\n    event:\n      - card_moved\n    action: /ke\n"
+            "  - name: test\n    event:\n      - card_moved\n    action: /explore\n"
         )
         result = validate_rules_file(f)
         assert result.is_valid
@@ -188,7 +190,8 @@ class TestValidateRulesFile:
         f = tmp_path / "kardbrd.yml"
         f.write_text(
             "board_id: test\nagent: Bot\nrules:\n"
-            "  - name: test\n    event:\n      - card_moved\n      - fake_event\n    action: /ke\n"
+            "  - name: test\n    event:\n      - card_moved\n"
+            "      - fake_event\n    action: /explore\n"
         )
         result = validate_rules_file(f)
         assert result.is_valid  # warnings don't invalidate
@@ -199,7 +202,8 @@ class TestValidateRulesFile:
         """Test non-string, non-list event type reports error."""
         f = tmp_path / "kardbrd.yml"
         f.write_text(
-            "board_id: test\nagent: Bot\nrules:\n  - name: test\n    event: 123\n    action: /ke\n"
+            "board_id: test\nagent: Bot\nrules:\n"
+            "  - name: test\n    event: 123\n    action: /explore\n"
         )
         result = validate_rules_file(f)
         assert not result.is_valid
@@ -210,7 +214,7 @@ class TestValidateRulesFile:
         f = tmp_path / "kardbrd.yml"
         f.write_text(
             "board_id: test\nagent: Bot\nrules:\n"
-            "  - name: test\n    event: 'card_moved, card_created'\n    action: /ke\n"
+            "  - name: test\n    event: 'card_moved, card_created'\n    action: /explore\n"
         )
         result = validate_rules_file(f)
         assert result.is_valid  # warnings don't invalidate
@@ -222,7 +226,7 @@ class TestValidateRulesFile:
         f = tmp_path / "kardbrd.yml"
         f.write_text(
             "board_id: test\nagent: Bot\nrules:\n"
-            "  - name: test\n    event: card_moved\n    model: 123\n    action: /ke\n"
+            "  - name: test\n    event: card_moved\n    model: 123\n    action: /explore\n"
         )
         result = validate_rules_file(f)
         assert not result.is_valid
@@ -245,7 +249,7 @@ class TestValidateRulesFile:
             f = tmp_path / "kardbrd.yml"
             f.write_text(
                 f"board_id: test\nagent: Bot\nrules:\n"
-                f"  - name: test\n    event: card_moved\n    model: {model}\n    action: /ke\n"
+                f"  - name: test\n    event: card_moved\n    model: {model}\n    action: /explore\n"
             )
             result = validate_rules_file(f)
             assert result.is_valid
@@ -262,7 +266,7 @@ class TestValidateRulesFile:
             "    title: Test\n"
             "    label: Bug\n"
             "    content_contains: hello\n"
-            "    action: /ke\n"
+            "    action: /explore\n"
         )
         result = validate_rules_file(f)
         assert result.is_valid
@@ -275,9 +279,9 @@ class TestValidateRulesFile:
             "board_id: test\nagent: Bot\nrules:\n"
             "  - name: rule1\n"
             "    event: fake_event\n"
-            "    action: /ke\n"
+            "    action: /explore\n"
             "  - event: card_moved\n"
-            "    action: /kp\n"
+            "    action: /plan\n"
         )
         result = validate_rules_file(f)
         assert not result.is_valid
@@ -291,7 +295,7 @@ class TestValidateRulesFile:
             "board_id: test\nagent: Bot\nrules:\n"
             "  - name: test\n"
             "    event: card_moved\n"
-            "    action: /ke\n"
+            "    action: /explore\n"
             "    assignee:\n"
             "      - 'user-alice'\n"
             "      - 'user-bob'\n"
@@ -305,7 +309,7 @@ class TestValidateRulesFile:
         f = tmp_path / "kardbrd.yml"
         f.write_text(
             "board_id: test\nagent: Bot\nrules:\n"
-            "  - name: test\n    event: card_moved\n    action: /ke\n"
+            "  - name: test\n    event: card_moved\n    action: /explore\n"
             "    assignee: 'user-alice, user-bob'\n"
         )
         result = validate_rules_file(f)
@@ -317,7 +321,7 @@ class TestValidateRulesFile:
         f = tmp_path / "kardbrd.yml"
         f.write_text(
             "board_id: test\nagent: Bot\nrules:\n"
-            "  - name: test\n    event: card_moved\n    action: /ke\n"
+            "  - name: test\n    event: card_moved\n    action: /explore\n"
             "    assignee:\n      - 123\n      - true\n"
         )
         result = validate_rules_file(f)
@@ -331,7 +335,7 @@ class TestValidateRulesFile:
         f = tmp_path / "kardbrd.yml"
         f.write_text(
             "board_id: test\nagent: Bot\nrules:\n"
-            "  - name: test\n    event: card_moved\n    action: /ke\n    assignee: []\n"
+            "  - name: test\n    event: card_moved\n    action: /explore\n    assignee: []\n"
         )
         result = validate_rules_file(f)
         assert result.is_valid  # warnings don't invalidate
@@ -343,7 +347,7 @@ class TestValidateRulesFile:
         f = tmp_path / "kardbrd.yml"
         f.write_text(
             "board_id: test\nagent: Bot\nrules:\n"
-            "  - name: test\n    event: card_moved\n    action: /ke\n    assignee: 12345\n"
+            "  - name: test\n    event: card_moved\n    action: /explore\n    assignee: 12345\n"
         )
         result = validate_rules_file(f)
         assert not result.is_valid
@@ -354,7 +358,7 @@ class TestValidateRulesFile:
         f = tmp_path / "kardbrd.yml"
         f.write_text(
             "board_id: test\nagent: Bot\nrules:\n"
-            "  - name: test\n    event: card_moved\n    action: /ke\n"
+            "  - name: test\n    event: card_moved\n    action: /explore\n"
             "    assignee:\n      - 'user-alice'\n"
         )
         result = validate_rules_file(f)
@@ -366,7 +370,8 @@ class TestValidateRulesFile:
         f = tmp_path / "kardbrd.yml"
         f.write_text(
             "board_id: test\nagent: Bot\nrules:\n"
-            "  - name: test\n    event: card_moved\n    action: /ke\n    exclude_label: Agent\n"
+            "  - name: test\n    event: card_moved\n"
+            "    action: /explore\n    exclude_label: Agent\n"
         )
         result = validate_rules_file(f)
         assert result.is_valid
@@ -414,7 +419,7 @@ class TestValidateRulesFile:
             "rules:\n"
             "  - name: test\n"
             "    event: card_moved\n"
-            "    action: /ke\n"
+            "    action: /explore\n"
         )
         result = validate_rules_file(f)
         assert result.is_valid

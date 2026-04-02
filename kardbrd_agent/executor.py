@@ -161,7 +161,7 @@ def build_prompt(
     Args:
         card_id: The id of the card (for posting comments)
         card_markdown: Full card content in markdown format
-        command: The extracted command (e.g., "/kp", "/ki", or free-form)
+        command: The extracted command (e.g., "/plan", "/implement", or free-form)
         comment_content: The full comment that triggered the proxy
         author_name: Name of the user who triggered the proxy
         board_id: Optional board ID for label operations
@@ -288,8 +288,8 @@ def extract_command(comment_content: str, mention_keyword: str) -> str:
     Extract the command from the comment content.
 
     Examples:
-        "@coder /kp" -> "/kp"
-        "@coder /ke" -> "/ke"
+        "@coder /plan" -> "/plan"
+        "@coder /explore" -> "/explore"
         "@coder fix the login bug" -> "fix the login bug"
 
     Args:
