@@ -1,0 +1,126 @@
+# Docker Compose with Watchtower auto-updates
+#
+# Watchtower monitors container registries and automatically pulls + restarts
+# containers when a new image is published. This requires using `image:` (not
+# `build:`) so there's a registry image for Watchtower to poll.
+#
+# Two patterns are shown below:
+#
+#   1. Pre-built image from GHCR (Watchtower auto-updates the whole image)
+#   2. Local build with uvx entrypoint (Watchtower updates the base image;
+#      kardbrd-agent itself updates on container restart via uvx)
+#
+# Usage:
+#   cp .env.example .env   # fill in credentials
+#   docker compose -f docker-compose.watchtower.yml up -d
+
+services:
+  # ---------------------------------------------------------------------------
+  # Agent — kardbrd-agent
+  # ---------------------------------------------------------------------------
+  # Option 1: Pre-built image from a container registry (recommended for Watchtower)
+  # Watchtower will detect new pushes to this tag and restart the container.
+  agent:
+    image: ghcr.io/yourorg/yourproject:agent
+    # Option 2: Local build — uncomment below and comment out `image:` above.
+    # Watchtower can still update the base image layers, but won't rebuild your
+    # Dockerfile. For full rebuilds, use `docker compose build && docker compose up -d`.
+    # build:
+    #   context: ./repository
+    #   target: agent
+    user: "1000:1000"
+    restart: unless-stopped
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      # kardbrd-agent config (required)
+      - KARDBRD_ID
+      - KARDBRD_TOKEN
+      - KARDBRD_AGENT
+      # - KARDBRD_URL=https://app.kardbrd.com
+
+      # Executor
+      - ANTHROPIC_API_KEY
+      # - AGENT_EXECUTOR=goose
+      # - GOOSE_PROVIDER=anthropic
+
+      # Agent behavior
+      - LOG_LEVEL=INFO
+      - AGENT_CWD=/home/agent/repository
+      - AGENT_WORKTREES_DIR=/home/agent/workspaces
+      - AGENT_SETUP_CMD=composer install --no-interaction
+      - AGENT_TEST_CMD=vendor/bin/phpunit
+      - AGENT_MAX_CONCURRENT=2
+      - AGENT_TIMEOUT=7200
+
+      # Git identity
+      - GIT_AUTHOR_NAME=Kardbrd Agent
+      - GIT_AUTHOR_EMAIL=agent@example.com
+      - GIT_COMMITTER_NAME=Kardbrd Agent
+      - GIT_COMMITTER_EMAIL=agent@example.com
+    volumes:
+      - ./repository:/home/agent/repository
+      - ./workspaces:/home/agent/workspaces
+      - ./claude:/home/agent/.claude
+      - ./ssh/id_ed25519:/home/agent/.ssh/id_ed25519:ro
+
+  # ---------------------------------------------------------------------------
+  # MySQL — project database
+  # ---------------------------------------------------------------------------
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+    environment:
+      - MYSQL_ROOT_PASSWORD
+      - MYSQL_DATABASE
+      - MYSQL_USER
+      - MYSQL_PASSWORD
+    volumes:
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Watchtower — automatic container updates
+  # ---------------------------------------------------------------------------
+  # Polls the container registry on an interval. When a new image digest is
+  # found for a monitored container, Watchtower pulls the new image, gracefully
+  # stops the old container, and starts a new one with the same options.
+  #
+  # WATCHTOWER_LABEL_ENABLE=true means it ONLY watches containers with the
+  # label `com.centurylinklabs.watchtower.enable=true` — it won't touch
+  # unrelated containers on the host.
+  watchtower:
+    image: containrrr/watchtower
+    restart: unless-stopped
+    environment:
+      # Only update containers with the watchtower label
+      - WATCHTOWER_LABEL_ENABLE=true
+      # Check for updates every 5 minutes (300 seconds)
+      - WATCHTOWER_POLL_INTERVAL=300
+      # Remove old images after updating
+      - WATCHTOWER_CLEANUP=true
+      # Log level
+      - WATCHTOWER_LOG_LEVEL=info
+      # Optional: send notifications on update
+      # - WATCHTOWER_NOTIFICATION_URL=slack://hook.slack.com/...
+      # - WATCHTOWER_NOTIFICATIONS=shoutrrr
+    volumes:
+      # Docker socket — required for Watchtower to manage containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Registry auth — required for private registries (GHCR, ECR, etc.)
+      # Uncomment and ensure `docker login ghcr.io` has been run on the host:
+      # - $HOME/.docker/config.json:/config.json:ro
+
+volumes:
+  mysql_data:
