@@ -2653,3 +2653,84 @@ class TestSkillInfo:
                 ]
             },
         )
+
+
+class TestExecutorAwareSkillDiscovery:
+    """Tests for executor-aware skill directory scanning."""
+
+    def test_claude_discovers_from_claude_skills(self, tmp_path):
+        """Claude executor scans .claude/skills/."""
+        ke_dir = tmp_path / ".claude" / "skills" / "ke"
+        ke_dir.mkdir(parents=True)
+        (ke_dir / "SKILL.md").write_text("# Explore\n\nBody.")
+        manager = _make_manager(cwd=str(tmp_path), executor_type="claude")
+        skills = manager._discover_skills()
+        assert len(skills) == 1
+        assert skills[0][0] == "ke"
+
+    def test_codex_discovers_from_agents_skills(self, tmp_path):
+        """Codex executor scans .agents/skills/."""
+        ke_dir = tmp_path / ".agents" / "skills" / "ke"
+        ke_dir.mkdir(parents=True)
+        (ke_dir / "SKILL.md").write_text("# Explore\n\nBody.")
+        manager = _make_manager(cwd=str(tmp_path), executor_type="codex")
+        skills = manager._discover_skills()
+        assert len(skills) == 1
+        assert skills[0][0] == "ke"
+
+    def test_codex_does_not_see_claude_skills(self, tmp_path):
+        """Codex executor ignores .claude/skills/."""
+        ke_dir = tmp_path / ".claude" / "skills" / "ke"
+        ke_dir.mkdir(parents=True)
+        (ke_dir / "SKILL.md").write_text("# Explore\n\nBody.")
+        manager = _make_manager(cwd=str(tmp_path), executor_type="codex")
+        skills = manager._discover_skills()
+        assert skills == []
+
+    def test_claude_does_not_see_agents_skills(self, tmp_path):
+        """Claude executor ignores .agents/skills/."""
+        ke_dir = tmp_path / ".agents" / "skills" / "ke"
+        ke_dir.mkdir(parents=True)
+        (ke_dir / "SKILL.md").write_text("# Explore\n\nBody.")
+        manager = _make_manager(cwd=str(tmp_path), executor_type="claude")
+        skills = manager._discover_skills()
+        assert skills == []
+
+    def test_goose_discovers_from_claude_skills(self, tmp_path):
+        """Goose executor falls back to .claude/skills/ (no own skill dir)."""
+        ke_dir = tmp_path / ".claude" / "skills" / "ke"
+        ke_dir.mkdir(parents=True)
+        (ke_dir / "SKILL.md").write_text("# Explore\n\nBody.")
+        manager = _make_manager(cwd=str(tmp_path), executor_type="goose")
+        skills = manager._discover_skills()
+        assert len(skills) == 1
+        assert skills[0][0] == "ke"
+
+    def test_codex_discovers_multiple_skills(self, tmp_path):
+        """Codex executor discovers all skills in .agents/skills/."""
+        for name, title in [("ke", "Explore"), ("ki", "Implement"), ("kp", "Plan")]:
+            skill_dir = tmp_path / ".agents" / "skills" / name
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(f"# {title}\n\nBody.")
+        manager = _make_manager(cwd=str(tmp_path), executor_type="codex")
+        skills = manager._discover_skills()
+        assert len(skills) == 3
+        names = [name for name, _ in skills]
+        assert names == ["ke", "ki", "kp"]
+
+    def test_unknown_executor_falls_back_to_claude(self, tmp_path):
+        """Unknown executor type falls back to claude skill directories."""
+        ke_dir = tmp_path / ".claude" / "skills" / "ke"
+        ke_dir.mkdir(parents=True)
+        (ke_dir / "SKILL.md").write_text("# Explore\n\nBody.")
+        manager = _make_manager(cwd=str(tmp_path), executor_type="unknown")
+        skills = manager._discover_skills()
+        assert len(skills) == 1
+
+    def test_executor_skill_dirs_constant(self):
+        """EXECUTOR_SKILL_DIRS maps each executor to correct paths."""
+        dirs = ProxyManager.EXECUTOR_SKILL_DIRS
+        assert ".claude/skills" in dirs["claude"]
+        assert ".claude/commands" in dirs["claude"]
+        assert ".agents/skills" in dirs["codex"]
+        assert ".claude/skills" in dirs["goose"]

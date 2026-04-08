@@ -97,7 +97,7 @@ def start(
         "--executor",
         "-e",
         envvar="AGENT_EXECUTOR",
-        help="Executor type: 'claude' (default) or 'goose'",
+        help="Executor type: 'claude' (default), 'goose', or 'codex'",
     ),
 ):
     """Start the proxy manager and listen for @mentions.

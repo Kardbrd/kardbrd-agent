@@ -1,5 +1,6 @@
 """Proxy Manager - Spawns agent executors to work on kardbrd cards."""
 
+from .codex_executor import CodexExecutor
 from .executor import (
     AuthStatus,
     ClaudeExecutor,
@@ -15,6 +16,7 @@ from .mcp_proxy import ProxySession
 __all__ = [
     "AuthStatus",
     "ClaudeExecutor",
+    "CodexExecutor",
     "Executor",
     "ExecutorResult",
     "GooseExecutor",

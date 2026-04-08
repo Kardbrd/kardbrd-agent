@@ -28,7 +28,7 @@ MODEL_MAP = {
 CLAUDE_MODEL_MAP = MODEL_MAP
 
 # Valid executor types
-VALID_EXECUTORS = {"claude", "goose"}
+VALID_EXECUTORS = {"claude", "goose", "codex"}
 
 # All known WebSocket event types from the server spec.
 # Used for validation only — rules match event names directly.

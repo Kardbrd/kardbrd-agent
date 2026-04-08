@@ -21,6 +21,11 @@ def git_repo(tmp_path: Path) -> Path:
     claude_dir.mkdir()
     (claude_dir / "settings.local.json").write_text("{}")
 
+    # Codex skill directory
+    agents_skills = repo / ".agents" / "skills" / "ke"
+    agents_skills.mkdir(parents=True)
+    (agents_skills / "SKILL.md").write_text("# Explore\n\nBody.")
+
     return repo
 
 

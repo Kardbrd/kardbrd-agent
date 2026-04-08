@@ -137,6 +137,15 @@ class ProxyManager:
                 api_url=self.api_url,
                 bot_token=self.bot_token,
             )
+        elif self.executor_type == "codex":
+            from .codex_executor import CodexExecutor
+
+            self.executor = CodexExecutor(
+                cwd=self.cwd,
+                timeout=self.timeout,
+                api_url=self.api_url,
+                bot_token=self.bot_token,
+            )
         else:
             self.executor = ClaudeExecutor(
                 cwd=self.cwd,
@@ -326,36 +335,50 @@ class ProxyManager:
 
         return SkillInfo(name=fallback_name)
 
+    # Mapping from executor type to skill directory paths (relative to cwd).
+    # Each executor scans its own skill directories; Claude also has legacy commands.
+    EXECUTOR_SKILL_DIRS: dict[str, list[str]] = {
+        "claude": [".claude/skills", ".claude/commands"],
+        "codex": [".agents/skills"],
+        "goose": [".claude/skills", ".claude/commands"],
+    }
+
     def _discover_skills(self) -> list[tuple[str, SkillInfo]]:
-        """Scan .claude/skills/*/*.md and .claude/commands/*.md.
+        """Scan executor-appropriate skill directories for skill definitions.
+
+        Directories are resolved via ``EXECUTOR_SKILL_DIRS`` based on
+        ``self.executor_type``.  Each directory can contain either
+        subdirectories (name = dir name, first ``*.md`` used) or flat
+        ``*.md`` files (name = stem).
 
         Returns ``[(skill_name, SkillInfo), ...]`` with duplicates removed
-        (skills take precedence over commands with the same name).
+        (earlier directories take precedence).
         """
         seen: dict[str, SkillInfo] = {}  # name → SkillInfo (first wins)
-        claude_dir = self.cwd / ".claude"
 
-        # 1. .claude/skills/<skill-name>/*.md  (subdirectories, name = dir name)
-        skills_dir = claude_dir / "skills"
-        if skills_dir.is_dir():
-            for skill_subdir in sorted(skills_dir.iterdir()):
-                if not skill_subdir.is_dir():
-                    continue
-                name = skill_subdir.name
-                if name in seen:
-                    continue
-                # Use the first .md file found in the subdirectory
-                md_files = sorted(skill_subdir.glob("*.md"))
-                if md_files:
-                    seen[name] = self._extract_skill_info(md_files[0], fallback_name=name)
+        skill_dirs = self.EXECUTOR_SKILL_DIRS.get(
+            self.executor_type, self.EXECUTOR_SKILL_DIRS["claude"]
+        )
 
-        # 2. .claude/commands/*.md  (legacy flat files, name = stem)
-        commands_dir = claude_dir / "commands"
-        if commands_dir.is_dir():
-            for md_file in sorted(commands_dir.glob("*.md")):
-                name = md_file.stem
-                if name not in seen:
-                    seen[name] = self._extract_skill_info(md_file)
+        for rel_dir in skill_dirs:
+            skills_dir = self.cwd / rel_dir
+            if not skills_dir.is_dir():
+                continue
+
+            # Subdirectory-style: <skills_dir>/<name>/*.md
+            for entry in sorted(skills_dir.iterdir()):
+                if entry.is_dir():
+                    name = entry.name
+                    if name in seen:
+                        continue
+                    md_files = sorted(entry.glob("*.md"))
+                    if md_files:
+                        seen[name] = self._extract_skill_info(md_files[0], fallback_name=name)
+                elif entry.suffix == ".md":
+                    # Flat-file style: <skills_dir>/<name>.md
+                    name = entry.stem
+                    if name not in seen:
+                        seen[name] = self._extract_skill_info(entry)
 
         return [(name, info) for name, info in sorted(seen.items())]
 

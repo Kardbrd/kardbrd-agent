@@ -73,7 +73,7 @@ class WorktreeManager:
                 dst.symlink_to(src)
                 logger.debug(f"Created symlink: {dst} -> {src}")
 
-        # Claude settings (only for claude executor)
+        # Claude settings and skills (only for claude executor)
         if self.executor_type == "claude":
             claude_dir = worktree_path / ".claude"
             claude_dir.mkdir(exist_ok=True)
@@ -82,6 +82,17 @@ class WorktreeManager:
             if settings_src.exists() and not settings_dst.exists():
                 settings_dst.symlink_to(settings_src)
                 logger.debug(f"Created symlink: {settings_dst} -> {settings_src}")
+
+        # Codex skills (only for codex executor)
+        if self.executor_type == "codex":
+            agents_skills_src = self.base_repo / ".agents" / "skills"
+            if agents_skills_src.is_dir():
+                agents_dir = worktree_path / ".agents"
+                agents_dir.mkdir(exist_ok=True)
+                skills_dst = agents_dir / "skills"
+                if not skills_dst.exists():
+                    skills_dst.symlink_to(agents_skills_src)
+                    logger.debug(f"Created symlink: {skills_dst} -> {agents_skills_src}")
 
     def _run_setup_command(self, worktree_path: Path) -> None:
         """
