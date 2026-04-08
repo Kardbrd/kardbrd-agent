@@ -152,6 +152,59 @@ class TestWorktreeManagerSymlinks:
         assert not (worktree / ".mcp.json").exists()
         assert not (worktree / ".claude").exists()
 
+    def test_setup_symlinks_creates_agents_skills_for_codex(self, git_repo: Path):
+        """Test .agents/skills/ symlink is created for codex executor."""
+        worktree = git_repo.parent / "card-abc12345"
+        worktree.mkdir()
+
+        manager = WorktreeManager(git_repo, executor_type="codex")
+        manager._setup_symlinks(worktree)
+
+        # .env should still be created
+        assert (worktree / ".env").is_symlink()
+        # .agents/skills should be symlinked
+        assert (worktree / ".agents" / "skills").is_symlink()
+        assert (worktree / ".agents" / "skills").resolve() == (
+            git_repo / ".agents" / "skills"
+        ).resolve()
+        # .claude/ should NOT be created
+        assert not (worktree / ".claude").exists()
+
+    def test_setup_symlinks_skips_agents_skills_for_claude(self, git_repo: Path):
+        """Test .agents/ directory is NOT created for claude executor."""
+        worktree = git_repo.parent / "card-abc12345"
+        worktree.mkdir()
+
+        manager = WorktreeManager(git_repo, executor_type="claude")
+        manager._setup_symlinks(worktree)
+
+        assert not (worktree / ".agents").exists()
+
+    def test_setup_symlinks_codex_idempotent(self, git_repo: Path):
+        """Test calling setup_symlinks twice for codex doesn't fail."""
+        worktree = git_repo.parent / "card-abc12345"
+        worktree.mkdir()
+
+        manager = WorktreeManager(git_repo, executor_type="codex")
+        manager._setup_symlinks(worktree)
+        manager._setup_symlinks(worktree)  # Should not raise
+
+        assert (worktree / ".agents" / "skills").is_symlink()
+
+    def test_setup_symlinks_codex_skips_missing_agents_dir(self, tmp_path: Path):
+        """Test codex symlink is skipped when .agents/skills/ doesn't exist."""
+        base_repo = tmp_path / "kbn"
+        base_repo.mkdir()
+        (base_repo / ".env").write_text("SECRET=value")
+
+        worktree = tmp_path / "card-abc12345"
+        worktree.mkdir()
+
+        manager = WorktreeManager(base_repo, executor_type="codex")
+        manager._setup_symlinks(worktree)  # Should not raise
+
+        assert not (worktree / ".agents").exists()
+
     def test_setup_symlinks_skips_missing_files(self, tmp_path: Path):
         """Test symlinks are not created for missing source files."""
         base_repo = tmp_path / "kbn"
