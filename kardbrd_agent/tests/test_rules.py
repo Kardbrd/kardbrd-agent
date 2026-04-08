@@ -2452,6 +2452,17 @@ class TestValidateDictFormat:
         assert result.is_valid
         assert result.issues == []
 
+    def test_validate_executor_codex_valid(self, tmp_path):
+        """Test codex is a valid executor type."""
+        f = tmp_path / "kardbrd.yml"
+        f.write_text("board_id: abc\nagent: Bot\nexecutor: codex\nrules: []\n")
+        from kardbrd_agent.rules import VALID_EXECUTORS, validate_rules_file
+
+        assert "codex" in VALID_EXECUTORS
+        result = validate_rules_file(f)
+        assert result.is_valid
+        assert result.issues == []
+
     def test_validate_executor_unknown_warns(self, tmp_path):
         """Test unknown executor produces warning."""
         f = tmp_path / "kardbrd.yml"

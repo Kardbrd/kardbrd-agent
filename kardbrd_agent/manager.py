@@ -137,6 +137,15 @@ class ProxyManager:
                 api_url=self.api_url,
                 bot_token=self.bot_token,
             )
+        elif self.executor_type == "codex":
+            from .codex_executor import CodexExecutor
+
+            self.executor = CodexExecutor(
+                cwd=self.cwd,
+                timeout=self.timeout,
+                api_url=self.api_url,
+                bot_token=self.bot_token,
+            )
         else:
             self.executor = ClaudeExecutor(
                 cwd=self.cwd,
