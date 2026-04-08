@@ -13,9 +13,11 @@ logger = logging.getLogger("kardbrd_agent")
 
 # Map of Codex-specific model short names
 CODEX_MODEL_MAP = {
-    "o3": "o3",
-    "o4-mini": "o4-mini",
-    "gpt-4.1": "gpt-4.1",
+    "gpt-5.4": "gpt-5.4",
+    "gpt-5.4-mini": "gpt-5.4-mini",
+    "gpt-5.3-codex": "gpt-5.3-codex",
+    "gpt-5.3-codex-spark": "gpt-5.3-codex-spark",
+    "gpt-5.2": "gpt-5.2",
 }
 
 

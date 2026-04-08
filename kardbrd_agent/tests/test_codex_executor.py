@@ -35,9 +35,11 @@ class TestCodexModelResolution:
     def test_resolve_codex_model_names(self):
         """Test Codex-specific model short names resolve correctly."""
         executor = CodexExecutor()
-        assert executor._resolve_model("o3") == "o3"
-        assert executor._resolve_model("o4-mini") == "o4-mini"
-        assert executor._resolve_model("gpt-4.1") == "gpt-4.1"
+        assert executor._resolve_model("gpt-5.4") == "gpt-5.4"
+        assert executor._resolve_model("gpt-5.4-mini") == "gpt-5.4-mini"
+        assert executor._resolve_model("gpt-5.3-codex") == "gpt-5.3-codex"
+        assert executor._resolve_model("gpt-5.3-codex-spark") == "gpt-5.3-codex-spark"
+        assert executor._resolve_model("gpt-5.2") == "gpt-5.2"
 
     def test_resolve_none_returns_none(self):
         """Test None model returns None."""
@@ -52,8 +54,8 @@ class TestCodexModelResolution:
     def test_resolve_case_insensitive(self):
         """Test model resolution is case-insensitive for known names."""
         executor = CodexExecutor()
-        assert executor._resolve_model("O3") == "o3"
-        assert executor._resolve_model("O4-MINI") == "o4-mini"
+        assert executor._resolve_model("GPT-5.4") == "gpt-5.4"
+        assert executor._resolve_model("GPT-5.4-MINI") == "gpt-5.4-mini"
 
 
 class TestCodexParseOutput:
@@ -279,12 +281,12 @@ class TestCodexExecutorAsync:
             mock_process.returncode = 0
             mock_exec.return_value = mock_process
 
-            await executor.execute("test", model="o3")
+            await executor.execute("test", model="gpt-5.4")
 
             call_args = list(mock_exec.call_args[0])
             assert "--model" in call_args
             model_idx = call_args.index("--model")
-            assert call_args[model_idx + 1] == "o3"
+            assert call_args[model_idx + 1] == "gpt-5.4"
 
     @pytest.mark.asyncio
     async def test_execute_passes_kardbrd_env_vars(self):
@@ -528,6 +530,8 @@ class TestCodexModelMap:
 
     def test_codex_model_map_has_expected_models(self):
         """Test CODEX_MODEL_MAP has the expected model short names."""
-        assert "o3" in CODEX_MODEL_MAP
-        assert "o4-mini" in CODEX_MODEL_MAP
-        assert "gpt-4.1" in CODEX_MODEL_MAP
+        assert "gpt-5.4" in CODEX_MODEL_MAP
+        assert "gpt-5.4-mini" in CODEX_MODEL_MAP
+        assert "gpt-5.3-codex" in CODEX_MODEL_MAP
+        assert "gpt-5.3-codex-spark" in CODEX_MODEL_MAP
+        assert "gpt-5.2" in CODEX_MODEL_MAP
