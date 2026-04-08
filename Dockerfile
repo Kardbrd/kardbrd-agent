@@ -4,7 +4,13 @@ FROM ghcr.io/astral-sh/uv:latest AS uv
 # Stage 2: Runtime
 FROM python:3.12-slim AS agent
 
-RUN apt-get update && apt-get install -y --no-install-recommends git openssh-client curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git openssh-client curl && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+       -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+       > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
 
 # uv + uvx
 COPY --from=uv /uv /uvx /usr/local/bin/

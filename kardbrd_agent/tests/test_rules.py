@@ -24,10 +24,10 @@ class TestRule:
 
     def test_rule_basic(self):
         """Test creating a basic rule."""
-        rule = Rule(name="test", events=["card_moved"], action="/ke")
+        rule = Rule(name="test", events=["card_moved"], action="/explore")
         assert rule.name == "test"
         assert rule.events == ["card_moved"]
-        assert rule.action == "/ke"
+        assert rule.action == "/explore"
         assert rule.model is None
         assert rule.list is None
 
@@ -100,7 +100,7 @@ class TestRuleEngine:
         """Test matching card_moved event by list name."""
         engine = RuleEngine(
             rules=[
-                Rule(name="ideas", events=["card_moved"], action="/ke", list="Ideas"),
+                Rule(name="ideas", events=["card_moved"], action="/explore", list="Ideas"),
             ]
         )
         matches = engine.match(
@@ -114,7 +114,7 @@ class TestRuleEngine:
         """Test list matching is case-insensitive."""
         engine = RuleEngine(
             rules=[
-                Rule(name="ideas", events=["card_moved"], action="/ke", list="ideas"),
+                Rule(name="ideas", events=["card_moved"], action="/explore", list="ideas"),
             ]
         )
         matches = engine.match(
@@ -127,7 +127,7 @@ class TestRuleEngine:
         """Test no match when list doesn't match."""
         engine = RuleEngine(
             rules=[
-                Rule(name="ideas", events=["card_moved"], action="/ke", list="Ideas"),
+                Rule(name="ideas", events=["card_moved"], action="/explore", list="Ideas"),
             ]
         )
         matches = engine.match(
@@ -140,7 +140,7 @@ class TestRuleEngine:
         """Test no match when event type doesn't match."""
         engine = RuleEngine(
             rules=[
-                Rule(name="ideas", events=["card_moved"], action="/ke", list="Ideas"),
+                Rule(name="ideas", events=["card_moved"], action="/explore", list="Ideas"),
             ]
         )
         matches = engine.match(
@@ -151,7 +151,7 @@ class TestRuleEngine:
 
     def test_match_multiple_events(self):
         """Test rule with multiple events matches both."""
-        rule = Rule(name="multi", events=["card_moved", "card_created"], action="/ke")
+        rule = Rule(name="multi", events=["card_moved", "card_created"], action="/explore")
         engine = RuleEngine(rules=[rule])
 
         assert len(engine.match("card_moved", {"card_id": "a"})) == 1
@@ -271,8 +271,8 @@ class TestRuleEngine:
         """Test multiple rules can match the same event."""
         engine = RuleEngine(
             rules=[
-                Rule(name="rule1", events=["card_moved"], action="/ke", list="Ideas"),
-                Rule(name="rule2", events=["card_moved"], action="/kp", list="Ideas"),
+                Rule(name="rule1", events=["card_moved"], action="/explore", list="Ideas"),
+                Rule(name="rule2", events=["card_moved"], action="/plan", list="Ideas"),
             ]
         )
         matches = engine.match(
@@ -285,7 +285,7 @@ class TestRuleEngine:
         """Test rule with no conditions matches all events of that type."""
         engine = RuleEngine(
             rules=[
-                Rule(name="all_moves", events=["card_moved"], action="/ke"),
+                Rule(name="all_moves", events=["card_moved"], action="/explore"),
             ]
         )
         matches = engine.match(
@@ -298,7 +298,7 @@ class TestRuleEngine:
         """Test 'label_added' matches directly (no mapping)."""
         engine = RuleEngine(
             rules=[
-                Rule(name="label", events=["label_added"], action="/ke"),
+                Rule(name="label", events=["label_added"], action="/explore"),
             ]
         )
         # Direct match
@@ -315,7 +315,7 @@ class TestRuleEngine:
                 Rule(
                     name="bug label",
                     events=["label_added"],
-                    action="/ke",
+                    action="/explore",
                     label="Bug",
                 ),
             ]
@@ -339,7 +339,7 @@ class TestRuleEngine:
                 Rule(
                     name="bug label",
                     events=["label_added"],
-                    action="/ke",
+                    action="/explore",
                     label="bug",
                 ),
             ]
@@ -357,7 +357,7 @@ class TestRuleEngine:
                 Rule(
                     name="bug label",
                     events=["label_added"],
-                    action="/ke",
+                    action="/explore",
                     label="Bug",
                 ),
             ]
@@ -460,7 +460,7 @@ class TestRuleEngine:
             rules=[
                 Rule(name="ship", events=["reaction_added"], action="ship", emoji="📦"),
                 Rule(name="stop", events=["reaction_added"], action=STOP_ACTION, emoji="🛑"),
-                Rule(name="review", events=["reaction_added"], action="/kr", emoji="🔄"),
+                Rule(name="review", events=["reaction_added"], action="/review", emoji="🔄"),
             ]
         )
         # Only the ship rule matches
@@ -488,7 +488,7 @@ class TestExcludeLabel:
                 Rule(
                     name="auto",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     list="Ideas",
                     exclude_label="Agent",
                 ),
@@ -511,7 +511,7 @@ class TestExcludeLabel:
                 Rule(
                     name="auto",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     list="Ideas",
                     exclude_label="Agent",
                 ),
@@ -534,7 +534,7 @@ class TestExcludeLabel:
                 Rule(
                     name="auto",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     exclude_label="agent",
                 ),
             ]
@@ -560,7 +560,7 @@ class TestExcludeLabel:
                 Rule(
                     name="auto",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     exclude_label="Agent",
                 ),
             ]
@@ -578,7 +578,7 @@ class TestExcludeLabel:
                 Rule(
                     name="auto",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     exclude_label="Agent",
                 ),
             ]
@@ -596,7 +596,7 @@ class TestExcludeLabel:
                 Rule(
                     name="auto",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     list="Ideas",
                     exclude_label="Agent",
                 ),
@@ -625,7 +625,7 @@ class TestExcludeLabel:
 
     def test_exclude_label_default_none(self):
         """Test exclude_label defaults to None."""
-        rule = Rule(name="test", events=["card_moved"], action="/ke")
+        rule = Rule(name="test", events=["card_moved"], action="/explore")
         assert rule.exclude_label is None
 
 
@@ -639,7 +639,7 @@ class TestAssignee:
                 Rule(
                     name="alice",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     assignee=["user-alice"],
                 ),
             ]
@@ -657,7 +657,7 @@ class TestAssignee:
                 Rule(
                     name="alice",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     assignee=["user-alice"],
                 ),
             ]
@@ -675,7 +675,7 @@ class TestAssignee:
                 Rule(
                     name="alice",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     assignee=["user-alice"],
                 ),
             ]
@@ -693,7 +693,7 @@ class TestAssignee:
                 Rule(
                     name="alice",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     assignee=["user-alice"],
                 ),
             ]
@@ -711,7 +711,7 @@ class TestAssignee:
                 Rule(
                     name="team",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     assignee=["user-alice", "user-bob"],
                 ),
             ]
@@ -729,7 +729,7 @@ class TestAssignee:
                 Rule(
                     name="team",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     assignee=["user-alice", "user-bob"],
                 ),
             ]
@@ -747,7 +747,7 @@ class TestAssignee:
                 Rule(
                     name="alice",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     assignee=["User-Alice"],
                 ),
             ]
@@ -765,7 +765,7 @@ class TestAssignee:
                 Rule(
                     name="alice ideas",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     list="Ideas",
                     assignee=["user-alice"],
                 ),
@@ -799,7 +799,7 @@ class TestAssignee:
                 Rule(
                     name="alice no agent",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     assignee=["user-alice"],
                     exclude_label="Agent",
                 ),
@@ -829,14 +829,14 @@ class TestAssignee:
 
     def test_assignee_default_none(self):
         """Test assignee defaults to None."""
-        rule = Rule(name="test", events=["card_moved"], action="/ke")
+        rule = Rule(name="test", events=["card_moved"], action="/explore")
         assert rule.assignee is None
 
     def test_no_assignee_matches_all_cards(self):
         """Test rule without assignee matches any card regardless of assignment."""
         engine = RuleEngine(
             rules=[
-                Rule(name="all", events=["card_moved"], action="/ke"),
+                Rule(name="all", events=["card_moved"], action="/explore"),
             ]
         )
         matches = engine.match(
@@ -862,7 +862,7 @@ class TestAssigneeSelf:
                 Rule(
                     name="bot assigned",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     assignee=["__self__"],
                 ),
             ]
@@ -880,7 +880,7 @@ class TestAssigneeSelf:
                 Rule(
                     name="bot assigned",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     assignee=["__self__"],
                 ),
             ]
@@ -898,7 +898,7 @@ class TestAssigneeSelf:
                 Rule(
                     name="bot assigned",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     assignee=["__self__"],
                 ),
             ]
@@ -916,7 +916,7 @@ class TestAssigneeSelf:
                 Rule(
                     name="bot assigned",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     assignee=["__self__"],
                 ),
             ]
@@ -937,7 +937,7 @@ class TestParseRulesAssignee:
             {
                 "name": "test",
                 "event": "card_moved",
-                "action": "/ke",
+                "action": "/explore",
                 "assignee": ["user-alice", "user-bob"],
             }
         ]
@@ -950,7 +950,7 @@ class TestParseRulesAssignee:
             {
                 "name": "test",
                 "event": "card_moved",
-                "action": "/ke",
+                "action": "/explore",
                 "assignee": ["user-alice"],
             }
         ]
@@ -963,7 +963,7 @@ class TestParseRulesAssignee:
             {
                 "name": "test",
                 "event": "card_moved",
-                "action": "/ke",
+                "action": "/explore",
                 "assignee": "user-alice, user-bob",
             }
         ]
@@ -972,7 +972,7 @@ class TestParseRulesAssignee:
 
     def test_parse_assignee_none(self):
         """Test parsing rule without assignee sets None."""
-        data = [{"name": "test", "event": "card_moved", "action": "/ke"}]
+        data = [{"name": "test", "event": "card_moved", "action": "/explore"}]
         rules = parse_rules(data)
         assert rules[0].assignee is None
 
@@ -982,7 +982,7 @@ class TestParseRulesAssignee:
             {
                 "name": "test",
                 "event": "card_moved",
-                "action": "/ke",
+                "action": "/explore",
                 "assignee": ["  user-alice  ", "user-bob "],
             }
         ]
@@ -995,7 +995,7 @@ class TestParseRulesAssignee:
             {
                 "name": "test",
                 "event": "card_moved",
-                "action": "/ke",
+                "action": "/explore",
                 "assignee": ["user-alice", "", "  "],
             }
         ]
@@ -1009,7 +1009,7 @@ class TestParseRules:
     def test_parse_basic_rules(self):
         """Test parsing basic rule dicts."""
         data = [
-            {"name": "test", "event": "card_moved", "action": "/ke"},
+            {"name": "test", "event": "card_moved", "action": "/explore"},
             {"name": "test2", "event": "comment_created", "action": "respond"},
         ]
         rules = parse_rules(data)
@@ -1020,7 +1020,7 @@ class TestParseRules:
 
     def test_parse_string_event_is_single(self):
         """Test a plain string event is treated as a single event (no comma splitting)."""
-        data = [{"name": "single", "event": "card_moved", "action": "/ke"}]
+        data = [{"name": "single", "event": "card_moved", "action": "/explore"}]
         rules = parse_rules(data)
         assert rules[0].events == ["card_moved"]
 
@@ -1030,7 +1030,7 @@ class TestParseRules:
             {
                 "name": "test",
                 "event": "card_moved",
-                "action": "/ke",
+                "action": "/explore",
                 "list": "Ideas",
                 "title": "📦",
                 "model": "haiku",
@@ -1047,7 +1047,7 @@ class TestParseRules:
             {
                 "name": "test",
                 "event": "card_moved",
-                "action": "/ke",
+                "action": "/explore",
                 "exclude_label": "Agent",
             }
         ]
@@ -1085,12 +1085,12 @@ class TestParseRules:
     def test_parse_missing_name_raises(self):
         """Test that missing name raises ValueError."""
         with pytest.raises(ValueError, match="missing 'name'"):
-            parse_rules([{"event": "card_moved", "action": "/ke"}])
+            parse_rules([{"event": "card_moved", "action": "/explore"}])
 
     def test_parse_missing_event_raises(self):
         """Test that missing event raises ValueError."""
         with pytest.raises(ValueError, match="missing 'event'"):
-            parse_rules([{"name": "test", "action": "/ke"}])
+            parse_rules([{"name": "test", "action": "/explore"}])
 
     def test_parse_missing_action_raises(self):
         """Test that missing action raises ValueError."""
@@ -1103,7 +1103,7 @@ class TestParseRules:
             {
                 "name": "multi",
                 "event": ["card_moved", "card_created"],
-                "action": "/ke",
+                "action": "/explore",
             }
         ]
         rules = parse_rules(data)
@@ -1111,14 +1111,14 @@ class TestParseRules:
 
     def test_parse_yaml_list_single_event(self):
         """Test parsing a single-item YAML list event."""
-        data = [{"name": "single", "event": ["card_moved"], "action": "/ke"}]
+        data = [{"name": "single", "event": ["card_moved"], "action": "/explore"}]
         rules = parse_rules(data)
         assert rules[0].events == ["card_moved"]
 
     def test_parse_event_invalid_type_raises(self):
         """Test that non-string, non-list event type raises ValueError."""
         with pytest.raises(ValueError, match="must be a string or list"):
-            parse_rules([{"name": "test", "event": 123, "action": "/ke"}])
+            parse_rules([{"name": "test", "event": 123, "action": "/explore"}])
 
     def test_parse_multiline_action(self):
         """Test parsing a rule with multiline action."""
@@ -1146,7 +1146,7 @@ class TestLoadRules:
             "  - name: Auto-explore\n"
             "    event: card_moved\n"
             "    list: Ideas\n"
-            "    action: /ke\n"
+            "    action: /explore\n"
             "  - name: Deploy box\n"
             "    event: card_created\n"
             '    title: "\U0001f4e6"\n'
@@ -1175,7 +1175,7 @@ class TestLoadRules:
     def test_load_bare_list_raises(self, tmp_path):
         """Test loading a bare list raises ValueError (old format not supported)."""
         rules_file = tmp_path / "kardbrd.yml"
-        rules_file.write_text("- name: test\n  event: card_moved\n  action: /ke\n")
+        rules_file.write_text("- name: test\n  event: card_moved\n  action: /explore\n")
         with pytest.raises(ValueError, match="dict"):
             load_rules(rules_file)
 
@@ -1191,7 +1191,7 @@ class TestLoadRules:
             "      - card_created\n"
             "      - card_moved\n"
             "    list: ideas\n"
-            "    action: /ke\n"
+            "    action: /explore\n"
             "  - name: Box card ships\n"
             "    event: card_created\n"
             "    model: haiku\n"
@@ -1203,7 +1203,7 @@ class TestLoadRules:
             "    action: implement and commit\n"
             "  - name: Exploration label\n"
             "    event: label_added\n"
-            "    action: /ke\n"
+            "    action: /explore\n"
         )
         rules_file.write_text(yaml_content)
         engine, config = load_rules(rules_file)
@@ -1227,7 +1227,7 @@ class TestLoadRules:
             "      - card_created\n"
             "      - card_moved\n"
             "    list: Ideas\n"
-            "    action: /ke\n"
+            "    action: /explore\n"
         )
         engine, config = load_rules(rules_file)
         assert len(engine.rules) == 1
@@ -1373,7 +1373,7 @@ class TestKnownEvents:
                     {
                         "name": "test",
                         "event": "made_up_event",
-                        "action": "/ke",
+                        "action": "/explore",
                     }
                 ]
             )
@@ -1389,7 +1389,7 @@ class TestKnownEvents:
                     {
                         "name": "test",
                         "event": "card_moved",
-                        "action": "/ke",
+                        "action": "/explore",
                     }
                 ]
             )
@@ -1449,7 +1449,7 @@ class TestEventMatching:
                 Rule(
                     name="label",
                     events=["label_added"],
-                    action="/ke",
+                    action="/explore",
                 ),
             ]
         )
@@ -1481,7 +1481,7 @@ class TestSpecEventPayloads:
                 Rule(
                     name="new card",
                     events=["card_created"],
-                    action="/ke",
+                    action="/explore",
                     list="Backlog",
                 ),
             ]
@@ -1533,7 +1533,7 @@ class TestSpecEventPayloads:
                 Rule(
                     name="bug label",
                     events=["label_added"],
-                    action="/ke",
+                    action="/explore",
                     label="Bug",
                 ),
             ]
@@ -1658,7 +1658,7 @@ class TestReloadableRuleEngine:
     def test_initial_load(self, tmp_path):
         """Test initial load reads rules from file."""
         rules_file = tmp_path / "kardbrd.yml"
-        self._write_yml(rules_file, "  - name: test\n    event: card_moved\n    action: /ke\n")
+        self._write_yml(rules_file, "  - name: test\n    event: card_moved\n    action: /explore\n")
         engine = ReloadableRuleEngine(rules_file)
         assert len(engine.rules) == 1
         assert engine.rules[0].name == "test"
@@ -1667,7 +1667,8 @@ class TestReloadableRuleEngine:
         """Test match() works through ReloadableRuleEngine."""
         rules_file = tmp_path / "kardbrd.yml"
         self._write_yml(
-            rules_file, "  - name: test\n    event: card_moved\n    list: Ideas\n    action: /ke\n"
+            rules_file,
+            "  - name: test\n    event: card_moved\n    list: Ideas\n    action: /explore\n",
         )
         engine = ReloadableRuleEngine(rules_file)
         matches = engine.match(
@@ -1679,7 +1680,9 @@ class TestReloadableRuleEngine:
     def test_reload_on_file_change(self, tmp_path):
         """Test rules are reloaded when file changes."""
         rules_file = tmp_path / "kardbrd.yml"
-        self._write_yml(rules_file, "  - name: rule1\n    event: card_moved\n    action: /ke\n")
+        self._write_yml(
+            rules_file, "  - name: rule1\n    event: card_moved\n    action: /explore\n"
+        )
         engine = ReloadableRuleEngine(rules_file, reload_interval=0)
         assert len(engine.rules) == 1
 
@@ -1687,8 +1690,8 @@ class TestReloadableRuleEngine:
         time.sleep(0.05)  # Ensure mtime changes
         self._write_yml(
             rules_file,
-            "  - name: rule1\n    event: card_moved\n    action: /ke\n"
-            "  - name: rule2\n    event: card_created\n    action: /kp\n",
+            "  - name: rule1\n    event: card_moved\n    action: /explore\n"
+            "  - name: rule2\n    event: card_created\n    action: /plan\n",
         )
 
         # Access rules — should trigger reload
@@ -1697,7 +1700,9 @@ class TestReloadableRuleEngine:
     def test_no_reload_within_interval(self, tmp_path):
         """Test rules are NOT reloaded within the reload interval."""
         rules_file = tmp_path / "kardbrd.yml"
-        self._write_yml(rules_file, "  - name: rule1\n    event: card_moved\n    action: /ke\n")
+        self._write_yml(
+            rules_file, "  - name: rule1\n    event: card_moved\n    action: /explore\n"
+        )
         # Use a very long interval
         engine = ReloadableRuleEngine(rules_file, reload_interval=9999)
         assert len(engine.rules) == 1
@@ -1706,8 +1711,8 @@ class TestReloadableRuleEngine:
         time.sleep(0.05)
         self._write_yml(
             rules_file,
-            "  - name: rule1\n    event: card_moved\n    action: /ke\n"
-            "  - name: rule2\n    event: card_created\n    action: /kp\n",
+            "  - name: rule1\n    event: card_moved\n    action: /explore\n"
+            "  - name: rule2\n    event: card_created\n    action: /plan\n",
         )
 
         # Should NOT reload yet (interval hasn't passed)
@@ -1716,7 +1721,9 @@ class TestReloadableRuleEngine:
     def test_survives_invalid_yaml_on_reload(self, tmp_path):
         """Test engine keeps old rules when reload encounters bad YAML."""
         rules_file = tmp_path / "kardbrd.yml"
-        self._write_yml(rules_file, "  - name: rule1\n    event: card_moved\n    action: /ke\n")
+        self._write_yml(
+            rules_file, "  - name: rule1\n    event: card_moved\n    action: /explore\n"
+        )
         engine = ReloadableRuleEngine(rules_file, reload_interval=0)
         assert len(engine.rules) == 1
 
@@ -1739,7 +1746,9 @@ class TestReloadableRuleEngine:
         assert len(engine.rules) == 0
 
         # Create the file
-        self._write_yml(rules_file, "  - name: rule1\n    event: card_moved\n    action: /ke\n")
+        self._write_yml(
+            rules_file, "  - name: rule1\n    event: card_moved\n    action: /explore\n"
+        )
 
         # Should pick it up on next access
         assert len(engine.rules) == 1
@@ -1755,7 +1764,7 @@ class TestRequireLabel:
                 Rule(
                     name="agent only",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     require_label="Agent",
                 ),
             ]
@@ -1773,7 +1782,7 @@ class TestRequireLabel:
                 Rule(
                     name="agent only",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     require_label="Agent",
                 ),
             ]
@@ -1791,7 +1800,7 @@ class TestRequireLabel:
                 Rule(
                     name="agent only",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     require_label="Agent",
                 ),
             ]
@@ -1809,7 +1818,7 @@ class TestRequireLabel:
                 Rule(
                     name="agent only",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     require_label="Agent",
                 ),
             ]
@@ -1827,7 +1836,7 @@ class TestRequireLabel:
                 Rule(
                     name="agent only",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     require_label="agent",
                 ),
             ]
@@ -1845,7 +1854,7 @@ class TestRequireLabel:
                 Rule(
                     name="agent ideas",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     list="Ideas",
                     require_label="Agent",
                 ),
@@ -1879,7 +1888,7 @@ class TestRequireLabel:
                 Rule(
                     name="all cards",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     list="Ideas",
                 ),
             ]
@@ -1905,7 +1914,7 @@ class TestRequireLabel:
                 {
                     "name": "agent only",
                     "event": "card_moved",
-                    "action": "/ke",
+                    "action": "/explore",
                     "require_label": "Agent",
                 }
             ]
@@ -1920,7 +1929,7 @@ class TestRequireLabel:
                 {
                     "name": "all cards",
                     "event": "card_moved",
-                    "action": "/ke",
+                    "action": "/explore",
                 }
             ]
         )
@@ -1938,7 +1947,7 @@ class TestRequireLabel:
             "    event: card_moved\n"
             "    list: Ideas\n"
             "    require_label: Agent\n"
-            "    action: /ke\n"
+            "    action: /explore\n"
         )
         engine, config = load_rules(rules_file)
         assert len(engine.rules) == 1
@@ -2035,7 +2044,7 @@ class TestEmoji:
             rules=[
                 Rule(name="ship", events=["reaction_added"], action="ship", emoji="📦"),
                 Rule(name="stop", events=["reaction_added"], action="__stop__", emoji="🛑"),
-                Rule(name="review", events=["reaction_added"], action="/kr", emoji="🔄"),
+                Rule(name="review", events=["reaction_added"], action="/review", emoji="🔄"),
             ]
         )
         matches = engine.match("reaction_added", {"card_id": "abc", "emoji": "🛑"})
@@ -2068,7 +2077,7 @@ class TestIsStop:
 
     def test_is_stop_false_for_normal_action(self):
         """Test is_stop returns False for normal actions."""
-        rule = Rule(name="ship", events=["reaction_added"], action="/ki", emoji="📦")
+        rule = Rule(name="ship", events=["reaction_added"], action="/implement", emoji="📦")
         assert rule.is_stop is False
 
     def test_is_stop_false_for_similar_string(self):
@@ -2257,7 +2266,7 @@ class TestRequireUser:
 
     def test_parse_without_require_user(self):
         """Test require_user defaults to None when not specified."""
-        rules = parse_rules([{"name": "t", "event": "card_moved", "action": "/ke"}])
+        rules = parse_rules([{"name": "t", "event": "card_moved", "action": "/explore"}])
         assert rules[0].require_user is None
 
 
@@ -2304,7 +2313,7 @@ class TestLoadRulesDictFormat:
             "rules:\n"
             "  - name: test\n"
             "    event: card_moved\n"
-            "    action: /ke\n"
+            "    action: /explore\n"
         )
         engine, config = load_rules(rules_file)
         assert len(engine.rules) == 1
@@ -2322,10 +2331,10 @@ class TestLoadRulesDictFormat:
             "  - name: rule1\n"
             "    event: card_moved\n"
             "    list: Ideas\n"
-            "    action: /ke\n"
+            "    action: /explore\n"
             "  - name: rule2\n"
             "    event: card_created\n"
-            "    action: /kp\n"
+            "    action: /plan\n"
         )
         engine, config = load_rules(rules_file)
         assert len(engine.rules) == 2
@@ -2383,7 +2392,7 @@ class TestValidateDictFormat:
             "rules:\n"
             "  - name: test\n"
             "    event: card_moved\n"
-            "    action: /ke\n"
+            "    action: /explore\n"
         )
         from kardbrd_agent.rules import validate_rules_file
 
@@ -2425,7 +2434,7 @@ class TestValidateDictFormat:
     def test_validate_bare_list_errors(self, tmp_path):
         """Test bare list format reports error (old format not supported)."""
         f = tmp_path / "kardbrd.yml"
-        f.write_text("- name: test\n  event: card_moved\n  action: /ke\n")
+        f.write_text("- name: test\n  event: card_moved\n  action: /explore\n")
         from kardbrd_agent.rules import validate_rules_file
 
         result = validate_rules_file(f)
@@ -2530,7 +2539,7 @@ class TestReloadableRuleEngineConfig:
         rules_file = tmp_path / "kardbrd.yml"
         rules_file.write_text(
             "board_id: abc\nagent: Bot\nrules:\n"
-            "  - name: test\n    event: card_moved\n    action: /ke\n"
+            "  - name: test\n    event: card_moved\n    action: /explore\n"
         )
         engine = ReloadableRuleEngine(rules_file)
         assert engine.config.board_id == "abc"
@@ -2541,7 +2550,7 @@ class TestReloadableRuleEngineConfig:
         rules_file = tmp_path / "kardbrd.yml"
         rules_file.write_text(
             "board_id: abc\nagent: Bot1\nrules:\n"
-            "  - name: test\n    event: card_moved\n    action: /ke\n"
+            "  - name: test\n    event: card_moved\n    action: /explore\n"
         )
         engine = ReloadableRuleEngine(rules_file, reload_interval=0)
         assert engine.config.agent_name == "Bot1"
@@ -2550,7 +2559,7 @@ class TestReloadableRuleEngineConfig:
         time.sleep(0.05)
         rules_file.write_text(
             "board_id: abc\nagent: Bot2\nrules:\n"
-            "  - name: test\n    event: card_moved\n    action: /ke\n"
+            "  - name: test\n    event: card_moved\n    action: /explore\n"
         )
 
         # Access config — should trigger reload
@@ -2771,7 +2780,7 @@ class TestCommentAuthor:
 
     def test_parse_without_comment_author(self):
         """Test comment_author defaults to None when not specified."""
-        rules = parse_rules([{"name": "t", "event": "card_moved", "action": "/ke"}])
+        rules = parse_rules([{"name": "t", "event": "card_moved", "action": "/explore"}])
         assert rules[0].comment_author is None
 
     def test_comment_author_in_known_fields(self):

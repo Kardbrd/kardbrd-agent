@@ -51,17 +51,17 @@ class TestClaudeExecutor:
         """Test extracting a skill command."""
         executor = ClaudeExecutor()
 
-        # Test /kp command
-        command = executor.extract_command("@coder /kp", "@coder")
-        assert command == "/kp"
+        # Test /plan command
+        command = executor.extract_command("@coder /plan", "@coder")
+        assert command == "/plan"
 
-        # Test /ke command
-        command = executor.extract_command("@coder /ke", "@coder")
-        assert command == "/ke"
+        # Test /explore command
+        command = executor.extract_command("@coder /explore", "@coder")
+        assert command == "/explore"
 
-        # Test /ki command
-        command = executor.extract_command("@Coder /ki please", "@coder")
-        assert command == "/ki please"
+        # Test /implement command
+        command = executor.extract_command("@Coder /implement please", "@coder")
+        assert command == "/implement please"
 
     def test_extract_command_free_form(self):
         """Test extracting a free-form command."""
@@ -77,18 +77,18 @@ class TestClaudeExecutor:
         """Test that command extraction is case-insensitive for mention."""
         executor = ClaudeExecutor()
 
-        command = executor.extract_command("@CODER /kp", "@coder")
-        assert command == "/kp"
+        command = executor.extract_command("@CODER /plan", "@coder")
+        assert command == "/plan"
 
-        command = executor.extract_command("@Coder /kp", "@coder")
-        assert command == "/kp"
+        command = executor.extract_command("@Coder /plan", "@coder")
+        assert command == "/plan"
 
     def test_extract_command_with_extra_whitespace(self):
         """Test extracting command with extra whitespace."""
         executor = ClaudeExecutor()
 
-        command = executor.extract_command("@coder   /kp  ", "@coder")
-        assert command == "/kp"
+        command = executor.extract_command("@coder   /plan  ", "@coder")
+        assert command == "/plan"
 
     def test_build_prompt_skill_command(self):
         """Test building prompt for a skill command."""
@@ -97,15 +97,15 @@ class TestClaudeExecutor:
         prompt = executor.build_prompt(
             card_id="abc123",
             card_markdown="# Card Title\n\nDescription here",
-            command="/kp",
-            comment_content="@coder /kp",
+            command="/plan",
+            comment_content="@coder /plan",
             author_name="Paul",
         )
 
-        assert "/kp" in prompt
+        assert "/plan" in prompt
         assert "Paul" in prompt
         assert "Card Title" in prompt
-        assert "@coder /kp" in prompt
+        assert "@coder /plan" in prompt
         assert "abc123" in prompt
         assert "kardbrd comment add" in prompt
 
@@ -168,13 +168,13 @@ class TestClaudeExecutor:
         prompt = executor.build_prompt(
             card_id="abc123",
             card_markdown="# Card Title\n\nDescription here",
-            command="/kp",
-            comment_content="@coder /kp",
+            command="/plan",
+            comment_content="@coder /plan",
             author_name="Paul",
             board_id="board456",
         )
 
-        assert "/kp" in prompt
+        assert "/plan" in prompt
         assert "kardbrd board labels" in prompt
         assert "board456" in prompt
 
@@ -731,11 +731,11 @@ class TestModuleLevelFunctions:
         prompt = build_prompt(
             card_id="abc123",
             card_markdown="# Card Title",
-            command="/kp",
-            comment_content="@coder /kp",
+            command="/plan",
+            comment_content="@coder /plan",
             author_name="Paul",
         )
-        assert "/kp" in prompt
+        assert "/plan" in prompt
         assert "abc123" in prompt
         assert "Paul" in prompt
 
@@ -766,7 +766,7 @@ class TestModuleLevelFunctions:
 
     def test_module_level_extract_command_skill(self):
         """Test module-level extract_command with skill."""
-        assert extract_command("@coder /kp", "@coder") == "/kp"
+        assert extract_command("@coder /plan", "@coder") == "/plan"
 
     def test_module_level_extract_command_free_form(self):
         """Test module-level extract_command with free-form."""
@@ -782,13 +782,13 @@ class TestModuleLevelFunctions:
         kwargs = dict(
             card_id="abc123",
             card_markdown="# Card",
-            command="/kp",
-            comment_content="@coder /kp",
+            command="/plan",
+            comment_content="@coder /plan",
             author_name="Paul",
         )
         assert executor.build_prompt(**kwargs) == build_prompt(**kwargs)
-        assert executor.extract_command("@coder /kp", "@coder") == extract_command(
-            "@coder /kp", "@coder"
+        assert executor.extract_command("@coder /plan", "@coder") == extract_command(
+            "@coder /plan", "@coder"
         )
 
 
@@ -983,14 +983,14 @@ class TestBuildPromptWithAgentFiles:
         prompt = build_prompt(
             card_id="abc123",
             card_markdown="# Card",
-            command="/kp",
-            comment_content="@coder /kp",
+            command="/plan",
+            comment_content="@coder /plan",
             author_name="Paul",
             cwd=tmp_path,
         )
         assert "Agent Identity" in prompt
         assert "Bot identity." in prompt
-        assert "/kp" in prompt
+        assert "/plan" in prompt
 
     def test_build_prompt_no_cwd_no_agent_files(self):
         """Without cwd, no agent file content appears."""

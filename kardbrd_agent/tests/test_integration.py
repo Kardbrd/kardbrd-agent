@@ -104,7 +104,7 @@ class TestConcurrentProcessingIntegration:
         manager.executor.check_auth = AsyncMock(
             return_value=AuthStatus(authenticated=True, email="test@test.com")
         )
-        manager.executor.extract_command.return_value = "/kp"
+        manager.executor.extract_command.return_value = "/plan"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = mock_execute
 
@@ -121,8 +121,8 @@ class TestConcurrentProcessingIntegration:
 
         # Process two cards concurrently
         await asyncio.gather(
-            manager._process_mention("card1111", "comm1", "@coder /kp", "Paul"),
-            manager._process_mention("card2222", "comm2", "@coder /ki", "Paul"),
+            manager._process_mention("card1111", "comm1", "@coder /plan", "Paul"),
+            manager._process_mention("card2222", "comm2", "@coder /implement", "Paul"),
         )
 
         # Both should have started before either ended (concurrent)
@@ -158,7 +158,7 @@ class TestConcurrentProcessingIntegration:
         manager.executor.check_auth = AsyncMock(
             return_value=AuthStatus(authenticated=True, email="test@test.com")
         )
-        manager.executor.extract_command.return_value = "/kp"
+        manager.executor.extract_command.return_value = "/plan"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = mock_execute
 
@@ -172,9 +172,9 @@ class TestConcurrentProcessingIntegration:
 
         # Process 3 cards with max_concurrent=1
         await asyncio.gather(
-            manager._process_mention("card0", "comm0", "@coder /kp", "Paul"),
-            manager._process_mention("card1", "comm1", "@coder /kp", "Paul"),
-            manager._process_mention("card2", "comm2", "@coder /kp", "Paul"),
+            manager._process_mention("card0", "comm0", "@coder /plan", "Paul"),
+            manager._process_mention("card1", "comm1", "@coder /plan", "Paul"),
+            manager._process_mention("card2", "comm2", "@coder /plan", "Paul"),
         )
 
         # Only 1 should have run at a time
@@ -198,7 +198,7 @@ class TestRetryIntegration:
         manager.client = MagicMock()
         manager.client.get_card_markdown.return_value = "# Card"
         manager.client.get_comment.return_value = {
-            "content": "@coder /kp",
+            "content": "@coder /plan",
             "author": {"display_name": "Paul"},
         }
         manager.client.toggle_reaction = MagicMock()
@@ -216,7 +216,7 @@ class TestRetryIntegration:
         manager.executor.check_auth = AsyncMock(
             return_value=AuthStatus(authenticated=True, email="test@test.com")
         )
-        manager.executor.extract_command.return_value = "/kp"
+        manager.executor.extract_command.return_value = "/plan"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = slow_execute
         manager.worktree_manager = MagicMock()
@@ -225,7 +225,7 @@ class TestRetryIntegration:
 
         # Start processing a card
         process_task = asyncio.create_task(
-            manager._process_mention("card1", "comm1", "@coder /kp", "Paul")
+            manager._process_mention("card1", "comm1", "@coder /plan", "Paul")
         )
 
         # Wait for processing to start
@@ -277,7 +277,7 @@ class TestApiVerificationIntegration:
         manager.executor.check_auth = AsyncMock(
             return_value=AuthStatus(authenticated=True, email="test@test.com")
         )
-        manager.executor.extract_command.return_value = "/kp"
+        manager.executor.extract_command.return_value = "/plan"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = mock_execute
         manager.worktree_manager = MagicMock()
@@ -289,8 +289,8 @@ class TestApiVerificationIntegration:
         (git_repo.parent / "card-card2").mkdir(exist_ok=True)
 
         await asyncio.gather(
-            manager._process_mention("card1", "comm1", "@coder /kp", "Paul"),
-            manager._process_mention("card2", "comm2", "@coder /kp", "Paul"),
+            manager._process_mention("card1", "comm1", "@coder /plan", "Paul"),
+            manager._process_mention("card2", "comm2", "@coder /plan", "Paul"),
         )
 
         # Card1 should get success reaction (API says bot posted)
@@ -317,7 +317,7 @@ class TestApiVerificationIntegration:
         manager.executor.check_auth = AsyncMock(
             return_value=AuthStatus(authenticated=True, email="test@test.com")
         )
-        manager.executor.extract_command.return_value = "/kp"
+        manager.executor.extract_command.return_value = "/plan"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = AsyncMock(
             return_value=ClaudeResult(success=True, result_text="Done")
@@ -326,7 +326,7 @@ class TestApiVerificationIntegration:
         manager.worktree_manager.create_worktree.return_value = git_repo.parent / "card-card1"
         (git_repo.parent / "card-card1").mkdir(exist_ok=True)
 
-        await manager._process_mention("card1", "comm1", "@coder /kp", "Paul")
+        await manager._process_mention("card1", "comm1", "@coder /plan", "Paul")
 
         assert "card1" not in manager._active_sessions
 
@@ -346,7 +346,7 @@ class TestApiVerificationIntegration:
         manager.worktree_manager.create_worktree.return_value = git_repo.parent / "card-card1"
         (git_repo.parent / "card-card1").mkdir(exist_ok=True)
 
-        await manager._process_mention("card1", "comm1", "@coder /kp", "Paul")
+        await manager._process_mention("card1", "comm1", "@coder /plan", "Paul")
 
         assert "card1" not in manager._active_sessions
 
@@ -391,14 +391,14 @@ class TestDuplicateCommentPrevention:
         manager.executor.check_auth = AsyncMock(
             return_value=AuthStatus(authenticated=True, email="test@test.com")
         )
-        manager.executor.extract_command.return_value = "/kp"
+        manager.executor.extract_command.return_value = "/plan"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = mock_execute
         manager.worktree_manager = MagicMock()
         manager.worktree_manager.create_worktree.return_value = git_repo.parent / "card-card1"
         (git_repo.parent / "card-card1").mkdir(exist_ok=True)
 
-        await manager._process_mention("card1", "comm1", "@coder /kp", "Paul")
+        await manager._process_mention("card1", "comm1", "@coder /plan", "Paul")
 
         # manager.client.add_comment should NOT be called (no fallback needed)
         manager.client.add_comment.assert_not_called()
@@ -443,14 +443,14 @@ class TestDuplicateCommentPrevention:
         manager.executor.check_auth = AsyncMock(
             return_value=AuthStatus(authenticated=True, email="test@test.com")
         )
-        manager.executor.extract_command.return_value = "/kp"
+        manager.executor.extract_command.return_value = "/plan"
         manager.executor.build_prompt.return_value = "prompt"
         manager.executor.execute = mock_execute
         manager.worktree_manager = MagicMock()
         manager.worktree_manager.create_worktree.return_value = git_repo.parent / "card-card1"
         (git_repo.parent / "card-card1").mkdir(exist_ok=True)
 
-        await manager._process_mention("card1", "comm1", "@coder /kp", "Paul")
+        await manager._process_mention("card1", "comm1", "@coder /plan", "Paul")
 
         # No fallback add_comment for result text
         fallback_calls = [
@@ -474,7 +474,7 @@ class TestRequireLabelIntegration:
                 Rule(
                     name="agent only",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     list="Ideas",
                     require_label="Agent",
                 ),
@@ -527,7 +527,7 @@ class TestRequireLabelIntegration:
                 Rule(
                     name="agent only",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     list="Ideas",
                     require_label="Agent",
                 ),
@@ -572,7 +572,7 @@ class TestRequireLabelIntegration:
                 Rule(
                     name="all cards",
                     events=["card_moved"],
-                    action="/ke",
+                    action="/explore",
                     list="Ideas",
                 ),
             ]
