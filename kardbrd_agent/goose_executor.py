@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -51,9 +52,21 @@ class GooseExecutor:
             AuthStatus with authentication details or error information.
         """
         # 1. Check goose binary exists
+        goose_bin = shutil.which("goose")
+        if not goose_bin:
+            return AuthStatus(
+                authenticated=False,
+                error="Goose CLI not found in PATH",
+                auth_hint=(
+                    "Install Goose: "
+                    "curl -fsSL https://github.com/block/goose/releases/latest/"
+                    "download/install.sh | sh"
+                ),
+            )
+
         try:
             process = await asyncio.create_subprocess_exec(
-                "goose",
+                goose_bin,
                 "version",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -70,16 +83,6 @@ class GooseExecutor:
                         "download/install.sh | sh"
                     ),
                 )
-        except FileNotFoundError:
-            return AuthStatus(
-                authenticated=False,
-                error="Goose CLI not found",
-                auth_hint=(
-                    "Install Goose: "
-                    "curl -fsSL https://github.com/block/goose/releases/latest/"
-                    "download/install.sh | sh"
-                ),
-            )
         except TimeoutError:
             return AuthStatus(
                 authenticated=False,
@@ -196,8 +199,16 @@ class GooseExecutor:
         """
         working_dir = cwd or self.cwd
 
+        goose_bin = shutil.which("goose")
+        if not goose_bin:
+            return ExecutorResult(
+                success=False,
+                result_text="",
+                error="Goose CLI not found in PATH",
+            )
+
         cmd = [
-            "goose",
+            goose_bin,
             "run",
             "-t",
             "-",
@@ -275,11 +286,7 @@ class GooseExecutor:
             return ExecutorResult(
                 success=False,
                 result_text="",
-                error=(
-                    "Goose CLI not found. Install: "
-                    "curl -fsSL https://github.com/block/goose/releases/latest/"
-                    "download/install.sh | sh"
-                ),
+                error=f"Working directory not found: {working_dir}",
             )
         except Exception as e:
             logger.exception("Error executing Goose")
