@@ -146,8 +146,8 @@ class TestGooseCheckAuth:
         from unittest.mock import patch
 
         with patch(
-            "asyncio.create_subprocess_exec",
-            side_effect=FileNotFoundError(),
+            "kardbrd_agent.goose_executor.shutil.which",
+            return_value=None,
         ):
             result = await GooseExecutor.check_auth()
 
@@ -160,7 +160,10 @@ class TestGooseCheckAuth:
         """Test check_auth when goose version returns error."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        with patch("asyncio.create_subprocess_exec") as mock_exec:
+        with (
+            patch("kardbrd_agent.goose_executor.shutil.which", return_value="/usr/bin/goose"),
+            patch("asyncio.create_subprocess_exec") as mock_exec,
+        ):
             mock_process = MagicMock()
             mock_process.communicate = AsyncMock(return_value=(b"", b"error"))
             mock_process.returncode = 1
@@ -177,6 +180,7 @@ class TestGooseCheckAuth:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         with (
+            patch("kardbrd_agent.goose_executor.shutil.which", return_value="/usr/bin/goose"),
             patch("asyncio.create_subprocess_exec") as mock_exec,
             patch.dict(os.environ, {}, clear=True),
         ):
@@ -196,6 +200,7 @@ class TestGooseCheckAuth:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         with (
+            patch("kardbrd_agent.goose_executor.shutil.which", return_value="/usr/bin/goose"),
             patch("asyncio.create_subprocess_exec") as mock_exec,
             patch.dict(os.environ, {"GOOSE_PROVIDER": "ollama"}, clear=True),
         ):
@@ -216,6 +221,7 @@ class TestGooseCheckAuth:
 
         env = {"GOOSE_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "sk-test"}
         with (
+            patch("kardbrd_agent.goose_executor.shutil.which", return_value="/usr/bin/goose"),
             patch("asyncio.create_subprocess_exec") as mock_exec,
             patch.dict(os.environ, env, clear=True),
         ):
@@ -237,6 +243,7 @@ class TestGooseCheckAuth:
         # Provider is set but API key env var is missing
         env = {"GOOSE_PROVIDER": "anthropic"}
         with (
+            patch("kardbrd_agent.goose_executor.shutil.which", return_value="/usr/bin/goose"),
             patch("asyncio.create_subprocess_exec") as mock_exec,
             patch.dict(os.environ, env, clear=True),
         ):
@@ -425,8 +432,8 @@ class TestGooseExecutorAsync:
         executor = GooseExecutor(cwd="/tmp", timeout=60)
 
         with patch(
-            "asyncio.create_subprocess_exec",
-            side_effect=FileNotFoundError(),
+            "kardbrd_agent.goose_executor.shutil.which",
+            return_value=None,
         ):
             result = await executor.execute("test")
 

@@ -5,6 +5,7 @@ import contextlib
 import json
 import logging
 import os
+import shutil
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -330,9 +331,17 @@ class ClaudeExecutor:
         Returns:
             AuthStatus with authentication details or error information.
         """
+        claude_bin = shutil.which("claude")
+        if not claude_bin:
+            return AuthStatus(
+                authenticated=False,
+                error="Claude CLI not found in PATH",
+                auth_hint="Ensure `claude` is in PATH",
+            )
+
         try:
             process = await asyncio.create_subprocess_exec(
-                "claude",
+                claude_bin,
                 "auth",
                 "status",
                 stdout=asyncio.subprocess.PIPE,
@@ -379,13 +388,6 @@ class ClaudeExecutor:
                 email=data.get("email"),
                 auth_method=data.get("authMethod"),
                 subscription_type=data.get("subscriptionType"),
-            )
-
-        except FileNotFoundError:
-            return AuthStatus(
-                authenticated=False,
-                error="Claude CLI not found. Install: npm install -g @anthropic-ai/claude-code",
-                auth_hint="Install Claude CLI: npm install -g @anthropic-ai/claude-code",
             )
         except TimeoutError:
             return AuthStatus(
@@ -449,8 +451,16 @@ class ClaudeExecutor:
         # Use passed cwd or default
         working_dir = cwd or self.cwd
 
+        claude_bin = shutil.which("claude")
+        if not claude_bin:
+            return ExecutorResult(
+                success=False,
+                result_text="",
+                error="Claude CLI not found in PATH",
+            )
+
         cmd = [
-            "claude",
+            claude_bin,
             "-p",
             "-",
             "--output-format=stream-json",
@@ -519,10 +529,7 @@ class ClaudeExecutor:
             return ExecutorResult(
                 success=False,
                 result_text="",
-                error=(
-                    "Claude CLI not found. Please install it with: "
-                    "npm install -g @anthropic-ai/claude-code"
-                ),
+                error=f"Working directory not found: {working_dir}",
             )
         except Exception as e:
             logger.exception("Error executing Claude")

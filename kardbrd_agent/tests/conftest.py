@@ -45,6 +45,16 @@ def mock_claude_auth():
         yield mock
 
 
+@pytest.fixture(autouse=True)
+def mock_executor_which():
+    """Auto-patch shutil.which in executors so tests don't depend on installed CLIs."""
+    with (
+        patch("kardbrd_agent.executor.shutil.which", return_value="/usr/bin/claude"),
+        patch("kardbrd_agent.goose_executor.shutil.which", return_value="/usr/bin/goose"),
+    ):
+        yield
+
+
 @pytest.fixture
 def mock_kardbrd_client() -> MagicMock:
     """Create a mock KardbrdClient."""

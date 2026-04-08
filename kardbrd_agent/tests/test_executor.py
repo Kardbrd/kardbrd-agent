@@ -714,8 +714,8 @@ class TestCheckClaudeAuth:
         from unittest.mock import patch
 
         with patch(
-            "asyncio.create_subprocess_exec",
-            side_effect=FileNotFoundError(),
+            "kardbrd_agent.executor.shutil.which",
+            return_value=None,
         ):
             result = await _real_check_auth()
 
