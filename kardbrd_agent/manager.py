@@ -799,6 +799,64 @@ class ProxyManager:
 
         return "\n\n".join(parts)
 
+    @staticmethod
+    def _is_resumable_failure(result: ExecutorResult) -> bool:
+        """Check if a failed execution can be retried by resuming the session.
+
+        A failure is resumable when Claude started a session (has a session_id)
+        and the error looks like a transient or recoverable API issue rather than
+        a fundamental problem like auth failure or missing binary.
+        """
+        if result.success or not result.session_id:
+            return False
+
+        # Timeout failures — Claude was killed, resume would restart cold
+        if result.error and "timed out" in result.error:
+            return False
+
+        # Auth / binary errors are not recoverable by resuming
+        return not (
+            result.error
+            and any(
+                phrase in result.error.lower()
+                for phrase in ["not found", "not authenticated", "authentication"]
+            )
+        )
+
+    async def _retry_with_resume(
+        self,
+        result: ExecutorResult,
+        card_id: str,
+        worktree_path: Path | None,
+    ) -> ExecutorResult:
+        """Retry a failed execution by resuming the Claude session.
+
+        When Claude exits with code 1 due to a transient API error (rate limit,
+        image processing failure, etc.), resuming the session lets Claude pick up
+        where it left off and try a different approach.
+
+        Returns the result of the resume attempt.
+        """
+        logger.info(
+            f"Retrying card {card_id} via session resume "
+            f"(session={result.session_id}, error={result.error})"
+        )
+        resume_prompt = (
+            "Your previous attempt ended with an error. "
+            "Please review what happened and continue the task. "
+            "If an approach failed (e.g. processing an image), try an alternative."
+        )
+        retry_result = await self.executor.execute(
+            resume_prompt,
+            resume_session_id=result.session_id,
+            cwd=worktree_path,
+        )
+        if retry_result.success:
+            logger.info(f"Retry succeeded for card {card_id}")
+        else:
+            logger.warning(f"Retry also failed for card {card_id}: {retry_result.error}")
+        return retry_result
+
     def _has_recent_bot_comment(self, card_id: str, seconds: int = 60) -> bool:
         """
         Check if this bot posted a comment on the card recently.
@@ -950,12 +1008,40 @@ class ProxyManager:
                         self._add_reaction(card_id, comment_id, "✅")
                 else:
                     logger.error(f"Agent failed: {result.error}")
-                    self._add_reaction(card_id, comment_id, "🛑")
-                    # Post error details with full diagnostics for debugging
-                    error_comment = self._build_error_comment(result)
-                    error_comment += f"\n\n@{author_name}"
-                    self.client.add_comment(card_id, error_comment)
-                    logger.info(f"Posted error comment to card {card_id}")
+                    # Try resuming the session if the failure looks recoverable
+                    if self._is_resumable_failure(result):
+                        retry_result = await self._retry_with_resume(result, card_id, worktree_path)
+                        if retry_result.success:
+                            if session:
+                                session.session_id = retry_result.session_id
+                            if self._has_recent_bot_comment(card_id):
+                                self._add_reaction(card_id, comment_id, "✅")
+                            elif retry_result.session_id:
+                                await self._resume_to_publish(
+                                    card_id=card_id,
+                                    comment_id=comment_id,
+                                    session_id=retry_result.session_id,
+                                    author_name=author_name,
+                                    worktree_path=worktree_path,
+                                )
+                            else:
+                                self._add_reaction(card_id, comment_id, "✅")
+                        else:
+                            # Retry also failed — post combined diagnostics
+                            self._add_reaction(card_id, comment_id, "🛑")
+                            error_comment = self._build_error_comment(
+                                retry_result, label="Error (retry also failed)"
+                            )
+                            error_comment += f"\n\n@{author_name}"
+                            self.client.add_comment(card_id, error_comment)
+                            logger.info(f"Posted error comment to card {card_id}")
+                    else:
+                        self._add_reaction(card_id, comment_id, "🛑")
+                        # Post error details with full diagnostics for debugging
+                        error_comment = self._build_error_comment(result)
+                        error_comment += f"\n\n@{author_name}"
+                        self.client.add_comment(card_id, error_comment)
+                        logger.info(f"Posted error comment to card {card_id}")
 
             except Exception as exc:
                 logger.exception("Error processing mention")
@@ -1248,10 +1334,35 @@ DO NOT do any new work - just publish what you already did."""
                         )
                 else:
                     logger.error(f"Rule '{rule.name}': agent failed: {result.error}")
-                    error_comment = self._build_error_comment(
-                        result, label=f"Automation Error ({rule.name})"
-                    )
-                    self.client.add_comment(card_id, error_comment)
+                    # Try resuming the session if the failure looks recoverable
+                    if self._is_resumable_failure(result):
+                        retry_result = await self._retry_with_resume(result, card_id, worktree_path)
+                        if retry_result.success:
+                            logger.info(f"Rule '{rule.name}': retry succeeded")
+                            if session:
+                                session.session_id = retry_result.session_id
+                            if (
+                                not self._has_recent_bot_comment(card_id)
+                                and retry_result.session_id
+                            ):
+                                await self._resume_to_publish(
+                                    card_id=card_id,
+                                    comment_id=None,
+                                    session_id=retry_result.session_id,
+                                    author_name="automation",
+                                    worktree_path=worktree_path,
+                                )
+                        else:
+                            error_comment = self._build_error_comment(
+                                retry_result,
+                                label=f"Automation Error ({rule.name}, retry failed)",
+                            )
+                            self.client.add_comment(card_id, error_comment)
+                    else:
+                        error_comment = self._build_error_comment(
+                            result, label=f"Automation Error ({rule.name})"
+                        )
+                        self.client.add_comment(card_id, error_comment)
 
             except Exception as exc:
                 logger.exception(f"Error processing rule '{rule.name}'")

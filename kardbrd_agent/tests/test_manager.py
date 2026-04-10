@@ -2833,3 +2833,249 @@ class TestBuildErrorComment:
         result = ExecutorResult(success=False, result_text="", error="Failed")
         comment = ProxyManager._build_error_comment(result)
         assert "Claude logs" not in comment
+
+
+class TestIsResumableFailure:
+    """Tests for ProxyManager._is_resumable_failure."""
+
+    def test_successful_result_not_resumable(self):
+        result = ExecutorResult(success=True, result_text="ok", session_id="sess1")
+        assert ProxyManager._is_resumable_failure(result) is False
+
+    def test_no_session_id_not_resumable(self):
+        result = ExecutorResult(success=False, result_text="", error="Claude exited with code 1")
+        assert ProxyManager._is_resumable_failure(result) is False
+
+    def test_timeout_not_resumable(self):
+        result = ExecutorResult(
+            success=False,
+            result_text="",
+            error="Claude execution timed out after 3600s",
+            session_id="sess1",
+        )
+        assert ProxyManager._is_resumable_failure(result) is False
+
+    def test_auth_error_not_resumable(self):
+        result = ExecutorResult(
+            success=False,
+            result_text="",
+            error="Not authenticated",
+            session_id="sess1",
+        )
+        assert ProxyManager._is_resumable_failure(result) is False
+
+    def test_binary_not_found_not_resumable(self):
+        result = ExecutorResult(
+            success=False,
+            result_text="",
+            error="Working directory not found: /tmp/gone",
+            session_id="sess1",
+        )
+        assert ProxyManager._is_resumable_failure(result) is False
+
+    def test_api_error_with_session_is_resumable(self):
+        result = ExecutorResult(
+            success=False,
+            result_text="",
+            error="Claude exited with code 1",
+            session_id="sess1",
+            returncode=1,
+        )
+        assert ProxyManager._is_resumable_failure(result) is True
+
+    def test_exit_code_2_with_session_is_resumable(self):
+        result = ExecutorResult(
+            success=False,
+            result_text="",
+            error="Claude exited with code 2",
+            session_id="sess1",
+            returncode=2,
+        )
+        assert ProxyManager._is_resumable_failure(result) is True
+
+
+class TestRetryWithResume:
+    """Tests for retry-via-resume on recoverable failures."""
+
+    @pytest.mark.asyncio
+    async def test_mention_retries_on_resumable_failure(self):
+        """When Claude fails with a resumable error, _process_mention retries via resume."""
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.client.get_card_markdown.return_value = "# Card"
+        manager.client.get_card.return_value = {
+            "comments": [
+                {
+                    "author": {"is_bot": True},
+                    "created_at": "2099-01-01T00:00:00+00:00",
+                }
+            ]
+        }
+        manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="t@t.com")
+        )
+        manager.executor.build_prompt = MagicMock(return_value="prompt")
+        # First call fails with a resumable error
+        fail_result = ExecutorResult(
+            success=False,
+            result_text="",
+            error="Claude exited with code 1",
+            session_id="sess-abc",
+            returncode=1,
+        )
+        # Retry succeeds
+        retry_result = ExecutorResult(success=True, result_text="done", session_id="sess-abc")
+        manager.executor.execute = AsyncMock(side_effect=[fail_result, retry_result])
+        manager.worktree_manager = MagicMock()
+        manager.worktree_manager.create_worktree.return_value = Path("/tmp/wt")
+
+        await manager._process_mention("card1", "comm1", "@coder hi", "Paul")
+
+        # Should have called execute twice (original + retry)
+        assert manager.executor.execute.call_count == 2
+        # Retry call should use resume_session_id
+        retry_call = manager.executor.execute.call_args_list[1]
+        assert retry_call.kwargs.get("resume_session_id") == "sess-abc"
+        # Should get success reaction, not error
+        reactions = [
+            call.args[2]
+            for call in manager.client.toggle_reaction.call_args_list
+            if len(call.args) >= 3
+        ]
+        assert "✅" in reactions
+
+    @pytest.mark.asyncio
+    async def test_mention_no_retry_on_non_resumable(self):
+        """When the failure is not resumable (no session), no retry is attempted."""
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.client.get_card_markdown.return_value = "# Card"
+        manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="t@t.com")
+        )
+        manager.executor.build_prompt = MagicMock(return_value="prompt")
+        fail_result = ExecutorResult(
+            success=False,
+            result_text="",
+            error="Claude exited with code 1",
+            # No session_id — not resumable
+        )
+        manager.executor.execute = AsyncMock(return_value=fail_result)
+        manager.worktree_manager = MagicMock()
+        manager.worktree_manager.create_worktree.return_value = Path("/tmp/wt")
+
+        await manager._process_mention("card1", "comm1", "@coder hi", "Paul")
+
+        # Only one execute call (no retry)
+        assert manager.executor.execute.call_count == 1
+        # Error comment posted
+        comment = manager.client.add_comment.call_args[0][1]
+        assert "Claude exited with code 1" in comment
+
+    @pytest.mark.asyncio
+    async def test_mention_retry_fails_posts_error(self):
+        """When the retry also fails, the retry error is posted."""
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.client.get_card_markdown.return_value = "# Card"
+        manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="t@t.com")
+        )
+        manager.executor.build_prompt = MagicMock(return_value="prompt")
+        fail_result = ExecutorResult(
+            success=False,
+            result_text="",
+            error="Claude exited with code 1",
+            session_id="sess-abc",
+            returncode=1,
+        )
+        retry_fail = ExecutorResult(
+            success=False,
+            result_text="",
+            error="Claude exited with code 1 again",
+            returncode=1,
+        )
+        manager.executor.execute = AsyncMock(side_effect=[fail_result, retry_fail])
+        manager.worktree_manager = MagicMock()
+        manager.worktree_manager.create_worktree.return_value = Path("/tmp/wt")
+
+        await manager._process_mention("card1", "comm1", "@coder hi", "Paul")
+
+        assert manager.executor.execute.call_count == 2
+        comment = manager.client.add_comment.call_args[0][1]
+        assert "retry also failed" in comment
+
+    @pytest.mark.asyncio
+    async def test_rule_retries_on_resumable_failure(self):
+        """When a rule-triggered execution fails with resumable error, it retries."""
+        rule = Rule(name="auto-explore", events=["card_moved"], action="/ke")
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.client.get_card_markdown.return_value = "# Card"
+        manager.client.get_card.return_value = {
+            "comments": [
+                {
+                    "author": {"is_bot": True},
+                    "created_at": "2099-01-01T00:00:00+00:00",
+                }
+            ]
+        }
+        manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="t@t.com")
+        )
+        manager.executor.build_prompt = MagicMock(return_value="prompt")
+        fail_result = ExecutorResult(
+            success=False,
+            result_text="",
+            error="Claude exited with code 1",
+            session_id="sess-xyz",
+            returncode=1,
+        )
+        retry_result = ExecutorResult(success=True, result_text="done", session_id="sess-xyz")
+        manager.executor.execute = AsyncMock(side_effect=[fail_result, retry_result])
+        manager.worktree_manager = MagicMock()
+        manager.worktree_manager.create_worktree.return_value = Path("/tmp/wt")
+
+        await manager._process_rule("card1", rule, {"card_id": "card1"})
+
+        assert manager.executor.execute.call_count == 2
+        # No error comment posted (retry succeeded)
+        for call in manager.client.add_comment.call_args_list:
+            assert "Error" not in call[0][1]
+
+    @pytest.mark.asyncio
+    async def test_rule_retry_fails_posts_error(self):
+        """When a rule retry also fails, error comment is posted."""
+        rule = Rule(name="auto-explore", events=["card_moved"], action="/ke")
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.client.get_card_markdown.return_value = "# Card"
+        manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="t@t.com")
+        )
+        manager.executor.build_prompt = MagicMock(return_value="prompt")
+        fail_result = ExecutorResult(
+            success=False,
+            result_text="",
+            error="Claude exited with code 1",
+            session_id="sess-xyz",
+            returncode=1,
+        )
+        retry_fail = ExecutorResult(
+            success=False,
+            result_text="",
+            error="Still failing",
+        )
+        manager.executor.execute = AsyncMock(side_effect=[fail_result, retry_fail])
+        manager.worktree_manager = MagicMock()
+        manager.worktree_manager.create_worktree.return_value = Path("/tmp/wt")
+
+        await manager._process_rule("card1", rule, {"card_id": "card1"})
+
+        comment = manager.client.add_comment.call_args[0][1]
+        assert "retry failed" in comment
