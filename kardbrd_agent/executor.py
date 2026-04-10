@@ -99,6 +99,10 @@ class ExecutorResult:
     cost_usd: float | None = None
     duration_ms: int | None = None
     session_id: str | None = None
+    returncode: int | None = None
+    stderr: str | None = None
+    command: list[str] | None = None
+    claude_logs: str | None = None
 
 
 # Backwards compatibility alias
@@ -523,7 +527,17 @@ class ClaudeExecutor:
                 )
 
             # Parse the stream-json output
-            return self._parse_output(stdout.decode(), stderr.decode(), process.returncode)
+            result = self._parse_output(
+                stdout.decode(), stderr.decode(), process.returncode, cmd=cmd
+            )
+
+            # On failure, extract Claude conversation logs for diagnostics
+            if not result.success:
+                result.claude_logs = self._extract_claude_logs(
+                    working_dir, session_id=result.session_id
+                )
+
+            return result
 
         except FileNotFoundError:
             return ExecutorResult(
@@ -576,7 +590,13 @@ class ClaudeExecutor:
         await process.wait()
         return b"".join(lines), stderr_data
 
-    def _parse_output(self, stdout: str, stderr: str, returncode: int | None) -> ExecutorResult:
+    def _parse_output(
+        self,
+        stdout: str,
+        stderr: str,
+        returncode: int | None,
+        cmd: list[str] | None = None,
+    ) -> ExecutorResult:
         """
         Parse Claude's stream-json output.
 
@@ -631,7 +651,126 @@ class ClaudeExecutor:
             cost_usd=cost_usd,
             duration_ms=duration_ms,
             session_id=session_id,
+            returncode=returncode,
+            stderr=stderr if stderr else None,
+            command=cmd,
         )
+
+    @staticmethod
+    def _extract_claude_logs(
+        working_dir: Path,
+        session_id: str | None = None,
+        max_chars: int = 3000,
+    ) -> str | None:
+        """Extract relevant excerpts from Claude's conversation logs on failure.
+
+        Claude stores JSONL logs at ~/.claude/projects/<slug>/<session>.jsonl
+        where <slug> is the working directory path with / replaced by -.
+
+        Args:
+            working_dir: The cwd used for the Claude subprocess.
+            session_id: If known, read this specific session log.
+            max_chars: Maximum characters to return.
+
+        Returns:
+            Formatted log excerpt, or None if no logs found.
+        """
+        claude_dir = Path.home() / ".claude" / "projects"
+        if not claude_dir.exists():
+            return None
+
+        # Claude slugifies the project path: /home/user/src -> -home-user-src
+        slug = str(working_dir).replace("/", "-")
+        project_dir = claude_dir / slug
+        if not project_dir.exists():
+            return None
+
+        # Find the log file — use session_id if available, otherwise most recent
+        log_file: Path | None = None
+        if session_id:
+            candidate = project_dir / f"{session_id}.jsonl"
+            if candidate.exists():
+                log_file = candidate
+
+        if not log_file:
+            # Find the most recently modified .jsonl file
+            jsonl_files = sorted(
+                project_dir.glob("*.jsonl"),
+                key=lambda f: f.stat().st_mtime,
+                reverse=True,
+            )
+            if jsonl_files:
+                log_file = jsonl_files[0]
+
+        if not log_file:
+            return None
+
+        try:
+            lines: list[str] = []
+            with open(log_file) as f:
+                for raw_line in f:
+                    raw_line = raw_line.strip()
+                    if not raw_line:
+                        continue
+                    try:
+                        entry = json.loads(raw_line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    entry_type = entry.get("type")
+                    msg = entry.get("message", {})
+
+                    # Extract error entries
+                    if entry_type == "error" or (
+                        isinstance(msg, dict) and msg.get("type") == "error"
+                    ):
+                        error_detail = entry.get("error") or msg.get("error", {})
+                        if isinstance(error_detail, dict):
+                            error_detail = error_detail.get("message", str(error_detail))
+                        lines.append(f"[error] {error_detail}")
+
+                    # Extract system messages that indicate failures
+                    elif entry_type == "system" and entry.get("message"):
+                        lines.append(f"[system] {entry['message']}")
+
+                    # Extract assistant responses (last few for context)
+                    elif isinstance(msg, dict) and msg.get("role") == "assistant":
+                        content = msg.get("content", [])
+                        for block in content if isinstance(content, list) else []:
+                            if isinstance(block, dict):
+                                if block.get("type") == "text" and block.get("text"):
+                                    text = block["text"].strip()
+                                    if text:
+                                        lines.append(f"[assistant] {text[:500]}")
+                                elif block.get("type") == "tool_use":
+                                    lines.append(f"[tool_use] {block.get('name', '?')}")
+
+                    # Extract tool results with errors
+                    elif isinstance(msg, dict) and msg.get("role") == "tool":
+                        content = msg.get("content", [])
+                        for block in content if isinstance(content, list) else []:
+                            if isinstance(block, dict) and block.get("is_error"):
+                                lines.append(f"[tool_error] {str(block.get('content', ''))[:300]}")
+
+            if not lines:
+                return None
+
+            # Return the last N lines that fit within max_chars
+            result_lines: list[str] = []
+            char_count = 0
+            for line in reversed(lines):
+                if char_count + len(line) + 1 > max_chars:
+                    break
+                result_lines.insert(0, line)
+                char_count += len(line) + 1
+
+            session_info = log_file.stem
+            header = f"Session: {session_info}"
+            return header + "\n" + "\n".join(result_lines)
+
+        except Exception:
+            logger.debug("Failed to extract Claude logs", exc_info=True)
+            return None
 
     def build_prompt(
         self,
