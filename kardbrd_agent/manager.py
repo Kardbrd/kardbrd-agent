@@ -791,6 +791,8 @@ class ProxyManager:
             if len(result.stderr) > 2000:
                 stderr_display += f"\n... ({len(result.stderr) - 2000} chars truncated)"
             details.append(f"**stderr:**\n```\n{stderr_display}\n```")
+        if result.claude_logs:
+            details.append(f"**Claude logs:**\n```\n{result.claude_logs}\n```")
 
         if details:
             parts.append("\n".join(details))

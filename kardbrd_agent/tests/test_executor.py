@@ -1,6 +1,8 @@
 """Tests for ClaudeExecutor."""
 
 import json
+import time
+from pathlib import Path
 
 import pytest
 
@@ -266,6 +268,142 @@ class TestClaudeExecutor:
         result = executor._parse_output("", "", 0)
 
         assert result.command is None
+
+
+class TestExtractClaudeLogs:
+    """Tests for ClaudeExecutor._extract_claude_logs."""
+
+    def test_returns_none_when_no_claude_dir(self, tmp_path, monkeypatch):
+        """Returns None when ~/.claude/projects doesn't exist."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        result = ClaudeExecutor._extract_claude_logs(Path("/some/workdir"))
+        assert result is None
+
+    def test_returns_none_when_no_project_dir(self, tmp_path, monkeypatch):
+        """Returns None when no matching project slug directory exists."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        (tmp_path / ".claude" / "projects").mkdir(parents=True)
+        result = ClaudeExecutor._extract_claude_logs(Path("/some/workdir"))
+        assert result is None
+
+    def test_returns_none_when_no_jsonl_files(self, tmp_path, monkeypatch):
+        """Returns None when project dir exists but has no logs."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        project_dir = tmp_path / ".claude" / "projects" / "-some-workdir"
+        project_dir.mkdir(parents=True)
+        result = ClaudeExecutor._extract_claude_logs(Path("/some/workdir"))
+        assert result is None
+
+    def test_extracts_error_entries(self, tmp_path, monkeypatch):
+        """Extracts error-type entries from the log."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        project_dir = tmp_path / ".claude" / "projects" / "-home-user-src"
+        project_dir.mkdir(parents=True)
+        log_file = project_dir / "sess-123.jsonl"
+        lines = [
+            json.dumps({"type": "error", "error": {"message": "API key invalid"}}),
+            json.dumps(
+                {
+                    "type": "message",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Working on it..."}],
+                    },
+                }
+            ),
+        ]
+        log_file.write_text("\n".join(lines) + "\n")
+
+        result = ClaudeExecutor._extract_claude_logs(Path("/home/user/src"))
+        assert result is not None
+        assert "API key invalid" in result
+        assert "sess-123" in result
+
+    def test_uses_session_id_when_provided(self, tmp_path, monkeypatch):
+        """Prefers the specific session_id log file if available."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        project_dir = tmp_path / ".claude" / "projects" / "-home-user-src"
+        project_dir.mkdir(parents=True)
+
+        # Create two log files — the older one matches session_id
+        target = project_dir / "target-session.jsonl"
+        target.write_text(
+            json.dumps({"type": "error", "error": {"message": "target error"}}) + "\n"
+        )
+        decoy = project_dir / "other-session.jsonl"
+        decoy.write_text(json.dumps({"type": "error", "error": {"message": "decoy error"}}) + "\n")
+
+        result = ClaudeExecutor._extract_claude_logs(
+            Path("/home/user/src"), session_id="target-session"
+        )
+        assert result is not None
+        assert "target error" in result
+        assert "decoy" not in result
+
+    def test_extracts_tool_errors(self, tmp_path, monkeypatch):
+        """Extracts tool result errors from the log."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        project_dir = tmp_path / ".claude" / "projects" / "-home-user-src"
+        project_dir.mkdir(parents=True)
+
+        log_file = project_dir / "sess.jsonl"
+        log_file.write_text(
+            json.dumps(
+                {
+                    "type": "message",
+                    "message": {
+                        "role": "tool",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "is_error": True,
+                                "content": "Permission denied",
+                            }
+                        ],
+                    },
+                }
+            )
+            + "\n"
+        )
+
+        result = ClaudeExecutor._extract_claude_logs(Path("/home/user/src"))
+        assert result is not None
+        assert "Permission denied" in result
+
+    def test_falls_back_to_most_recent_file(self, tmp_path, monkeypatch):
+        """Falls back to the most recently modified log when no session_id."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        project_dir = tmp_path / ".claude" / "projects" / "-home-user-src"
+        project_dir.mkdir(parents=True)
+
+        old = project_dir / "old.jsonl"
+        old.write_text(json.dumps({"type": "error", "error": {"message": "old"}}) + "\n")
+        time.sleep(0.05)
+        new = project_dir / "new.jsonl"
+        new.write_text(json.dumps({"type": "error", "error": {"message": "new"}}) + "\n")
+
+        result = ClaudeExecutor._extract_claude_logs(Path("/home/user/src"))
+        assert result is not None
+        assert "new" in result
+
+    def test_respects_max_chars(self, tmp_path, monkeypatch):
+        """Truncates output to max_chars limit."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        project_dir = tmp_path / ".claude" / "projects" / "-home-user-src"
+        project_dir.mkdir(parents=True)
+
+        # Write many error lines
+        lines = [
+            json.dumps({"type": "error", "error": {"message": f"error line {i}" + "x" * 100}})
+            for i in range(50)
+        ]
+        (project_dir / "sess.jsonl").write_text("\n".join(lines) + "\n")
+
+        result = ClaudeExecutor._extract_claude_logs(Path("/home/user/src"), max_chars=500)
+        assert result is not None
+        # Header + content should be under max_chars + header
+        content_lines = result.split("\n")[1:]  # skip header
+        assert len("\n".join(content_lines)) <= 500
 
 
 class TestClaudeExecutorAsync:

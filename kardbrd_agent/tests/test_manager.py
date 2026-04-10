@@ -2814,3 +2814,22 @@ class TestBuildErrorComment:
         assert "**Duration:** 5.0s" in comment
         assert "**stderr:**" in comment
         assert "rate limit exceeded" in comment
+
+    def test_includes_claude_logs(self):
+        """Test that claude_logs are shown when present."""
+        result = ExecutorResult(
+            success=False,
+            result_text="",
+            error="Claude exited with code 1",
+            claude_logs="Session: abc123\n[error] API rate limit exceeded",
+        )
+        comment = ProxyManager._build_error_comment(result)
+        assert "**Claude logs:**" in comment
+        assert "API rate limit exceeded" in comment
+        assert "abc123" in comment
+
+    def test_claude_logs_omitted_when_none(self):
+        """Test that claude_logs section is not shown when None."""
+        result = ExecutorResult(success=False, result_text="", error="Failed")
+        comment = ProxyManager._build_error_comment(result)
+        assert "Claude logs" not in comment
