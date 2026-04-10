@@ -229,6 +229,44 @@ class TestClaudeExecutor:
         assert result.success is True
         assert result.result_text == ""
 
+    def test_parse_output_captures_diagnostics(self):
+        """Test that _parse_output populates diagnostic fields."""
+        executor = ClaudeExecutor()
+
+        stdout = '{"type": "assistant", "content": "Started..."}'
+        cmd = ["claude", "-p", "-", "--output-format=stream-json", "--verbose"]
+
+        result = executor._parse_output(stdout, "some warning", 1, cmd=cmd)
+
+        assert result.returncode == 1
+        assert result.stderr == "some warning"
+        assert result.command == cmd
+
+    def test_parse_output_success_includes_diagnostics(self):
+        """Test that successful results also include returncode and command."""
+        executor = ClaudeExecutor()
+
+        stdout = (
+            '{"type": "result", "result": "Done!", "cost_usd": 0.01,'
+            ' "duration_ms": 5000, "session_id": "abc123"}'
+        )
+        cmd = ["claude", "-p", "-"]
+
+        result = executor._parse_output(stdout, "", 0, cmd=cmd)
+
+        assert result.success is True
+        assert result.returncode == 0
+        assert result.stderr is None  # empty stderr becomes None
+        assert result.command == cmd
+
+    def test_parse_output_no_cmd_defaults_none(self):
+        """Test that command is None when not provided."""
+        executor = ClaudeExecutor()
+
+        result = executor._parse_output("", "", 0)
+
+        assert result.command is None
+
 
 class TestClaudeExecutorAsync:
     """Async tests for ClaudeExecutor."""

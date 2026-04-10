@@ -15,7 +15,7 @@ from typing import Any
 import yaml
 from kardbrd_client import KardbrdAPIError, KardbrdClient, WebSocketAgentConnection
 
-from .executor import AuthStatus, ClaudeExecutor
+from .executor import AuthStatus, ClaudeExecutor, ExecutorResult
 from .rules import Rule, RuleEngine, Schedule
 from .scheduler import ScheduleManager
 from .wizard import ensure_wizard_card
@@ -767,6 +767,36 @@ class ProxyManager:
         except Exception as e:
             logger.warning(f"Failed to remove {emoji} reaction: {e}")
 
+    @staticmethod
+    def _build_error_comment(result: ExecutorResult, label: str = "Error") -> str:
+        """Build an error comment with full diagnostic details from an ExecutorResult."""
+        parts = [f"**{label}**\n\n```\n{result.error}\n```"]
+
+        details: list[str] = []
+        if result.returncode is not None:
+            details.append(f"**Exit code:** `{result.returncode}`")
+        if result.command:
+            # Redact the full command but show the binary and key flags
+            safe_cmd = " ".join(result.command[:1])
+            flags = [c for c in result.command[1:] if c.startswith("-")]
+            if flags:
+                safe_cmd += " " + " ".join(flags)
+            details.append(f"**Command:** `{safe_cmd}`")
+        if result.duration_ms is not None:
+            secs = result.duration_ms / 1000
+            details.append(f"**Duration:** {secs:.1f}s")
+        if result.stderr:
+            # Show full stderr (up to 2000 chars to avoid enormous comments)
+            stderr_display = result.stderr[:2000]
+            if len(result.stderr) > 2000:
+                stderr_display += f"\n... ({len(result.stderr) - 2000} chars truncated)"
+            details.append(f"**stderr:**\n```\n{stderr_display}\n```")
+
+        if details:
+            parts.append("\n".join(details))
+
+        return "\n\n".join(parts)
+
     def _has_recent_bot_comment(self, card_id: str, seconds: int = 60) -> bool:
         """
         Check if this bot posted a comment on the card recently.
@@ -919,8 +949,9 @@ class ProxyManager:
                 else:
                     logger.error(f"Agent failed: {result.error}")
                     self._add_reaction(card_id, comment_id, "🛑")
-                    # Post error details for debugging
-                    error_comment = f"**Error**\n\n```\n{result.error}\n```\n\n@{author_name}"
+                    # Post error details with full diagnostics for debugging
+                    error_comment = self._build_error_comment(result)
+                    error_comment += f"\n\n@{author_name}"
                     self.client.add_comment(card_id, error_comment)
                     logger.info(f"Posted error comment to card {card_id}")
 
@@ -1215,8 +1246,8 @@ DO NOT do any new work - just publish what you already did."""
                         )
                 else:
                     logger.error(f"Rule '{rule.name}': agent failed: {result.error}")
-                    error_comment = (
-                        f"**Automation Error** ({rule.name})\n\n```\n{result.error}\n```"
+                    error_comment = self._build_error_comment(
+                        result, label=f"Automation Error ({rule.name})"
                     )
                     self.client.add_comment(card_id, error_comment)
 

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kardbrd_agent.executor import AuthStatus, ClaudeResult
+from kardbrd_agent.executor import AuthStatus, ClaudeResult, ExecutorResult
 from kardbrd_agent.manager import ActiveSession, ProxyManager, SkillInfo, _sanitize_name
 from kardbrd_agent.rules import Rule, RuleEngine, Schedule
 
@@ -2734,3 +2734,83 @@ class TestExecutorAwareSkillDiscovery:
         assert ".claude/commands" in dirs["claude"]
         assert ".agents/skills" in dirs["codex"]
         assert ".claude/skills" in dirs["goose"]
+
+
+class TestBuildErrorComment:
+    """Tests for ProxyManager._build_error_comment."""
+
+    def test_basic_error_only(self):
+        """Test error comment with minimal fields."""
+        result = ExecutorResult(success=False, result_text="", error="Claude exited with code 1")
+        comment = ProxyManager._build_error_comment(result)
+        assert "**Error**" in comment
+        assert "Claude exited with code 1" in comment
+
+    def test_includes_returncode(self):
+        """Test that returncode is shown when present."""
+        result = ExecutorResult(success=False, result_text="", error="Failed", returncode=1)
+        comment = ProxyManager._build_error_comment(result)
+        assert "**Exit code:** `1`" in comment
+
+    def test_includes_command(self):
+        """Test that command is shown (redacted to binary + flags)."""
+        result = ExecutorResult(
+            success=False,
+            result_text="",
+            error="Failed",
+            command=["claude", "-p", "-", "--output-format=stream-json", "--verbose"],
+        )
+        comment = ProxyManager._build_error_comment(result)
+        assert "**Command:** `claude" in comment
+        assert "--output-format=stream-json" in comment
+
+    def test_includes_stderr(self):
+        """Test that full stderr is shown."""
+        result = ExecutorResult(
+            success=False,
+            result_text="",
+            error="Failed",
+            stderr="Error: authentication failed\nPlease run: claude auth login",
+        )
+        comment = ProxyManager._build_error_comment(result)
+        assert "**stderr:**" in comment
+        assert "authentication failed" in comment
+        assert "claude auth login" in comment
+
+    def test_includes_duration(self):
+        """Test that duration is shown when present."""
+        result = ExecutorResult(success=False, result_text="", error="Failed", duration_ms=120000)
+        comment = ProxyManager._build_error_comment(result)
+        assert "**Duration:** 120.0s" in comment
+
+    def test_custom_label(self):
+        """Test custom label for automation errors."""
+        result = ExecutorResult(success=False, result_text="", error="Failed")
+        comment = ProxyManager._build_error_comment(result, label="Automation Error (explore)")
+        assert "**Automation Error (explore)**" in comment
+
+    def test_stderr_truncation(self):
+        """Test that very long stderr is truncated to 2000 chars."""
+        long_stderr = "x" * 3000
+        result = ExecutorResult(success=False, result_text="", error="Failed", stderr=long_stderr)
+        comment = ProxyManager._build_error_comment(result)
+        assert "1000 chars truncated" in comment
+
+    def test_full_diagnostic_comment(self):
+        """Test a realistic error with all fields populated."""
+        result = ExecutorResult(
+            success=False,
+            result_text="",
+            error="Claude exited with code 1",
+            returncode=1,
+            stderr="Error: rate limit exceeded",
+            command=["claude", "-p", "-", "--output-format=stream-json"],
+            duration_ms=5000,
+        )
+        comment = ProxyManager._build_error_comment(result)
+        assert "**Error**" in comment
+        assert "**Exit code:** `1`" in comment
+        assert "**Command:**" in comment
+        assert "**Duration:** 5.0s" in comment
+        assert "**stderr:**" in comment
+        assert "rate limit exceeded" in comment

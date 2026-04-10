@@ -225,7 +225,7 @@ class CodexExecutor:
                     error=f"Codex execution timed out after {self.timeout}s",
                 )
 
-            return self._parse_output(stdout.decode(), stderr.decode(), process.returncode)
+            return self._parse_output(stdout.decode(), stderr.decode(), process.returncode, cmd=cmd)
 
         except FileNotFoundError:
             return ExecutorResult(
@@ -283,7 +283,13 @@ class CodexExecutor:
         await process.wait()
         return b"".join(lines), stderr_data
 
-    def _parse_output(self, stdout: str, stderr: str, returncode: int | None) -> ExecutorResult:
+    def _parse_output(
+        self,
+        stdout: str,
+        stderr: str,
+        returncode: int | None,
+        cmd: list[str] | None = None,
+    ) -> ExecutorResult:
         """
         Parse Codex's JSONL output.
 
@@ -327,6 +333,9 @@ class CodexExecutor:
             success=returncode == 0 and error is None,
             result_text=result_text.strip(),
             error=error,
+            returncode=returncode,
+            stderr=stderr if stderr else None,
+            command=cmd,
         )
 
     def build_prompt(

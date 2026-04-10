@@ -99,6 +99,9 @@ class ExecutorResult:
     cost_usd: float | None = None
     duration_ms: int | None = None
     session_id: str | None = None
+    returncode: int | None = None
+    stderr: str | None = None
+    command: list[str] | None = None
 
 
 # Backwards compatibility alias
@@ -523,7 +526,7 @@ class ClaudeExecutor:
                 )
 
             # Parse the stream-json output
-            return self._parse_output(stdout.decode(), stderr.decode(), process.returncode)
+            return self._parse_output(stdout.decode(), stderr.decode(), process.returncode, cmd=cmd)
 
         except FileNotFoundError:
             return ExecutorResult(
@@ -576,7 +579,13 @@ class ClaudeExecutor:
         await process.wait()
         return b"".join(lines), stderr_data
 
-    def _parse_output(self, stdout: str, stderr: str, returncode: int | None) -> ExecutorResult:
+    def _parse_output(
+        self,
+        stdout: str,
+        stderr: str,
+        returncode: int | None,
+        cmd: list[str] | None = None,
+    ) -> ExecutorResult:
         """
         Parse Claude's stream-json output.
 
@@ -631,6 +640,9 @@ class ClaudeExecutor:
             cost_usd=cost_usd,
             duration_ms=duration_ms,
             session_id=session_id,
+            returncode=returncode,
+            stderr=stderr if stderr else None,
+            command=cmd,
         )
 
     def build_prompt(
