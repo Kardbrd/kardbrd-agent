@@ -224,7 +224,24 @@ class ProxyManager:
             tasks.append(self.schedule_manager.start())
             logger.info(f"Scheduler: {len(self._schedules)} schedule(s) configured")
 
-        await asyncio.gather(*tasks)
+        task_names = ["websocket", "status_ping", "skills_refresh"]
+        if self._schedules:
+            task_names.append("scheduler")
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                name = task_names[i] if i < len(task_names) else f"task_{i}"
+                logger.error(
+                    "Task '%s' failed with %s: %s",
+                    name,
+                    type(result).__name__,
+                    result,
+                    exc_info=result,
+                )
+        # If the WebSocket connection task failed, that's fatal
+        if isinstance(results[0], Exception):
+            raise results[0]
 
     async def _validate_board_token(self) -> None:
         """Validate the kardbrd API token by fetching the board.
@@ -614,29 +631,38 @@ class ProxyManager:
         Args:
             message: The WebSocket message containing the event
         """
-        event_type = message.get("event_type")
-        card_id = message.get("card_id", "unknown")
+        try:
+            event_type = message.get("event_type")
+            card_id = message.get("card_id", "unknown")
 
-        if event_type == "comment_created":
-            logger.info(f"Signal received: comment_created for card {card_id}")
-            await self._handle_comment_created(message)
-        elif event_type == "reaction_added":
-            emoji = message.get("emoji", "")
-            logger.info(f"Signal received: reaction_added ({emoji}) for card {card_id}")
-            await self._handle_reaction_added(message)
-        elif event_type == "card_moved":
-            list_name = message.get("list_name", "unknown")
-            logger.info(f"Signal received: card_moved for card {card_id} to '{list_name}'")
-            await self._handle_card_moved(message)
-        elif event_type == "stream_requested":
-            stream_url = message.get("stream_url", "")
-            logger.info(f"Signal received: stream_requested for card {card_id}")
-            await self._handle_stream_requested(card_id, stream_url)
-        else:
-            logger.debug(f"Ignoring event type: {event_type}")
+            if event_type == "comment_created":
+                logger.info(f"Signal received: comment_created for card {card_id}")
+                await self._handle_comment_created(message)
+            elif event_type == "reaction_added":
+                emoji = message.get("emoji", "")
+                logger.info(f"Signal received: reaction_added ({emoji}) for card {card_id}")
+                await self._handle_reaction_added(message)
+            elif event_type == "card_moved":
+                list_name = message.get("list_name", "unknown")
+                logger.info(f"Signal received: card_moved for card {card_id} to '{list_name}'")
+                await self._handle_card_moved(message)
+            elif event_type == "stream_requested":
+                stream_url = message.get("stream_url", "")
+                logger.info(f"Signal received: stream_requested for card {card_id}")
+                await self._handle_stream_requested(card_id, stream_url)
+            else:
+                logger.debug(f"Ignoring event type: {event_type}")
 
-        # Check kardbrd.yml rules for matching automation
-        await self._check_rules(event_type, message)
+            # Check kardbrd.yml rules for matching automation
+            await self._check_rules(event_type, message)
+        except Exception as exc:
+            logger.exception(
+                "Unhandled %s in event handler (event_type=%s, card_id=%s): %s",
+                type(exc).__name__,
+                message.get("event_type", "?"),
+                message.get("card_id", "?"),
+                exc,
+            )
 
     async def _handle_stream_requested(self, card_id: str, stream_url: str) -> None:
         """Handle stream_requested events by connecting to the stream WebSocket.
@@ -1440,4 +1466,13 @@ DO NOT do any new work - just publish what you already did."""
 
         # Remove worktree
         if self.worktree_manager:
-            self.worktree_manager.remove_worktree(card_id)
+            try:
+                self.worktree_manager.remove_worktree(card_id)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to remove worktree for card %s: %s: %s",
+                    card_id,
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )

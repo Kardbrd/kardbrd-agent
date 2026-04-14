@@ -366,7 +366,8 @@ class TestKnownConfigFieldsIncludesSchedules:
 class TestScheduleManager:
     """Tests for the ScheduleManager class."""
 
-    def test_find_existing_card(self):
+    @pytest.mark.asyncio
+    async def test_find_existing_card(self):
         """Test ScheduleManager finds an existing card by title."""
         schedule = Schedule(name="Daily Report", cron="0 9 * * *", action="Summarize")
         client = MagicMock()
@@ -389,12 +390,13 @@ class TestScheduleManager:
             client=client,
             process_callback=AsyncMock(),
         )
-        card_id = mgr._find_or_create_card(schedule)
+        card_id = await mgr._find_or_create_card(schedule)
         assert card_id == "card123"
         # Should NOT call create_card
         client.create_card.assert_not_called()
 
-    def test_find_card_case_insensitive(self):
+    @pytest.mark.asyncio
+    async def test_find_card_case_insensitive(self):
         """Test card title matching is case-insensitive."""
         schedule = Schedule(name="daily report", cron="0 9 * * *", action="Summarize")
         client = MagicMock()
@@ -414,10 +416,11 @@ class TestScheduleManager:
             client=client,
             process_callback=AsyncMock(),
         )
-        card_id = mgr._find_or_create_card(schedule)
+        card_id = await mgr._find_or_create_card(schedule)
         assert card_id == "card123"
 
-    def test_create_card_when_not_found(self):
+    @pytest.mark.asyncio
+    async def test_create_card_when_not_found(self):
         """Test ScheduleManager creates a card when none exists."""
         schedule = Schedule(name="Daily Report", cron="0 9 * * *", action="Summarize")
         client = MagicMock()
@@ -430,13 +433,14 @@ class TestScheduleManager:
             client=client,
             process_callback=AsyncMock(),
         )
-        card_id = mgr._find_or_create_card(schedule)
+        card_id = await mgr._find_or_create_card(schedule)
         assert card_id == "new_card_id"
         client.create_card.assert_called_once_with(
             board_id="board1", list_id="list1", title="Daily Report"
         )
 
-    def test_create_card_in_specified_list(self):
+    @pytest.mark.asyncio
+    async def test_create_card_in_specified_list(self):
         """Test card is created in the specified list."""
         schedule = Schedule(name="Report", cron="0 9 * * *", action="Do stuff", list="Plans")
         client = MagicMock()
@@ -454,12 +458,13 @@ class TestScheduleManager:
             client=client,
             process_callback=AsyncMock(),
         )
-        mgr._find_or_create_card(schedule)
+        await mgr._find_or_create_card(schedule)
         client.create_card.assert_called_once_with(
             board_id="board1", list_id="list2", title="Report"
         )
 
-    def test_create_card_with_assignee(self):
+    @pytest.mark.asyncio
+    async def test_create_card_with_assignee(self):
         """Test card is assigned to the specified user."""
         schedule = Schedule(name="Report", cron="0 9 * * *", action="Do stuff", assignee="user123")
         client = MagicMock()
@@ -472,10 +477,11 @@ class TestScheduleManager:
             client=client,
             process_callback=AsyncMock(),
         )
-        mgr._find_or_create_card(schedule)
+        await mgr._find_or_create_card(schedule)
         client.update_card.assert_called_once_with("new_id", assignee_id="user123")
 
-    def test_no_assignee_when_existing_card(self):
+    @pytest.mark.asyncio
+    async def test_no_assignee_when_existing_card(self):
         """Test assignee is NOT set when reusing an existing card."""
         schedule = Schedule(name="Report", cron="0 9 * * *", action="Do stuff", assignee="user123")
         client = MagicMock()
@@ -495,7 +501,7 @@ class TestScheduleManager:
             client=client,
             process_callback=AsyncMock(),
         )
-        card_id = mgr._find_or_create_card(schedule)
+        card_id = await mgr._find_or_create_card(schedule)
         assert card_id == "existing_id"
         client.update_card.assert_not_called()
 
@@ -587,6 +593,12 @@ class TestScheduleManager:
         # Should not raise
         await mgr._check_schedules()
         callback.assert_called_once()
+
+    def test_find_or_create_card_is_coroutine(self):
+        """Test _find_or_create_card is an async coroutine function."""
+        import asyncio
+
+        assert asyncio.iscoroutinefunction(ScheduleManager._find_or_create_card)
 
 
 class TestReloadableRuleEngineSchedules:

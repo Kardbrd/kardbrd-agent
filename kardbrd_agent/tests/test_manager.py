@@ -3079,3 +3079,75 @@ class TestRetryWithResume:
 
         comment = manager.client.add_comment.call_args[0][1]
         assert "retry failed" in comment
+
+
+class TestErrorResilience:
+    """Tests for error handling that prevents bots from stopping."""
+
+    @pytest.mark.asyncio
+    async def test_handle_board_event_exception_does_not_propagate(self, caplog):
+        """Test _handle_board_event catches and logs exceptions from sub-handlers."""
+        manager = _make_manager()
+        manager._handle_comment_created = AsyncMock(side_effect=RuntimeError("boom"))
+        manager._check_rules = AsyncMock()
+
+        # Should not raise
+        await manager._handle_board_event({"event_type": "comment_created", "card_id": "abc123"})
+
+        assert "RuntimeError" in caplog.text
+        assert "comment_created" in caplog.text
+        assert "abc123" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_handle_board_event_exception_does_not_propagate_from_rules(self):
+        """Test _handle_board_event catches exceptions from _check_rules."""
+        manager = _make_manager()
+        manager._check_rules = AsyncMock(side_effect=RuntimeError("rule error"))
+
+        # Should not raise
+        await manager._handle_board_event(
+            {"event_type": "card_moved", "card_id": "abc123", "list_name": "Ideas"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_cleanup_worktree_failure_does_not_raise(self, caplog):
+        """Test _cleanup_worktree catches and logs worktree removal errors."""
+        manager = _make_manager()
+        manager.worktree_manager = MagicMock()
+        manager.worktree_manager.remove_worktree.side_effect = RuntimeError(
+            "git worktree remove failed"
+        )
+
+        # Should not raise
+        await manager._cleanup_worktree("abc123")
+
+        assert "RuntimeError" in caplog.text
+        assert "abc123" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_cleanup_worktree_failure_still_cleans_session(self):
+        """Test session is cleaned up even when worktree removal fails."""
+        manager = _make_manager()
+        manager.worktree_manager = MagicMock()
+        manager.worktree_manager.remove_worktree.side_effect = RuntimeError("fail")
+
+        mock_process = MagicMock()
+        manager._active_sessions["abc123"] = ActiveSession(
+            card_id="abc123",
+            worktree_path=Path("/tmp/wt"),
+            process=mock_process,
+        )
+
+        await manager._cleanup_worktree("abc123")
+
+        mock_process.kill.assert_called_once()
+        assert "abc123" not in manager._active_sessions
+
+    def test_gather_uses_return_exceptions_with_task_names(self):
+        """Test that start() uses return_exceptions=True and named task logging."""
+        import inspect
+
+        source = inspect.getsource(ProxyManager.start)
+        assert "return_exceptions=True" in source
+        assert "task_names" in source
+        assert "websocket" in source
