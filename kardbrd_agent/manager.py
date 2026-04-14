@@ -224,10 +224,21 @@ class ProxyManager:
             tasks.append(self.schedule_manager.start())
             logger.info(f"Scheduler: {len(self._schedules)} schedule(s) configured")
 
+        task_names = ["websocket", "status_ping", "skills_refresh"]
+        if self._schedules:
+            task_names.append("scheduler")
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for i, result in enumerate(results):
             if isinstance(result, Exception):
-                logger.error("Task %d failed: %s", i, result, exc_info=result)
+                name = task_names[i] if i < len(task_names) else f"task_{i}"
+                logger.error(
+                    "Task '%s' failed with %s: %s",
+                    name,
+                    type(result).__name__,
+                    result,
+                    exc_info=result,
+                )
         # If the WebSocket connection task failed, that's fatal
         if isinstance(results[0], Exception):
             raise results[0]
@@ -644,11 +655,13 @@ class ProxyManager:
 
             # Check kardbrd.yml rules for matching automation
             await self._check_rules(event_type, message)
-        except Exception:
+        except Exception as exc:
             logger.exception(
-                "Unhandled error in event handler (event_type=%s, card_id=%s)",
+                "Unhandled %s in event handler (event_type=%s, card_id=%s): %s",
+                type(exc).__name__,
                 message.get("event_type", "?"),
                 message.get("card_id", "?"),
+                exc,
             )
 
     async def _handle_stream_requested(self, card_id: str, stream_url: str) -> None:
@@ -1455,5 +1468,11 @@ DO NOT do any new work - just publish what you already did."""
         if self.worktree_manager:
             try:
                 self.worktree_manager.remove_worktree(card_id)
-            except Exception:
-                logger.warning("Failed to remove worktree for card %s", card_id, exc_info=True)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to remove worktree for card %s: %s: %s",
+                    card_id,
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )

@@ -152,7 +152,8 @@ class ScheduleManager:
                 logger.info(f"Schedule '{schedule.name}': assigned card to {schedule.assignee}")
             except Exception:
                 logger.warning(
-                    f"Schedule '{schedule.name}': failed to assign card to {schedule.assignee}"
+                    f"Schedule '{schedule.name}': failed to assign card to {schedule.assignee}",
+                    exc_info=True,
                 )
 
         return card_id
