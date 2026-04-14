@@ -80,7 +80,7 @@ class ScheduleManager:
             if now >= next_time:
                 logger.info(f"Schedule '{schedule.name}' fired at {now.isoformat()}")
                 try:
-                    card_id = self._find_or_create_card(schedule)
+                    card_id = await self._find_or_create_card(schedule)
                     await self._process_callback(card_id, schedule)
                 except Exception:
                     logger.exception(f"Error processing schedule '{schedule.name}'")
@@ -93,7 +93,7 @@ class ScheduleManager:
                     f"next at {self._next_times[schedule.name].isoformat()}"
                 )
 
-    def _find_or_create_card(self, schedule: Schedule) -> str:
+    async def _find_or_create_card(self, schedule: Schedule) -> str:
         """Find an existing card by title or create a new one.
 
         Searches the board for a card matching the schedule name. If found,
@@ -104,7 +104,7 @@ class ScheduleManager:
             The card_id of the found or created card.
         """
         # Search the board for a card with matching title
-        board = self._client.get_board(self._board_id)
+        board = await asyncio.to_thread(self._client.get_board, self._board_id)
         lists = board.get("lists", [])
 
         for lst in lists:
@@ -134,7 +134,8 @@ class ScheduleManager:
         if not target_list_id:
             raise RuntimeError(f"Schedule '{schedule.name}': no lists on board {self._board_id}")
 
-        new_card = self._client.create_card(
+        new_card = await asyncio.to_thread(
+            self._client.create_card,
             board_id=self._board_id,
             list_id=target_list_id,
             title=schedule.name,
@@ -145,7 +146,9 @@ class ScheduleManager:
         # Assign if specified
         if schedule.assignee and card_id:
             try:
-                self._client.update_card(card_id, assignee_id=schedule.assignee)
+                await asyncio.to_thread(
+                    self._client.update_card, card_id, assignee_id=schedule.assignee
+                )
                 logger.info(f"Schedule '{schedule.name}': assigned card to {schedule.assignee}")
             except Exception:
                 logger.warning(
