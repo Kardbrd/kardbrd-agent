@@ -35,21 +35,9 @@ The merge workflow automates the process of getting agent-written code merged to
     └─────────────────┘
 ```
 
-## Components
+## How it works
 
-### MergeWorkflow (`merge_workflow.py`)
-
-Orchestrates the merge process. Manages state transitions and delegates to MergeTools for git operations and the executor for LLM-assisted steps.
-
-### MergeTools (`merge_tools.py`)
-
-Handles deterministic git operations:
-
-- Staging and committing changes
-- Fetching and rebasing against main
-- Detecting and listing conflicts
-- Performing squash merges
-- Branch and worktree cleanup
+The merge workflow is orchestrated by the executor (Claude, Goose, or Codex) when triggered by a rule action. The executor handles both the git operations and the LLM-assisted steps (conflict resolution, test fixing) as part of its session.
 
 ## Conflict resolution
 

@@ -29,8 +29,6 @@ kardbrd-agent/
 │   ├── rules.py                # RuleEngine + validation
 │   ├── scheduler.py            # ScheduleManager (cron)
 │   ├── worktree.py             # WorktreeManager
-│   ├── merge_workflow.py       # MergeWorkflow state machine
-│   ├── merge_tools.py          # Git operations for merging
 │   ├── mcp_proxy.py            # Session tracking data classes
 │   ├── wizard.py               # Onboarding card creation
 │   └── tests/

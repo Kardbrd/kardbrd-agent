@@ -12,32 +12,51 @@ class Executor(Protocol):
     async def execute(
         self,
         prompt: str,
-        cwd: str,
-        model: str | None = None,
         resume_session_id: str | None = None,
+        cwd: Path | None = None,
+        model: str | None = None,
+        on_chunk: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> ExecutorResult: ...
 
-    def build_prompt(self, card_markdown: str, comment: str) -> str: ...
+    def build_prompt(
+        self,
+        card_id: str,
+        card_markdown: str,
+        command: str,
+        comment_content: str,
+        author_name: str,
+        board_id: str | None = None,
+        cwd: str | Path | None = None,
+    ) -> str: ...
 
-    def extract_command(self, comment: str) -> str | None: ...
+    def extract_command(self, comment_content: str, mention_keyword: str) -> str: ...
 
-    async def check_auth(self) -> AuthStatus: ...
+    @staticmethod
+    async def check_auth() -> AuthStatus: ...
 ```
 
 ### Key types
 
 **`ExecutorResult`** — returned by `execute()`:
 
-- `result` — the executor's text output
+- `success` — whether the execution succeeded (required)
+- `result_text` — the executor's text output
+- `error` — error message (if failed)
 - `cost_usd` — estimated cost (if available)
 - `duration_ms` — execution time
 - `session_id` — for session resumption
-- `exit_code` — process exit code
+- `returncode` — process exit code
+- `stderr` — standard error output
+- `command` — the command that was run
+- `claude_logs` — extracted log output (on failure)
 
 **`AuthStatus`** — returned by `check_auth()`:
 
 - `authenticated` — whether credentials are valid
-- `message` — human-readable status
+- `error` — error message (if auth failed)
+- `email` — authenticated user email
+- `auth_method` — authentication method used
+- `subscription_type` — subscription tier
 - `auth_hint` — executor-specific re-authentication instructions
 
 ## ClaudeExecutor
@@ -74,9 +93,9 @@ Alternative executor wrapping [Goose](https://block.github.io/goose/) CLI. Spawn
 | `anthropic` | `ANTHROPIC_API_KEY` |
 | `openai` | `OPENAI_API_KEY` |
 | `google` | `GOOGLE_API_KEY` |
+| `groq` | `GROQ_API_KEY` |
 | `openrouter` | `OPENROUTER_API_KEY` |
-| `bedrock` | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` |
-| `ollama` | _(none — local)_ |
+| `databricks` | `DATABRICKS_TOKEN` |
 
 **Auth:** Validates goose binary, `GOOSE_PROVIDER` env var, and provider-specific API key.
 

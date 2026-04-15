@@ -84,9 +84,9 @@ Pluggable AI agent backends implementing the `Executor` Protocol. Factory patter
 
 Creates isolated git worktrees as sibling directories. Each card gets its own worktree with symlinked configuration files.
 
-### MergeWorkflow (`merge_workflow.py`)
+### Merge Workflow
 
-State machine for automated merging: commit → fetch/rebase → resolve conflicts → run tests → squash merge → cleanup.
+The merge workflow is handled by the executor as part of rule actions. When triggered (e.g., by a reaction rule), the executor performs: commit → fetch/rebase → resolve conflicts → run tests → squash merge → cleanup.
 
 ## Concurrency model
 

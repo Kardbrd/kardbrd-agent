@@ -72,12 +72,6 @@ Auto-generated from source code docstrings.
         - get_worktree_path
         - list_worktrees
 
-## MergeWorkflow
-
-::: kardbrd_agent.merge_workflow.MergeWorkflow
-    options:
-      show_source: false
-
 ## ScheduleManager
 
 ::: kardbrd_agent.scheduler.ScheduleManager

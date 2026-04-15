@@ -20,11 +20,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install mkdocs-material mkdocstrings[python]
-      - run: mkdocs build
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync --extra docs
+      - run: uv run mkdocs build
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site/

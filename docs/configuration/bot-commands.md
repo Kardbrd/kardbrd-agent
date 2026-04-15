@@ -1,31 +1,10 @@
-# Bot Commands
+# Bot Card
 
-kardbrd-agent creates a special **bot card** on startup that serves as a control panel. The bot card is titled with the agent's name (e.g., "MyBot") and displays the agent's configuration, active triggers, and schedules.
+kardbrd-agent creates a special **bot card** on startup that serves as a status display. The bot card is titled with a robot emoji prefix followed by the agent's name (e.g., "\U0001f916 MyBot") and displays the agent's configuration.
 
 ## How it works
 
-When the agent starts, it creates or updates a bot card on the board. You can post commands as comments on this card to control the agent.
-
-## Available commands
-
-| Command | Description |
-|---------|-------------|
-| `/restart` | Restart the agent process |
-| `/shutdown` | Gracefully shut down the agent |
-| `/status` | Report current status (active sessions, uptime, configuration) |
-| `/reload` | Reload the `kardbrd.yml` rules file |
-| `/pause` | Pause processing new events (active sessions continue) |
-| `/resume` | Resume processing events after a pause |
-
-## Usage
-
-Post a command as a comment on the bot card:
-
-```
-@MyBot /status
-```
-
-The agent responds with a comment containing the result.
+When the agent starts, it creates or updates a bot card on the board. The card description is automatically generated and kept up to date.
 
 ## Bot card contents
 

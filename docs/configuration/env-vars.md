@@ -34,9 +34,8 @@ All configuration can be set via environment variables. CLI flags take precedenc
 | `GOOSE_PROVIDER` | Goose | Provider name (e.g., `anthropic`, `openai`, `ollama`) |
 | `GOOGLE_API_KEY` | Goose (google) | Google Gemini API key |
 | `OPENROUTER_API_KEY` | Goose (openrouter) | OpenRouter API key |
-| `AWS_ACCESS_KEY_ID` | Goose (bedrock) | AWS access key |
-| `AWS_SECRET_ACCESS_KEY` | Goose (bedrock) | AWS secret key |
-| `AWS_REGION` | Goose (bedrock) | AWS region |
+| `GROQ_API_KEY` | Goose (groq) | Groq API key |
+| `DATABRICKS_TOKEN` | Goose (databricks) | Databricks token |
 
 ## Git identity
 

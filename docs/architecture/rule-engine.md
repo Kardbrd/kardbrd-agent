@@ -43,7 +43,7 @@ The engine checks if the incoming event type is in the rule's event list.
 
 ### String conditions
 
-`list`, `title`, `label`, `emoji` — case-insensitive substring match against the event message data.
+`list`, `label`, `emoji` — case-insensitive match against the event message data. `title` — case-insensitive **exact match** against the card title.
 
 ### Label conditions
 
@@ -111,7 +111,7 @@ class Rule:
     require_label: str | None = None
     emoji: str | None = None
     require_user: str | None = None
-    assignee: str | list[str] | None = None
+    assignee: list[str] | None = None
     comment_author: str | None = None
 ```
 

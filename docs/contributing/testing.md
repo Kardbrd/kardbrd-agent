@@ -53,8 +53,8 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_executor_runs(mock_claude_result):
-    result = await executor.execute(prompt="test", cwd="/tmp")
-    assert result.exit_code == 0
+    result = await executor.execute(prompt="test", cwd=Path("/tmp"))
+    assert result.success
 ```
 
 ## Fixtures example
@@ -66,11 +66,9 @@ from kardbrd_agent.executor import ExecutorResult
 @pytest.fixture
 def mock_claude_result():
     return ExecutorResult(
-        result="Task completed",
-        cost_usd=0.05,
-        duration_ms=1200,
+        success=True,
+        result_text="Task completed successfully",
         session_id="test-session-123",
-        exit_code=0,
     )
 ```
 

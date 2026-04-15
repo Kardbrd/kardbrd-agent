@@ -8,17 +8,20 @@
 
 ## Async-first
 
-All I/O operations use `async/await`. Use `asyncio.create_subprocess_exec` for subprocesses — never `subprocess.run`.
+All async I/O operations use `async/await`. Use `asyncio.create_subprocess_exec` for subprocesses in async contexts. `subprocess.run` is acceptable in synchronous setup code (e.g., worktree git operations) but should not be used in async hot paths.
 
 ```python
-# Good
+# Good — async context (executor, manager)
 proc = await asyncio.create_subprocess_exec(
     "claude", "-p", "-",
     stdin=asyncio.subprocess.PIPE,
     stdout=asyncio.subprocess.PIPE,
 )
 
-# Bad — blocks the event loop
+# OK — synchronous setup (worktree creation)
+subprocess.run(["git", "worktree", "add", path], check=True)
+
+# Bad — blocking call in async context
 result = subprocess.run(["claude", "-p", "-"], capture_output=True)
 ```
 
@@ -29,7 +32,7 @@ New executor types implement the `Executor` Protocol — no shared base class. R
 ```python
 # Good — implements Protocol
 class MyExecutor:
-    async def execute(self, prompt, cwd, model=None, resume_session_id=None):
+    async def execute(self, prompt, resume_session_id=None, cwd=None, model=None, on_chunk=None):
         ...
 
 # Bad — inherits from base
@@ -45,11 +48,13 @@ Use `@dataclass` for structured data. Avoid plain dicts for domain objects.
 # Good
 @dataclass
 class ExecutorResult:
-    result: str
-    cost_usd: float | None
-    duration_ms: int
-    session_id: str | None
-    exit_code: int
+    success: bool
+    result_text: str
+    error: str | None = None
+    cost_usd: float | None = None
+    duration_ms: int | None = None
+    session_id: str | None = None
+    returncode: int | None = None
 
 # Bad
 result = {"result": "...", "cost_usd": 0.05, ...}

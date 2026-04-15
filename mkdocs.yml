@@ -70,7 +70,7 @@ nav:
       - Environment Variables: configuration/env-vars.md
       - Rules (kardbrd.yml): configuration/rules.md
       - Schedules: configuration/schedules.md
-      - Bot Commands: configuration/bot-commands.md
+      - Bot Card: configuration/bot-commands.md
   - Deployment:
       - Overview: deployment/index.md
       - Docker: deployment/docker.md

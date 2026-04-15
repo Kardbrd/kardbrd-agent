@@ -75,13 +75,18 @@ Goose supports 20+ LLM providers. Set your provider and its API key:
     export OPENROUTER_API_KEY=...
     ```
 
-=== "AWS Bedrock"
+=== "Groq"
 
     ```bash
-    export GOOSE_PROVIDER=bedrock
-    export AWS_ACCESS_KEY_ID=...
-    export AWS_SECRET_ACCESS_KEY=...
-    export AWS_REGION=us-east-1
+    export GOOSE_PROVIDER=groq
+    export GROQ_API_KEY=...
+    ```
+
+=== "Databricks"
+
+    ```bash
+    export GOOSE_PROVIDER=databricks
+    export DATABRICKS_TOKEN=...
     ```
 
 !!! tip

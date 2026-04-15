@@ -40,15 +40,15 @@ event:
 
 | Category | Events |
 |----------|--------|
-| **Card** | `card_created`, `card_moved`, `card_updated` |
-| **Comment** | `comment_created`, `comment_updated`, `comment_deleted` |
-| **Reaction** | `reaction_added`, `reaction_removed` |
-| **Checklist** | `checklist_created`, `checklist_updated`, `checklist_deleted` |
-| **Todo item** | `todo_item_created`, `todo_item_updated`, `todo_item_completed`, `todo_item_reopened`, `todo_item_deleted` |
+| **Card** | `card_created`, `card_moved`, `card_archived`, `card_unarchived`, `card_deleted` |
+| **Comment** | `comment_created`, `comment_deleted` |
+| **Reaction** | `reaction_added` |
+| **Checklist** | `checklist_created`, `checklist_deleted` |
+| **Todo item** | `todo_item_created`, `todo_item_completed`, `todo_item_reopened`, `todo_item_deleted`, `todo_item_assigned`, `todo_item_unassigned` |
 | **Attachment** | `attachment_created`, `attachment_deleted` |
-| **Link** | `link_created`, `link_deleted` |
+| **Link** | `card_link_created`, `card_link_deleted` |
 | **Label** | `label_added`, `label_removed` |
-| **List** | `list_created`, `list_updated`, `list_deleted` |
+| **List** | `list_created`, `list_deleted` |
 
 ### Conditions
 
@@ -57,15 +57,15 @@ All conditions use **AND logic** — every condition on a rule must match for th
 | Condition | Type | Description |
 |-----------|------|-------------|
 | `list` | string | Card is in this list (case-insensitive) |
-| `title` | string | Card title contains this text (case-insensitive) |
+| `title` | string | Card title matches exactly (case-insensitive) |
 | `label` | string | Card has this label (case-insensitive) |
-| `emoji` | string | Reaction emoji matches (for `reaction_added`/`reaction_removed`) |
+| `emoji` | string | Reaction emoji matches (for `reaction_added`) |
 | `require_label` | string | Card must have this label (triggers API enrichment) |
 | `exclude_label` | string | Card must NOT have this label (triggers API enrichment) |
 | `require_user` | string | Event must be from this user ID |
 | `content_contains` | string | Comment or card content contains this text |
 | `comment_author` | string | Comment must be by this user (supports `__self__` for the bot) |
-| `assignee` | string or list | Card must be assigned to this user ID (supports `__self__`) |
+| `assignee` | list | Card must be assigned to one of these user IDs (supports `__self__`). Must be a YAML list |
 
 !!! info "Label enrichment"
     `require_label` and `exclude_label` trigger an API call to fetch the card's current labels. Other label conditions use data from the WebSocket event.
@@ -175,7 +175,8 @@ rules:
   - name: Auto-assign senior review
     event: card_moved
     list: Review
-    assignee: E21K9jmv
+    assignee:
+      - E21K9jmv
     model: opus
     action: |
       Perform a thorough code review of this PR.
