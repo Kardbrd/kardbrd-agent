@@ -1,0 +1,91 @@
+site_name: kardbrd-agent
+site_url: https://kardbrd.github.io/kardbrd-agent/
+site_description: AI agent proxy for kardbrd boards — spawn Claude or Goose in isolated worktrees
+repo_url: https://github.com/Kardbrd/kardbrd-agent
+repo_name: Kardbrd/kardbrd-agent
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_source: true
+            show_root_heading: true
+            heading_level: 3
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Installation: getting-started/installation.md
+      - Authentication: getting-started/authentication.md
+      - Quick Start: getting-started/quickstart.md
+  - Configuration:
+      - CLI Reference: configuration/cli.md
+      - Environment Variables: configuration/env-vars.md
+      - Rules (kardbrd.yml): configuration/rules.md
+      - Schedules: configuration/schedules.md
+      - Bot Commands: configuration/bot-commands.md
+  - Deployment:
+      - Overview: deployment/index.md
+      - Docker: deployment/docker.md
+      - uv (no Docker): deployment/uv.md
+      - Linux (systemd): deployment/linux.md
+      - macOS (launchd): deployment/macos.md
+  - Architecture:
+      - Overview: architecture/index.md
+      - Executors: architecture/executors.md
+      - Rule Engine: architecture/rule-engine.md
+      - Merge Workflow: architecture/merge-workflow.md
+      - Worktree Management: architecture/worktrees.md
+  - Contributing:
+      - Development Setup: contributing/development.md
+      - Testing: contributing/testing.md
+      - Code Conventions: contributing/conventions.md
+  - Changelog: changelog.md
+  - API Reference: api/index.md
