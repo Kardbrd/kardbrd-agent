@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -108,6 +109,9 @@ class ProxyManager:
         self._active_sessions: dict[str, ActiveSession] = {}
         self._running = False
         self._processing = False  # Track if currently processing any card
+        self._paused = False  # When True, rule-triggered automation is skipped
+        self._bot_card_id: str | None = None  # Cached bot card ID
+        self._start_time: datetime | None = None  # Set in start()
 
     async def start(self) -> None:
         """
@@ -117,6 +121,7 @@ class ProxyManager:
         Each Claude CLI session spawns its own kardbrd-mcp subprocess
         for MCP tools.
         """
+        self._start_time = datetime.now(UTC)
         logger.info(f"Board: {self.board_id}")
         logger.info(f"Agent name: {self.agent_name}")
         logger.info(f"Mention keyword: {self.mention_keyword}")
@@ -543,6 +548,7 @@ class ProxyManager:
 
             if existing_card_id:
                 self.client.update_card(existing_card_id, description=description)
+                self._bot_card_id = existing_card_id
                 logger.info(f"Updated bot card: {existing_card_id}")
             else:
                 first_list_id = lists[0].get("id")
@@ -552,8 +558,8 @@ class ProxyManager:
                     title=title,
                     description=description,
                 )
-                card_id = card.get("id")
-                logger.info(f"Created bot card: {card_id}")
+                self._bot_card_id = card.get("id")
+                logger.info(f"Created bot card: {self._bot_card_id}")
 
         except Exception as e:
             logger.warning(f"Failed to ensure bot card: {e}")
@@ -738,14 +744,34 @@ class ProxyManager:
             session.streaming = False
             logger.info(f"Closed stream WebSocket for card {card_id}")
 
+    def _is_bot_card(self, message: dict) -> bool:
+        """Check if the message is about the bot's own card."""
+        card_title = message.get("card_title", "")
+        if card_title == self._bot_card_title():
+            return True
+        # Also check by cached card ID
+        card_id = message.get("card_id")
+        return card_id is not None and card_id == self._bot_card_id
+
     async def _handle_comment_created(self, message: dict) -> None:
         """Handle new comment events."""
         card_id = message.get("card_id")
         comment_id = message.get("comment_id")
         content = message.get("content", "")
         author_name = _sanitize_name(message.get("author_name", "Unknown"))
+        author_is_bot = message.get("author_is_bot", False)
 
         logger.debug(f"Comment event: card={card_id}, author={author_name}")
+
+        # Ignore comments from bots (prevent self-triggering loops)
+        if author_is_bot:
+            logger.debug("Ignoring comment from bot")
+            return
+
+        # Check for bot card commands (slash commands on the 🤖 card)
+        if self._is_bot_card(message) and content.strip().startswith("/"):
+            await self._handle_bot_card_command(card_id, content, author_name)
+            return
 
         # Check for @mention
         if self.mention_keyword not in content.lower():
@@ -761,6 +787,137 @@ class ProxyManager:
             content=content,
             author_name=author_name,
         )
+
+    # ------------------------------------------------------------------
+    # Bot card command handling
+    # ------------------------------------------------------------------
+
+    async def _handle_bot_card_command(self, card_id: str, content: str, author_name: str) -> None:
+        """Parse and dispatch a slash command posted on the bot card.
+
+        Args:
+            card_id: The bot card ID
+            content: Comment text (starts with "/")
+            author_name: Name of the command author
+        """
+        command = content.strip().split()[0].lower()
+        handlers: dict[str, Any] = {
+            "/restart": self._cmd_restart,
+            "/shutdown": self._cmd_shutdown,
+            "/status": self._cmd_status,
+            "/reload": self._cmd_reload,
+            "/pause": self._cmd_pause,
+            "/resume": self._cmd_resume,
+        }
+        handler = handlers.get(command)
+        if not handler:
+            logger.debug(f"Unknown bot card command: {command}")
+            return
+
+        logger.info(f"Bot card command: {command} from {author_name}")
+        try:
+            await handler(card_id, author_name)
+        except Exception:
+            logger.exception(f"Error handling bot card command: {command}")
+
+    async def _cmd_restart(self, card_id: str, author_name: str) -> None:
+        """Handle /restart — gracefully stop and exit for supervisor restart."""
+        try:
+            self.client.add_comment(
+                card_id,
+                f"\U0001f504 Restarting — finishing active work...\n\n@{author_name}",
+            )
+        except Exception:
+            logger.warning("Failed to post restart comment")
+        await self.stop()
+        sys.exit(0)
+
+    async def _cmd_shutdown(self, card_id: str, author_name: str) -> None:
+        """Handle /shutdown — gracefully stop and exit."""
+        try:
+            self.client.add_comment(
+                card_id,
+                f"\u23f9\ufe0f Shutting down.\n\n@{author_name}",
+            )
+        except Exception:
+            logger.warning("Failed to post shutdown comment")
+        await self.stop()
+        sys.exit(0)
+
+    async def _cmd_status(self, card_id: str, author_name: str) -> None:
+        """Handle /status — post current agent status."""
+        active_cards = len(self._active_sessions)
+        rules_count = len(self.rule_engine.rules) if self.rule_engine else 0
+        paused_str = "yes \u23f8\ufe0f" if self._paused else "no"
+
+        # Calculate uptime
+        if self._start_time:
+            delta = datetime.now(UTC) - self._start_time
+            hours, remainder = divmod(int(delta.total_seconds()), 3600)
+            minutes, _ = divmod(remainder, 60)
+            uptime = f"{hours}h {minutes}m"
+        else:
+            uptime = "unknown"
+
+        lines = [
+            f"\U0001f7e2 **Online** | Uptime: {uptime}",
+            f"- **Active cards:** {active_cards}",
+            f"- **Executor:** {self.executor_type}",
+            f"- **Rules:** {rules_count} loaded",
+            f"- **Paused:** {paused_str}",
+        ]
+        try:
+            self.client.add_comment(card_id, "\n".join(lines) + f"\n\n@{author_name}")
+        except Exception:
+            logger.warning("Failed to post status comment")
+
+    async def _cmd_reload(self, card_id: str, author_name: str) -> None:
+        """Handle /reload — hot-reload kardbrd.yml rules."""
+        from .rules import ReloadableRuleEngine
+
+        if isinstance(self.rule_engine, ReloadableRuleEngine):
+            self.rule_engine._try_reload()
+            count = len(self.rule_engine.rules)
+            msg = f"\U0001f504 Reloaded {count} rule(s) from kardbrd.yml"
+        else:
+            msg = "\u26a0\ufe0f Rule engine is not reloadable (static rules)"
+
+        # Update bot card description to reflect new rules
+        try:
+            description = self._build_bot_card_description()
+            self.client.update_card(card_id, description=description)
+        except Exception:
+            logger.warning("Failed to update bot card description after reload")
+
+        try:
+            self.client.add_comment(card_id, f"{msg}\n\n@{author_name}")
+        except Exception:
+            logger.warning("Failed to post reload comment")
+
+    async def _cmd_pause(self, card_id: str, author_name: str) -> None:
+        """Handle /pause — stop processing automation rules."""
+        self._paused = True
+        logger.info("Agent paused — automation rules will be skipped")
+        try:
+            self.client.add_comment(
+                card_id,
+                f"\u23f8\ufe0f Paused — automation rules are now skipped. "
+                f"@mentions still work.\n\n@{author_name}",
+            )
+        except Exception:
+            logger.warning("Failed to post pause comment")
+
+    async def _cmd_resume(self, card_id: str, author_name: str) -> None:
+        """Handle /resume — resume processing automation rules."""
+        self._paused = False
+        logger.info("Agent resumed — automation rules active")
+        try:
+            self.client.add_comment(
+                card_id,
+                f"\u25b6\ufe0f Resumed — automation rules are active again.\n\n@{author_name}",
+            )
+        except Exception:
+            logger.warning("Failed to post resume comment")
 
     async def _handle_reaction_added(self, message: dict) -> None:
         """Handle reaction events - delegates to rule engine via _check_rules."""
@@ -1207,6 +1364,10 @@ DO NOT do any new work - just publish what you already did."""
             message: The full event message
         """
         if not self.rule_engine.rules:
+            return
+
+        if self._paused:
+            logger.debug("Skipping rule check — agent is paused")
             return
 
         # Populate card data for rules that need API-fetched fields
