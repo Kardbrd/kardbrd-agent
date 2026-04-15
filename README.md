@@ -1,6 +1,10 @@
 # kardbrd-agent
 
+[![Docs](https://github.com/Kardbrd/kardbrd-agent/actions/workflows/docs.yml/badge.svg)](https://kardbrd.github.io/kardbrd-agent/)
+
 Proxy agent that listens for @mentions on [kardbrd](https://kardbrd.com) board cards, spawns AI agents ([Claude CLI](https://docs.anthropic.com/en/docs/claude-code) or [Goose](https://block.github.io/goose/)) in isolated git worktrees, and coordinates workflows including automated merging.
+
+**[Documentation](https://kardbrd.github.io/kardbrd-agent/)** | **[Getting Started](https://kardbrd.github.io/kardbrd-agent/getting-started/installation/)** | **[Deployment](https://kardbrd.github.io/kardbrd-agent/deployment/)**
 
 ## Prerequisites
 
