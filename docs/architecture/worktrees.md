@@ -47,7 +47,7 @@ The following files are symlinked from the base repo into each worktree:
 After a session completes (or on error), the worktree is removed:
 
 1. `git worktree remove` cleans up the worktree directory
-2. The branch may be kept (for PR workflows) or deleted (after merge)
+2. The branch is kept for PR workflows or deleted when no longer needed
 
 ## Main branch updates
 

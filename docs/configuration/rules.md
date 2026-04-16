@@ -134,18 +134,17 @@ rules:
     action: __stop__
 ```
 
-### Merge on approval
+### Code review on approval
 
 ```yaml
 rules:
-  - name: Ship on approval
+  - name: Review on checkmark
     event: reaction_added
     emoji: "✅"
     require_user: E21K9jmv
     require_label: Agent
     model: sonnet
-    action: |
-      Merge the PR to main. Run tests first and fix any failures.
+    action: /kr
 ```
 
 ### Multi-agent board
