@@ -84,10 +84,6 @@ Pluggable AI agent backends implementing the `Executor` Protocol. Factory patter
 
 Creates isolated git worktrees as sibling directories. Each card gets its own worktree with symlinked configuration files.
 
-### Merge Workflow
-
-The merge workflow is handled by the executor as part of rule actions. When triggered (e.g., by a reaction rule), the executor performs: commit → fetch/rebase → resolve conflicts → run tests → squash merge → cleanup.
-
 ## Concurrency model
 
 All I/O is async (`asyncio`). The agent runs three concurrent tasks via `asyncio.gather()`:

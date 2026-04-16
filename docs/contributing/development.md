@@ -35,7 +35,6 @@ kardbrd-agent/
 │       ├── conftest.py         # Shared fixtures
 │       ├── test_rules.py
 │       ├── test_executor.py
-│       ├── test_merge_workflow.py
 │       ├── test_integration.py
 │       └── ...
 ├── examples/                   # Deployment guides

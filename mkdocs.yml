@@ -81,7 +81,6 @@ nav:
       - Overview: architecture/index.md
       - Executors: architecture/executors.md
       - Rule Engine: architecture/rule-engine.md
-      - Merge Workflow: architecture/merge-workflow.md
       - Worktree Management: architecture/worktrees.md
   - Contributing:
       - Development Setup: contributing/development.md
