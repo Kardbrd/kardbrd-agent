@@ -21,7 +21,6 @@ All configuration can be set via environment variables. CLI flags take precedenc
 | `AGENT_MAX_CONCURRENT` | `--max-concurrent` | `3` | Parallel sessions |
 | `AGENT_WORKTREES_DIR` | `--worktrees-dir` | parent of cwd | Where worktrees are created |
 | `AGENT_SETUP_CMD` | `--setup-cmd` | — | Run in each worktree (e.g., `npm install`) |
-| `AGENT_TEST_CMD` | — | — | Test command for merge workflow |
 | `AGENT_RULES_FILE` | `--rules` | `<cwd>/kardbrd.yml` | Path to rules file |
 | `LOG_LEVEL` | — | `INFO` | Logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
@@ -59,7 +58,6 @@ ANTHROPIC_API_KEY=sk-ant-...
 # AGENT_EXECUTOR=goose
 # GOOSE_PROVIDER=anthropic
 # AGENT_SETUP_CMD=pnpm install
-# AGENT_TEST_CMD=pnpm test
 # AGENT_MAX_CONCURRENT=3
 # AGENT_TIMEOUT=3600
 # LOG_LEVEL=INFO

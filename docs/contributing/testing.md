@@ -39,7 +39,6 @@ Shared fixtures are defined in `kardbrd_agent/tests/conftest.py`:
 |------|----------|
 | `test_rules.py` | Rule engine matching, condition evaluation, validation |
 | `test_executor.py` | Executor Protocol, output parsing, auth checking |
-| `test_merge_workflow.py` | Merge state machine, conflict resolution |
 | `test_integration.py` | End-to-end flows, concurrent processing |
 | `test_worktree.py` | Worktree creation, symlinks, cleanup |
 | `test_scheduler.py` | Cron schedule evaluation, card find-or-create |

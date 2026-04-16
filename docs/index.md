@@ -2,7 +2,7 @@
 
 **AI agents for your kardbrd boards.**
 
-kardbrd-agent is a proxy that listens for @mentions on [kardbrd](https://kardbrd.com) board cards, spawns AI agents in isolated git worktrees, and coordinates workflows including automated merging.
+kardbrd-agent is a proxy that listens for @mentions on [kardbrd](https://kardbrd.com) board cards, spawns AI agents in isolated git worktrees, and coordinates workflows — all driven by a single `kardbrd.yml` configuration file.
 
 ---
 
@@ -12,7 +12,6 @@ kardbrd-agent is a proxy that listens for @mentions on [kardbrd](https://kardbrd
 2. The agent creates an **isolated git worktree** for the card
 3. Your chosen **executor** (Claude, Goose, or Codex) works on the task
 4. Results are posted back to the card as **comments and PRs**
-5. Optionally, the agent runs an **automated merge workflow** (rebase, test, squash merge)
 
 ## Quick install
 
@@ -56,11 +55,11 @@ uvx --from "git+https://github.com/Kardbrd/kardbrd-agent.git" \
 
     [:octicons-arrow-right-24: Executors](architecture/executors.md)
 
--   :material-file-tree:{ .lg .middle } **Declarative Rule Engine**
+-   :material-file-tree:{ .lg .middle } **Event-Driven Rules**
 
     ---
 
-    Define automation with `kardbrd.yml` — match events, conditions, and trigger actions. Hot-reloads on file changes.
+    Match 25+ board events with conditions (list, label, emoji, user, content) using AND logic. Route cards to different executors, models, and skills.
 
     [:octicons-arrow-right-24: Rules](configuration/rules.md)
 
@@ -72,13 +71,13 @@ uvx --from "git+https://github.com/Kardbrd/kardbrd-agent.git" \
 
     [:octicons-arrow-right-24: Worktrees](architecture/worktrees.md)
 
--   :material-merge:{ .lg .middle } **Automated Merging**
+-   :material-file-cog:{ .lg .middle } **`kardbrd.yml` Configuration**
 
     ---
 
-    Full merge workflow: commit, rebase, resolve conflicts (LLM-assisted), run tests, squash merge to main.
+    One YAML file controls everything — board identity, executor choice, event rules, cron schedules, and model selection. Hot-reloads on save.
 
-    [:octicons-arrow-right-24: Merge Workflow](architecture/merge-workflow.md)
+    [:octicons-arrow-right-24: Configuration](configuration/rules.md)
 
 -   :material-clock-outline:{ .lg .middle } **Cron Schedules**
 
@@ -88,13 +87,13 @@ uvx --from "git+https://github.com/Kardbrd/kardbrd-agent.git" \
 
     [:octicons-arrow-right-24: Schedules](configuration/schedules.md)
 
--   :material-shield-check:{ .lg .middle } **Bot Commands**
+-   :material-card-account-details:{ .lg .middle } **Bot Card**
 
     ---
 
-    Control your agent with card commands: `/restart`, `/shutdown`, `/status`, `/reload`, `/pause`, `/resume`.
+    Live status display on your board showing active sessions, configured triggers, schedules, and available skills.
 
-    [:octicons-arrow-right-24: Bot Commands](configuration/bot-commands.md)
+    [:octicons-arrow-right-24: Bot Card](configuration/bot-commands.md)
 
 </div>
 
