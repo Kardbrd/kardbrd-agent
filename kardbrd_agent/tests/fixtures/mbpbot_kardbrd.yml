@@ -1,12 +1,12 @@
 # kardbrd.yml — Automation rules for kbn repository
 #
 # Workflow (10-step lifecycle):
-#   1. Human creates card           => opus /ke (explore codebase)
+#   1. Human creates card           => opus /explore (explore codebase)
 #   2. Human discusses exploration  => opus responds (built-in @mention)
-#   3. Human moves card to Plans    => opus /kp (create plan)
+#   3. Human moves card to Plans    => opus /plan (create plan)
 #   4. Human reviews plan           => opus responds (built-in @mention)
-#   5. Human moves to In progress   => sonnet /ki then /kpr (implement + PR)
-#   6. /kpr moves card to Review    => opus /kr (full code review)
+#   5. Human moves to In progress   => sonnet /implement then /kpr (implement + PR)
+#   6. /kpr moves card to Review    => opus /review (full code review)
 #   7. Human reads review           => opus responds (built-in @mention)
 #   8. Human moves to Done          => haiku interlinks related cards
 #   9. 🧽 card appears              => haiku archives old Done cards
@@ -28,15 +28,15 @@
 #   "agent", "AGENT", etc.).
 #
 # Error handling:
-#   Each skill (/ke, /kp, /ki, /kpr, /kr) handles its own failures:
-#   - /ke: Posts exploration findings or errors as a card comment
-#   - /kp: Posts plan or reports blockers as a card comment
-#   - /ki: Posts "Blocker" comment if stuck; does NOT move card to Review
+#   Each skill (/explore, /plan, /implement, /kpr, /review) handles its own failures:
+#   - /explore: Posts exploration findings or errors as a card comment
+#   - /plan: Posts plan or reports blockers as a card comment
+#   - /implement: Posts "Blocker" comment if stuck; does NOT move card to Review
 #          on failure — card stays in "In progress" for human intervention
 #   - /kpr: Stops on rebase conflicts or test failures; reports on card;
 #           does NOT move card to Review — card stays in "In progress"
-#   - /kr: Posts review findings or errors as a card comment
-#   If a multi-step action fails partway (e.g. /ki succeeds but /kpr fails),
+#   - /review: Posts review findings or errors as a card comment
+#   If a multi-step action fails partway (e.g. /implement succeeds but /kpr fails),
 #   the card remains in its current list. The human sees the failure comment
 #   and can re-trigger manually or fix the issue and drag the card forward.
 #   The rule engine's per-card dedup (_active_sessions) prevents concurrent
@@ -71,7 +71,7 @@ rules:
     list: Ideas
     exclude_label: Agent
     model: opus
-    action: /ke
+    action: /explore
 
   # ── Step 3: Auto-plan when card moves to Plans ──────────────────
   # Human reviews exploration, then drags card to Plans to trigger planning.
@@ -80,13 +80,13 @@ rules:
     list: Plans
     exclude_label: Agent
     model: opus
-    action: /kp
+    action: /plan
 
   # ── Step 5: Auto-implement and PR when card moves to In progress ─
   # Human reviews plan, then drags card to In progress.
-  # Runs /ki to implement, then /kpr to rebase, test, and create a PR.
+  # Runs /implement to implement, then /kpr to rebase, test, and create a PR.
   # /kpr moves the card to Review on success, triggering step 6.
-  # If /ki fails, the card stays in In progress with a blocker comment.
+  # If /implement fails, the card stays in In progress with a blocker comment.
   # If /kpr fails (rebase conflict, test failure), the card also stays
   # in In progress with the failure details posted on the card.
   - name: Implement and PR cards moved to In progress
@@ -95,8 +95,8 @@ rules:
     exclude_label: Agent
     model: sonnet
     action: |
-      Run /ki to implement the card.
-      When /ki completes successfully (clean working tree, changes committed),
+      Run /implement to implement the card.
+      When /implement completes successfully (clean working tree, changes committed),
       immediately run /kpr to rebase onto main, run tests, push, and create
       a pull request. /kpr will move the card to Review on success.
 
@@ -109,7 +109,7 @@ rules:
     list: Review
     exclude_label: Agent
     model: opus
-    action: /kr
+    action: /review
 
   # ── Step 8: Interlink related cards when moved to Done ──────────
   # Human approves the review and moves card to Done.
@@ -286,7 +286,7 @@ rules:
     event: reaction_added
     emoji: "🔄"
     model: opus
-    action: /kr
+    action: /review
 
   - name: Approve plan via reaction
     event: reaction_added

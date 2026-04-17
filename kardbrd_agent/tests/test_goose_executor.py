@@ -633,19 +633,19 @@ class TestGooseExecutorPrompt:
         prompt = executor.build_prompt(
             card_id="abc123",
             card_markdown="# Card Title\n\nDescription",
-            command="/kp",
-            comment_content="@bot /kp",
+            command="/plan",
+            comment_content="@bot /plan",
             author_name="Paul",
         )
-        assert "/kp" in prompt
+        assert "/plan" in prompt
         assert "Paul" in prompt
         assert "abc123" in prompt
 
     def test_extract_command_delegates_to_claude(self):
         """Test extract_command extracts the command correctly."""
         executor = GooseExecutor()
-        command = executor.extract_command("@bot /kp", "@bot")
-        assert command == "/kp"
+        command = executor.extract_command("@bot /plan", "@bot")
+        assert command == "/plan"
 
     def test_goose_executor_matches_module_level_functions(self):
         """Test GooseExecutor delegates to module-level functions (ST5: no __new__)."""
@@ -653,12 +653,14 @@ class TestGooseExecutorPrompt:
         kwargs = dict(
             card_id="abc123",
             card_markdown="# Card",
-            command="/kp",
-            comment_content="@bot /kp",
+            command="/plan",
+            comment_content="@bot /plan",
             author_name="Paul",
         )
         assert executor.build_prompt(**kwargs) == build_prompt(**kwargs)
-        assert executor.extract_command("@bot /kp", "@bot") == extract_command("@bot /kp", "@bot")
+        assert executor.extract_command("@bot /plan", "@bot") == extract_command(
+            "@bot /plan", "@bot"
+        )
 
 
 class TestProviderKeyMap:

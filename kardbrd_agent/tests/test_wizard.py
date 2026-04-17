@@ -219,7 +219,7 @@ class TestManagerEnsureWizardCard:
         from kardbrd_agent.manager import ProxyManager
         from kardbrd_agent.rules import Rule, RuleEngine
 
-        rule = Rule(name="r1", events=["card_moved"], action="/ki")
+        rule = Rule(name="r1", events=["card_moved"], action="/implement")
         engine = RuleEngine(rules=[rule])
         manager = ProxyManager(
             board_id="b1",
