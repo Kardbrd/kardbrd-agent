@@ -1,33 +1,59 @@
 ---
 name: Explore
-description: Deep codebase exploration and analysis for a card's topic
+description: Use when starting work on a new card or when the card topic needs codebase research before planning.
 ---
 
 # Explore
 
-Deep-dive exploration of the card's topic in the context of the kardbrd-agent codebase.
+> **Violating the letter of the rules is violating the spirit of the rules.**
 
-## Instructions
+Deep-dive exploration producing structured artifacts on the card — not just a comment.
 
-1. Read the card description and all comments to understand the topic
-2. Explore the codebase systematically through these passes:
-   - **Manager pass**: `kardbrd_agent/manager.py` — event handling, session tracking, concurrency
-   - **Executor pass**: `kardbrd_agent/executor.py` — Claude CLI spawning, prompt building, output parsing
-   - **Worktree pass**: `kardbrd_agent/worktree.py` — git worktree lifecycle, symlinks, setup
-   - **Rules pass**: `kardbrd_agent/rules.py` — rule engine, YAML parsing, hot reload
-   - **CLI pass**: `kardbrd_agent/cli.py` — Typer commands, configuration, startup
-   - **Tests pass**: `kardbrd_agent/tests/` — test patterns, fixtures, coverage
-3. Look at related cards mentioned in the description (use `!cardId` references)
-4. Check the board for related cards and context
-5. Post findings as a structured comment on the card with:
-   - Current state (what exists)
-   - Relevant code paths and files
-   - Proposed approach or options
-   - Open questions for the operator
+## Outputs (mandatory, every time)
 
-## Guidelines
+- **Attachment:** `exploration-<topic-slug>.md` — comprehensive analysis with:
+  - Executive summary
+  - Current state (what exists, with file paths and line numbers)
+  - Relevant code paths
+  - Architecture constraints and patterns to follow
+  - Proposed approach or options with trade-offs
+  - Open questions for the operator
+- **Checklist:** "Exploration Findings" — one todo per actionable finding or decision point
+- **Comment:** Summary of findings + recommendation for next step + @mention requester
 
-- Be thorough but focused on what's relevant to the card
-- Reference specific files and line numbers
-- Note any architectural constraints or patterns to follow
-- If the card mentions other cards, fetch and read them for context
+## Process
+
+1. Read the card description, all comments, and all attachments
+2. Read linked cards and board context if referenced
+3. Explore the codebase systematically — don’t just grep for keywords, read the actual code
+4. For each relevant file: note the file path, line numbers, and what it does
+5. If external resources are linked (repos, docs), fetch and analyze them
+6. Draft the exploration attachment with ALL findings — never summarize away detail or omit
+7. Upload attachment via `kardbrd attachment markdown <card_id> --filename "exploration-<topic>.md" --content "..."`
+8. Create checklist via `kardbrd checklist create <card_id> "Exploration Findings"` then `kardbrd checklist add-todos <card_id> <checklist_id> "Finding 1" "Finding 2" ...`
+9. Post summary comment via `kardbrd comment add <card_id> "..."`
+
+## Anti-Rationalization Guards
+
+| Excuse | Why It’s Wrong |
+|--------|----------------|
+| "I already know enough to plan" | You don’t. Read the code. Every exploration that skips reading produces a plan that misses constraints. |
+| "This file isn’t relevant" | If you haven’t read it, you can’t know that. Read first, judge second. |
+| "The comment summary is enough" | Comments are communication. The attachment is the artifact. Future skills read the attachment, not your comment. |
+| "I’ll note the details in the plan instead" | The plan reads the exploration. If exploration is thin, the plan will be wrong. |
+| "There’s too much code to read" | Then prioritize by relevance, but still read the key files. List what you skipped and why. |
+
+## Red Flags
+
+- Posting a comment without creating an attachment
+- Exploration attachment under 2KB (you probably skimmed)
+- No file paths or line numbers in findings
+- No open questions (you’re not thinking critically)
+- Skipping linked resources or related cards
+
+## Verification Before Completion
+
+1. Verify the attachment exists: `kardbrd attachment list <card_id>`
+2. Verify the checklist exists with items: `kardbrd md card <card_id>` and confirm "Exploration Findings" checklist appears
+3. Verify the comment was posted
+4. Only then claim completion
