@@ -1,0 +1,50 @@
+# smolvm configuration for kardbrd-agent
+#
+# Usage:
+#   smolvm machine start --smolfile Smolfile --name kardbrd-agent
+#   smolvm machine exec --name kardbrd-agent --env-file ../.env -- \
+#     uvx --from git+https://github.com/Kardbrd/kardbrd-agent.git \
+#     kardbrd-agent start --cwd /home/agent/repository
+
+image = "python:3.12-slim"
+net = true
+
+[network]
+allow_hosts = [
+  "api.anthropic.com",      # Claude API
+  "app.kardbrd.com",        # kardbrd API + WebSocket
+  "github.com",             # Git operations
+  "pypi.org",               # Python packages
+  "files.pythonhosted.org", # Python package downloads
+  # Add more hosts as needed for your project:
+  # "registry.npmjs.org",   # npm packages
+  # "api.openai.com",       # OpenAI API (for Goose)
+]
+
+[dev]
+init = [
+  # System dependencies
+  "apt-get update && apt-get install -y git openssh-client curl",
+
+  # GitHub CLI
+  "curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg && echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main' > /etc/apt/sources.list.d/github-cli.list && apt-get update && apt-get install -y gh",
+
+  # uv (Python package manager)
+  "curl -LsSf https://astral.sh/uv/install.sh | sh",
+
+  # Claude CLI
+  "curl -fsSL https://claude.ai/install.sh | bash",
+
+  # Create non-root agent user
+  "useradd -m -s /bin/bash -u 1000 agent",
+]
+
+# Mount your repository and workspaces directory
+volumes = [
+  "./repository:/home/agent/repository",
+  "./workspaces:/home/agent/workspaces",
+]
+
+[auth]
+# SSH agent forwarding — private keys stay on the host
+ssh_agent = true
