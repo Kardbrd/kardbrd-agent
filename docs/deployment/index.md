@@ -4,20 +4,25 @@ kardbrd-agent can be deployed in several ways depending on your infrastructure a
 
 ## Comparison
 
-| | Docker | uv (no Docker) | Linux (systemd) | macOS (launchd) |
-|---|---|---|---|---|
-| **Isolation** | Full container | Shares host | Container + systemd | Host process |
-| **Toolchain** | Baked into image | Host-installed | Baked into image | Host-installed |
-| **Setup** | Dockerfile + Compose | One command (`uvx`) | Provisioning script | Install script |
-| **Auto-update** | Watchtower or rebuild | Restart fetches latest | Timer-based pull | Git pull on restart |
-| **Auto-restart** | Docker restart policy | systemd/launchd | systemd | launchd |
-| **Best for** | Production | Dev machines | Production (Linux) | Dev machines (Mac) |
+| | Docker | smolvm | uv (no Docker) | Linux (systemd) | macOS (launchd) |
+|---|---|---|---|---|---|
+| **Isolation** | Container (shared kernel) | Micro-VM (hypervisor) | Shares host | Container + systemd | Host process |
+| **Toolchain** | Baked into image | Baked into VM | Host-installed | Baked into image | Host-installed |
+| **Setup** | Dockerfile + Compose | Smolfile | One command (`uvx`) | Provisioning script | Install script |
+| **Network control** | iptables/firewall | Built-in allowlist | None | iptables/firewall | None |
+| **Auto-update** | Watchtower or rebuild | Restart fetches latest | Restart fetches latest | Timer-based pull | Git pull on restart |
+| **Auto-restart** | Docker restart policy | Manual/systemd | systemd/launchd | systemd | launchd |
+| **Best for** | Production | High-isolation production | Dev machines | Production (Linux) | Dev machines (Mac) |
 
 ## Choosing a deployment method
 
 **[Docker](docker.md)** (recommended for production)
 
 :   Your project's dev image is the base — kardbrd-agent and the executor CLI are injected into it. Full container isolation, Docker Compose support, auto-updates via Watchtower.
+
+**[smolvm](smolvm.md)** (strongest isolation)
+
+:   Run in a hardware-virtualized micro-VM with built-in network allowlisting and SSH agent forwarding. No daemon required. Best when you need stronger isolation than containers provide.
 
 **[uv (no Docker)](uv.md)** (simplest)
 

@@ -74,6 +74,7 @@ nav:
   - Deployment:
       - Overview: deployment/index.md
       - Docker: deployment/docker.md
+      - smolvm: deployment/smolvm.md
       - uv (no Docker): deployment/uv.md
       - Linux (systemd): deployment/linux.md
       - macOS (launchd): deployment/macos.md
