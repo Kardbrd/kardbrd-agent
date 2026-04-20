@@ -3143,6 +3143,125 @@ class TestErrorResilience:
         mock_process.kill.assert_called_once()
         assert "abc123" not in manager._active_sessions
 
+
+class TestPostFallbackComment:
+    """Tests for _post_fallback_comment helper."""
+
+    def test_posts_result_text_as_comment(self):
+        """Test fallback posts result_text and adds ✅ emoji."""
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager._add_reaction = MagicMock()
+
+        result = ExecutorResult(success=True, result_text="Here is the output")
+        posted = manager._post_fallback_comment("card1", result, "Paul", "comm1")
+
+        assert posted is True
+        manager.client.add_comment.assert_called_once()
+        comment_text = manager.client.add_comment.call_args[0][1]
+        assert "Here is the output" in comment_text
+        assert "@Paul" in comment_text
+        manager._add_reaction.assert_called_once_with("card1", "comm1", "✅")
+
+    def test_empty_result_text_adds_warning_emoji(self):
+        """Test empty result_text produces ⚠️ instead of posting."""
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager._add_reaction = MagicMock()
+
+        result = ExecutorResult(success=True, result_text="")
+        posted = manager._post_fallback_comment("card1", result, "Paul", "comm1")
+
+        assert posted is False
+        manager.client.add_comment.assert_not_called()
+        manager._add_reaction.assert_called_once_with("card1", "comm1", "⚠️")
+
+    def test_truncates_very_long_output(self):
+        """Test output over 12000 chars is truncated."""
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager._add_reaction = MagicMock()
+
+        result = ExecutorResult(success=True, result_text="x" * 20000)
+        manager._post_fallback_comment("card1", result, "Paul")
+
+        comment_text = manager.client.add_comment.call_args[0][1]
+        assert "*(output truncated)*" in comment_text
+        # Should be truncated to ~12000 + truncation notice + @mention
+        assert len(comment_text) < 13000
+
+    def test_no_comment_id_still_works(self):
+        """Test fallback works without a comment_id (rule-triggered)."""
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager._add_reaction = MagicMock()
+
+        result = ExecutorResult(success=True, result_text="Output")
+        posted = manager._post_fallback_comment("card1", result, "automation")
+
+        assert posted is True
+        manager._add_reaction.assert_called_once_with("card1", None, "✅")
+
+
+class TestFallbackInMentionFlow:
+    """Tests for fallback comment posting in _process_mention."""
+
+    @pytest.mark.asyncio
+    async def test_mention_no_session_posts_fallback(self):
+        """When executor succeeds but posts no comment and has no session, post fallback."""
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.client.get_card_markdown.return_value = "# Card"
+        manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
+        manager.executor.extract_command.return_value = "/plan"
+        manager.executor.build_prompt.return_value = "prompt"
+        manager.executor.execute = AsyncMock(
+            return_value=ExecutorResult(
+                success=True, result_text="Codex did some work", session_id=None
+            )
+        )
+        manager.worktree_manager = MagicMock()
+        manager.worktree_manager.create_worktree.return_value = Path("/tmp/wt")
+        manager._has_recent_bot_comment = MagicMock(return_value=False)
+
+        await manager._process_mention("abc12345", "comm1", "@coder hi", "Paul")
+
+        # Should have posted a fallback comment with the result text
+        manager.client.add_comment.assert_called_once()
+        comment_text = manager.client.add_comment.call_args[0][1]
+        assert "Codex did some work" in comment_text
+        assert "@Paul" in comment_text
+
+    @pytest.mark.asyncio
+    async def test_mention_no_session_empty_output_warns(self):
+        """When executor succeeds with no output and no session, add ⚠️."""
+        manager = _make_manager()
+        manager.client = MagicMock()
+        manager.client.get_card_markdown.return_value = "# Card"
+        manager.executor = MagicMock()
+        manager.executor.check_auth = AsyncMock(
+            return_value=AuthStatus(authenticated=True, email="test@test.com")
+        )
+        manager.executor.extract_command.return_value = "/plan"
+        manager.executor.build_prompt.return_value = "prompt"
+        manager.executor.execute = AsyncMock(
+            return_value=ExecutorResult(success=True, result_text="", session_id=None)
+        )
+        manager.worktree_manager = MagicMock()
+        manager.worktree_manager.create_worktree.return_value = Path("/tmp/wt")
+        manager._has_recent_bot_comment = MagicMock(return_value=False)
+        manager._add_reaction = MagicMock()
+
+        await manager._process_mention("abc12345", "comm1", "@coder hi", "Paul")
+
+        # Should NOT post a comment (no result_text)
+        manager.client.add_comment.assert_not_called()
+        # Should add ⚠️ reaction
+        manager._add_reaction.assert_any_call("abc12345", "comm1", "⚠️")
+
     def test_gather_uses_return_exceptions_with_task_names(self):
         """Test that start() uses return_exceptions=True and named task logging."""
         import inspect
