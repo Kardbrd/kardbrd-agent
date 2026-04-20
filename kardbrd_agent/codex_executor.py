@@ -25,7 +25,7 @@ class CodexExecutor:
     """
     Executes Codex CLI as a subprocess.
 
-    Spawns `codex exec --full-auto --json` and parses
+    Spawns `codex exec --dangerously-bypass-approvals-and-sandbox --json` and parses
     the JSONL output to extract the result.
     """
 
@@ -170,7 +170,7 @@ class CodexExecutor:
         cmd = [
             "codex",
             "exec",
-            "--full-auto",
+            "--dangerously-bypass-approvals-and-sandbox",
             "--json",
         ]
 
