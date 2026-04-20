@@ -101,11 +101,11 @@ Alternative executor wrapping [Goose](https://block.github.io/goose/) CLI. Spawn
 
 ## CodexExecutor
 
-Executor for [OpenAI Codex CLI](https://github.com/openai/codex). Spawns `codex exec --full-auto --json`.
+Executor for [OpenAI Codex CLI](https://github.com/openai/codex). Spawns `codex exec --dangerously-bypass-approvals-and-sandbox --json`.
 
 **Features:**
 
-- Full-auto mode for autonomous execution
+- No-sandbox mode for unrestricted CLI access (kardbrd CLI, shell commands)
 - JSON output parsing
 - Codex-specific model mapping
 
