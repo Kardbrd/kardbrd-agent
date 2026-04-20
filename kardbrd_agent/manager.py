@@ -1040,6 +1040,44 @@ class ProxyManager:
             logger.warning(f"Retry also failed for card {card_id}: {retry_result.error}")
         return retry_result
 
+    def _post_fallback_comment(
+        self,
+        card_id: str,
+        result: "ExecutorResult",
+        author_name: str,
+        comment_id: str | None = None,
+    ) -> bool:
+        """
+        Post result_text as a fallback comment when the executor didn't post one.
+
+        Used when an executor completes successfully but doesn't post a comment
+        and has no session to resume (e.g. Codex executor).
+
+        Args:
+            card_id: The card to post to
+            result: The executor result containing result_text
+            author_name: Name of the requester (for @mention)
+            comment_id: Optional comment ID for emoji reaction
+
+        Returns:
+            True if a fallback comment was posted, False otherwise
+        """
+        if not result.result_text:
+            logger.warning(f"Agent completed but produced no output for card {card_id}")
+            self._add_reaction(card_id, comment_id, "⚠️")
+            return False
+
+        # Truncate very long output to keep comments readable
+        text = result.result_text
+        max_len = 12000
+        if len(text) > max_len:
+            text = text[:max_len] + "\n\n*(output truncated)*"
+
+        self.client.add_comment(card_id, f"{text}\n\n@{author_name}")
+        logger.info(f"Posted fallback comment for card {card_id}")
+        self._add_reaction(card_id, comment_id, "✅")
+        return True
+
     def _has_recent_bot_comment(self, card_id: str, seconds: int = 60) -> bool:
         """
         Check if this bot posted a comment on the card recently.
@@ -1184,11 +1222,11 @@ class ProxyManager:
                             worktree_path=worktree_path,
                         )
                     else:
-                        # No session_id to resume - log warning but mark success
+                        # No session_id to resume - post result_text as fallback
                         logger.warning(
                             "Agent completed but no response posted (no session to resume)"
                         )
-                        self._add_reaction(card_id, comment_id, "✅")
+                        self._post_fallback_comment(card_id, result, author_name, comment_id)
                 else:
                     logger.error(f"Agent failed: {result.error}")
                     # Try resuming the session if the failure looks recoverable
@@ -1208,7 +1246,9 @@ class ProxyManager:
                                     worktree_path=worktree_path,
                                 )
                             else:
-                                self._add_reaction(card_id, comment_id, "✅")
+                                self._post_fallback_comment(
+                                    card_id, retry_result, author_name, comment_id
+                                )
                         else:
                             # Retry also failed — post combined diagnostics
                             self._add_reaction(card_id, comment_id, "🛑")
@@ -1511,7 +1551,9 @@ DO NOT do any new work - just publish what you already did."""
 
                 if result.success:
                     logger.info(f"Rule '{rule.name}': agent completed successfully")
-                    if not self._has_recent_bot_comment(card_id) and result.session_id:
+                    if self._has_recent_bot_comment(card_id):
+                        pass  # Agent posted — nothing to do
+                    elif result.session_id:
                         await self._resume_to_publish(
                             card_id=card_id,
                             comment_id=None,
@@ -1519,6 +1561,8 @@ DO NOT do any new work - just publish what you already did."""
                             author_name="automation",
                             worktree_path=worktree_path,
                         )
+                    else:
+                        self._post_fallback_comment(card_id, result, "automation")
                 else:
                     logger.error(f"Rule '{rule.name}': agent failed: {result.error}")
                     # Try resuming the session if the failure looks recoverable
@@ -1528,10 +1572,9 @@ DO NOT do any new work - just publish what you already did."""
                             logger.info(f"Rule '{rule.name}': retry succeeded")
                             if session:
                                 session.session_id = retry_result.session_id
-                            if (
-                                not self._has_recent_bot_comment(card_id)
-                                and retry_result.session_id
-                            ):
+                            if self._has_recent_bot_comment(card_id):
+                                pass  # Agent posted — nothing to do
+                            elif retry_result.session_id:
                                 await self._resume_to_publish(
                                     card_id=card_id,
                                     comment_id=None,
@@ -1539,6 +1582,8 @@ DO NOT do any new work - just publish what you already did."""
                                     author_name="automation",
                                     worktree_path=worktree_path,
                                 )
+                            else:
+                                self._post_fallback_comment(card_id, retry_result, "automation")
                         else:
                             error_comment = self._build_error_comment(
                                 retry_result,
