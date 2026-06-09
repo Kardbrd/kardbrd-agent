@@ -2733,7 +2733,36 @@ class TestExecutorAwareSkillDiscovery:
         assert ".claude/skills" in dirs["claude"]
         assert ".claude/commands" in dirs["claude"]
         assert ".agents/skills" in dirs["codex"]
+        assert ".codex/skills" in dirs["codex"]
         assert ".claude/skills" in dirs["goose"]
+
+    def test_codex_discovers_from_codex_skills(self, tmp_path):
+        """Codex executor scans .codex/skills/ in addition to .agents/skills/."""
+        ke_dir = tmp_path / ".codex" / "skills" / "ke"
+        ke_dir.mkdir(parents=True)
+        (ke_dir / "SKILL.md").write_text("# Explore\n\nBody.")
+        manager = _make_manager(cwd=str(tmp_path), executor_type="codex")
+        skills = manager._discover_skills()
+        assert len(skills) == 1
+        assert skills[0][0] == "ke"
+
+    def test_codex_deduplicates_agents_and_codex_skills(self, tmp_path):
+        """When both .agents/skills and .codex/skills have same skill, .agents/skills wins."""
+        # .agents/skills version (should win — listed first)
+        agents_dir = tmp_path / ".agents" / "skills" / "ke"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "SKILL.md").write_text("# Agents Explore\n\nFrom agents.")
+
+        # .codex/skills version (should be ignored)
+        codex_dir = tmp_path / ".codex" / "skills" / "ke"
+        codex_dir.mkdir(parents=True)
+        (codex_dir / "SKILL.md").write_text("# Codex Explore\n\nFrom codex.")
+
+        manager = _make_manager(cwd=str(tmp_path), executor_type="codex")
+        skills = manager._discover_skills()
+        assert len(skills) == 1
+        assert skills[0][0] == "ke"
+        assert skills[0][1].name == "Agents Explore"
 
 
 class TestBuildErrorComment:
