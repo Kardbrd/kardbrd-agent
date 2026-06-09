@@ -94,6 +94,15 @@ class WorktreeManager:
                     skills_dst.symlink_to(agents_skills_src)
                     logger.debug(f"Created symlink: {skills_dst} -> {agents_skills_src}")
 
+            codex_skills_src = self.base_repo / ".codex" / "skills"
+            if codex_skills_src.is_dir():
+                codex_dir = worktree_path / ".codex"
+                codex_dir.mkdir(exist_ok=True)
+                codex_skills_dst = codex_dir / "skills"
+                if not codex_skills_dst.exists():
+                    codex_skills_dst.symlink_to(codex_skills_src)
+                    logger.debug(f"Created symlink: {codex_skills_dst} -> {codex_skills_src}")
+
     def _run_setup_command(self, worktree_path: Path) -> None:
         """
         Run the configured setup command in the worktree.

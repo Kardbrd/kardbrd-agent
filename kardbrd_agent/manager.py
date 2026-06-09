@@ -361,7 +361,7 @@ class ProxyManager:
     # Each executor scans its own skill directories; Claude also has legacy commands.
     EXECUTOR_SKILL_DIRS: dict[str, list[str]] = {
         "claude": [".claude/skills", ".claude/commands"],
-        "codex": [".agents/skills"],
+        "codex": [".agents/skills", ".codex/skills"],
         "goose": [".claude/skills", ".claude/commands"],
     }
 

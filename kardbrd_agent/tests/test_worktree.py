@@ -205,6 +205,35 @@ class TestWorktreeManagerSymlinks:
 
         assert not (worktree / ".agents").exists()
 
+    def test_setup_symlinks_creates_codex_skills_for_codex(self, git_repo: Path):
+        """Test .codex/skills/ symlink is created for codex executor."""
+        # Create .codex/skills in base repo
+        codex_skills = git_repo / ".codex" / "skills"
+        codex_skills.mkdir(parents=True)
+
+        worktree = git_repo.parent / "card-abc12345"
+        worktree.mkdir()
+
+        manager = WorktreeManager(git_repo, executor_type="codex")
+        manager._setup_symlinks(worktree)
+
+        assert (worktree / ".codex" / "skills").is_symlink()
+        assert (worktree / ".codex" / "skills").resolve() == codex_skills.resolve()
+
+    def test_setup_symlinks_codex_skips_missing_codex_skills(self, tmp_path: Path):
+        """Test codex symlink is skipped when .codex/skills/ doesn't exist."""
+        base_repo = tmp_path / "kbn"
+        base_repo.mkdir()
+        (base_repo / ".env").write_text("SECRET=value")
+
+        worktree = tmp_path / "card-abc12345"
+        worktree.mkdir()
+
+        manager = WorktreeManager(base_repo, executor_type="codex")
+        manager._setup_symlinks(worktree)  # Should not raise
+
+        assert not (worktree / ".codex").exists()
+
     def test_setup_symlinks_skips_missing_files(self, tmp_path: Path):
         """Test symlinks are not created for missing source files."""
         base_repo = tmp_path / "kbn"
