@@ -12,6 +12,7 @@ from .executor import (
 from .goose_executor import GooseExecutor
 from .manager import ProxyManager
 from .mcp_proxy import ProxySession
+from .pi_executor import PiExecutor
 
 __all__ = [
     "AuthStatus",
@@ -20,6 +21,7 @@ __all__ = [
     "Executor",
     "ExecutorResult",
     "GooseExecutor",
+    "PiExecutor",
     "ProxyManager",
     "ProxySession",
     "build_prompt",
