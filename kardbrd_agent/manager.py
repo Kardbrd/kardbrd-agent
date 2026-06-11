@@ -151,6 +151,15 @@ class ProxyManager:
                 api_url=self.api_url,
                 bot_token=self.bot_token,
             )
+        elif self.executor_type == "pi":
+            from .pi_executor import PiExecutor
+
+            self.executor = PiExecutor(
+                cwd=self.cwd,
+                timeout=self.timeout,
+                api_url=self.api_url,
+                bot_token=self.bot_token,
+            )
         else:
             self.executor = ClaudeExecutor(
                 cwd=self.cwd,
@@ -363,6 +372,7 @@ class ProxyManager:
         "claude": [".claude/skills", ".claude/commands"],
         "codex": [".agents/skills"],
         "goose": [".claude/skills", ".claude/commands"],
+        "pi": [".claude/skills", ".claude/commands"],
     }
 
     def _discover_skills(self) -> list[tuple[str, SkillInfo]]:
