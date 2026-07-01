@@ -9,7 +9,7 @@
 
 ### Changed
 
-- Added `docs` optional dependency group to `pyproject.toml`
+- Replaced Python agent/client packaging with one Go `kardbrd` binary.
 
 ## 0.1.0
 

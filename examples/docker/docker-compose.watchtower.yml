@@ -7,8 +7,8 @@
 # Two patterns are shown below:
 #
 #   1. Pre-built image from GHCR (Watchtower auto-updates the whole image)
-#   2. Local build with uvx entrypoint (Watchtower updates the base image;
-#      kardbrd-agent itself updates on container restart via uvx)
+#   2. Local build (Watchtower updates pulled images; rebuild local images
+#      with docker compose build when you update the repository)
 #
 # Usage:
 #   cp .env.example .env   # fill in credentials
@@ -16,7 +16,7 @@
 
 services:
   # ---------------------------------------------------------------------------
-  # Agent — kardbrd-agent
+  # Agent — kardbrd
   # ---------------------------------------------------------------------------
   # Option 1: Pre-built image from a container registry (recommended for Watchtower)
   # Watchtower will detect new pushes to this tag and restart the container.
@@ -30,31 +30,30 @@ services:
     #   target: agent
     user: "1000:1000"
     restart: unless-stopped
+    command: ["agent", "start", "--cwd", "/home/agent/repository"]
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
     depends_on:
       mysql:
         condition: service_healthy
     environment:
-      # kardbrd-agent config (required)
-      - KARDBRD_ID
+      # kardbrd agent config
+      - KARDBRD_API_URL=${KARDBRD_API_URL:-https://app.kardbrd.com}
       - KARDBRD_TOKEN
-      - KARDBRD_AGENT
-      # - KARDBRD_URL=https://app.kardbrd.com
+      - KARDBRD_AGENT_BOARD_ID
+      - KARDBRD_AGENT_NAME
 
       # Executor
       - ANTHROPIC_API_KEY
-      # - AGENT_EXECUTOR=goose
+      - KARDBRD_AGENT_EXECUTOR=${KARDBRD_AGENT_EXECUTOR:-claude}
       # - GOOSE_PROVIDER=anthropic
 
       # Agent behavior
-      - LOG_LEVEL=INFO
-      - AGENT_CWD=/home/agent/repository
-      - AGENT_WORKTREES_DIR=/home/agent/workspaces
-      - AGENT_SETUP_CMD=composer install --no-interaction
-      - AGENT_TEST_CMD=vendor/bin/phpunit
-      - AGENT_MAX_CONCURRENT=2
-      - AGENT_TIMEOUT=7200
+      - KARDBRD_AGENT_CWD=/home/agent/repository
+      - KARDBRD_AGENT_WORKTREES_DIR=/home/agent/workspaces
+      - KARDBRD_AGENT_SETUP_CMD=${KARDBRD_AGENT_SETUP_CMD:-}
+      - KARDBRD_AGENT_MAX_CONCURRENT=${KARDBRD_AGENT_MAX_CONCURRENT:-2}
+      - KARDBRD_AGENT_TIMEOUT=${KARDBRD_AGENT_TIMEOUT:-7200}
 
       # Git identity
       - GIT_AUTHOR_NAME=Kardbrd Agent

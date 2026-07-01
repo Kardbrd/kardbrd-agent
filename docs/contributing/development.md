@@ -2,102 +2,47 @@
 
 ## Prerequisites
 
-- Python 3.12+
-- [uv](https://docs.astral.sh/uv/)
+- Go 1.24+
 - git
-- An AI executor CLI for integration testing
+- Optional executor CLIs for manual agent testing
 
-## Clone and install
+## Clone
 
 ```bash
 git clone https://github.com/kardbrd/kardbrd-agent.git
 cd kardbrd-agent
-uv sync --dev
 ```
 
-## Project structure
+## Project Structure
 
-```
-kardbrd-agent/
-├── kardbrd_agent/              # Main package
-│   ├── __init__.py
-│   ├── cli.py                  # Typer CLI entry point
-│   ├── manager.py              # ProxyManager — main orchestrator
-│   ├── executor.py             # Executor Protocol + ClaudeExecutor
-│   ├── goose_executor.py       # GooseExecutor
-│   ├── codex_executor.py       # CodexExecutor
-│   ├── rules.py                # RuleEngine + validation
-│   ├── scheduler.py            # ScheduleManager (cron)
-│   ├── worktree.py             # WorktreeManager
-│   ├── mcp_proxy.py            # Session tracking data classes
-│   ├── wizard.py               # Onboarding card creation
-│   └── tests/
-│       ├── conftest.py         # Shared fixtures
-│       ├── test_rules.py
-│       ├── test_executor.py
-│       ├── test_integration.py
-│       └── ...
-├── examples/                   # Deployment guides
-│   ├── docker/
-│   ├── uv/
-│   ├── linux/
-│   └── macos/
-├── docs/                       # Documentation (MkDocs)
-├── kardbrd.yml.example         # Example rules file
-├── pyproject.toml              # Project metadata and dependencies
-├── mkdocs.yml                  # Documentation site config
-├── CLAUDE.md                   # AI agent guidance
-├── RULES.md                    # Code conventions
-├── SOUL.md                     # Agent identity
-└── CONTRIBUTING.md             # Contributor quick start
+```text
+cmd/kardbrd/          # binary entry point
+internal/api/         # HTTP and WebSocket clients
+internal/agent/       # agent manager and board automation
+internal/cli/         # command tree
+internal/config/      # env and flag config
+internal/executor/    # executor adapters
+internal/rules/       # kardbrd.yml loading and matching
+internal/scheduler/   # cron schedules
+internal/worktree/    # git worktrees
 ```
 
-## Running the agent locally
+## Commands
 
 ```bash
-# Set environment
-export KARDBRD_ID=<board-id>
+go test ./...
+go run ./cmd/kardbrd --help
+go run ./cmd/kardbrd agent validate
+go build -o kardbrd ./cmd/kardbrd
+```
+
+## Local Agent Run
+
+```bash
+export KARDBRD_AGENT_BOARD_ID=<board-id>
 export KARDBRD_TOKEN=<bot-token>
-export KARDBRD_AGENT=<agent-name>
-export ANTHROPIC_API_KEY=<api-key>
+export KARDBRD_AGENT_NAME=<agent-name>
+export KARDBRD_AGENT_CWD=/path/to/test/repo
 
-# Run
-uv run kardbrd-agent start --cwd /path/to/test/repo
+go run ./cmd/kardbrd agent start
 ```
-
-## Useful commands
-
-```bash
-# Run all tests
-uv run pytest
-
-# Run a single test file
-uv run pytest kardbrd_agent/tests/test_rules.py
-
-# Run a specific test
-uv run pytest kardbrd_agent/tests/test_integration.py::TestConcurrentProcessingIntegration
-
-# Lint and format
-uv run pre-commit run --all-files
-
-# Run ruff only
-uv run pre-commit run ruff --all-files
-
-# Validate rules file
-uv run kardbrd-agent validate
-```
-
-## Building docs locally
-
-```bash
-# Install docs dependencies
-uv pip install mkdocs-material mkdocstrings[python]
-
-# Serve locally with hot-reload
-mkdocs serve
-
-# Build static site
-mkdocs build
-```
-
-The docs site will be available at `http://127.0.0.1:8000`.

@@ -114,9 +114,9 @@ Edit `~/.config/kardbrd-agent/agent.env`:
 CONTAINER_CMD=podman
 
 # Board configuration (required)
-KARDBRD_ID=<board-id>
+KARDBRD_AGENT_BOARD_ID=<board-id>
 KARDBRD_TOKEN=<bot-token>
-KARDBRD_AGENT=<agent-name>
+KARDBRD_AGENT_NAME=<agent-name>
 
 # Anthropic API key (optional if ~/.claude is mounted)
 ANTHROPIC_API_KEY=sk-ant-...
@@ -257,7 +257,7 @@ podman exec kardbrd-agent ls -la /home/agent/.ssh/
 
 **"Missing required config" on start:**
 
-Ensure `KARDBRD_ID`, `KARDBRD_TOKEN`, and `KARDBRD_AGENT` are set in `~/.config/kardbrd-agent/agent.env`.
+Ensure `KARDBRD_AGENT_BOARD_ID`, `KARDBRD_TOKEN`, and `KARDBRD_AGENT_NAME` are set in `~/.config/kardbrd-agent/agent.env`.
 
 **Permission errors on volumes:**
 

@@ -113,10 +113,10 @@ schedules:
 
 ## Validation
 
-Schedule cron expressions are validated by `kardbrd-agent validate`:
+Schedule cron expressions are validated by `kardbrd agent validate`:
 
 ```bash
-kardbrd-agent validate
+kardbrd agent validate
 ```
 
 Invalid cron expressions produce an error:

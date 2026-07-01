@@ -1,93 +1,73 @@
 # CLI Reference
 
-kardbrd-agent provides two commands: `start` and `validate`.
+`kardbrd` is one binary with two surfaces:
 
-## `kardbrd-agent start`
+- `kardbrd agent ...` runs and validates the automation agent.
+- Every other `kardbrd ...` command is the Kardbrd client CLI.
 
-Start listening for @mentions and rule-based events.
+## Agent
 
 ```bash
-kardbrd-agent start [OPTIONS]
+kardbrd agent start [OPTIONS]
+kardbrd agent validate [kardbrd.yml]
 ```
 
-### Options
+### `agent start` options
 
 | Flag | Env var | Default | Description |
-|------|---------|---------|-------------|
-| `--board-id` | `KARDBRD_ID` | — | Board ID (required) |
-| `--token` | `KARDBRD_TOKEN` | — | Bot authentication token (required) |
-| `--name` | `KARDBRD_AGENT` | — | Agent name for @mentions (required) |
-| `--api-url` | `KARDBRD_URL` | `https://app.kardbrd.com` | API base URL |
-| `--executor` | `AGENT_EXECUTOR` | `claude` | Executor type: `claude`, `goose`, or `codex` |
-| `--cwd` | `AGENT_CWD` | current directory | Working directory (your project repo) |
-| `--timeout` | `AGENT_TIMEOUT` | `3600` | Max execution time per session (seconds) |
-| `--max-concurrent` | `AGENT_MAX_CONCURRENT` | `3` | Max parallel sessions |
-| `--worktrees-dir` | `AGENT_WORKTREES_DIR` | parent of `--cwd` | Where worktrees are created |
-| `--setup-cmd` | `AGENT_SETUP_CMD` | — | Command to run in each worktree after creation (e.g., `npm install`) |
-| `--rules` | `AGENT_RULES_FILE` | `<cwd>/kardbrd.yml` | Path to rules file |
+| --- | --- | --- | --- |
+| `--board-id` | `KARDBRD_AGENT_BOARD_ID` | required | Board ID |
+| `--token` | `KARDBRD_TOKEN` | required | Bot token |
+| `--name` | `KARDBRD_AGENT_NAME` | required | Agent name for @mentions |
+| `--api-url` | `KARDBRD_API_URL` | `https://app.kardbrd.com` | API base URL |
+| `--executor` | `KARDBRD_AGENT_EXECUTOR` | `claude` | `claude`, `goose`, `codex`, or `pi` |
+| `--cwd` | `KARDBRD_AGENT_CWD` | current directory | Target repository |
+| `--timeout` | `KARDBRD_AGENT_TIMEOUT` | `3600` | Max seconds per session |
+| `--max-concurrent` | `KARDBRD_AGENT_MAX_CONCURRENT` | `3` | Max parallel sessions |
+| `--worktrees-dir` | `KARDBRD_AGENT_WORKTREES_DIR` | parent of cwd | Worktree parent directory |
+| `--setup-cmd` | `KARDBRD_AGENT_SETUP_CMD` | none | Command run in each worktree |
+| `--rules` | `KARDBRD_AGENT_RULES_FILE` | `<cwd>/kardbrd.yml` | Rules file |
 
-### Examples
+Example:
 
 ```bash
-# Minimal (using env vars)
-export KARDBRD_ID=0gl5MlBZ KARDBRD_TOKEN=tok_xxx KARDBRD_AGENT=MyBot
-kardbrd-agent start
-
-# Full flags
-kardbrd-agent start \
+kardbrd --token tok_xxx agent start \
   --board-id 0gl5MlBZ \
-  --token tok_xxx \
   --name MyBot \
-  --executor goose \
   --cwd /path/to/repo \
-  --timeout 7200 \
-  --max-concurrent 5 \
-  --setup-cmd 'pnpm install'
-
-# With uvx (no clone)
-uvx --from "git+https://github.com/Kardbrd/kardbrd-agent.git" \
-  kardbrd-agent start --cwd /path/to/repo
+  --executor codex
 ```
 
-## `kardbrd-agent validate`
-
-Validate a `kardbrd.yml` rules file for syntax errors and configuration issues.
+## Client Commands
 
 ```bash
-kardbrd-agent validate [PATH]
+kardbrd board ...
+kardbrd card ...
+kardbrd comment ...
+kardbrd checklist ...
+kardbrd attachment ...
+kardbrd link ...
+kardbrd list ...
+kardbrd md ...
+kardbrd search ...
+kardbrd activity ...
 ```
 
-### Arguments
-
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `PATH` | `./kardbrd.yml` | Path to the rules file to validate |
-
-### Examples
+Use `--format json` or `--format md` where supported.
 
 ```bash
-# Validate default location
-kardbrd-agent validate
-
-# Validate specific file
-kardbrd-agent validate path/to/kardbrd.yml
+kardbrd board list
+kardbrd md card <card-id>
+kardbrd comment add <card-id> "Done. @alice"
 ```
 
-### Output
+## Legacy Env Names
 
-The validator checks for:
+Old agent env names are rejected with explicit rename messages:
 
-- **Errors** — invalid YAML, missing required fields, unknown event types, invalid cron expressions
-- **Warnings** — unused conditions, potential misconfigurations
-
-```
-$ kardbrd-agent validate
-✓ kardbrd.yml is valid (5 rules, 2 schedules, 0 errors, 0 warnings)
-```
-
-```
-$ kardbrd-agent validate bad-config.yml
-✗ kardbrd.yml has errors:
-  ERROR [rule 2 "Deploy"]: Unknown event type 'card_deleted'
-  WARNING [rule 3 "Review"]: 'emoji' condition has no effect on 'card_created' events
-```
+| Old | New |
+| --- | --- |
+| `KARDBRD_ID` | `KARDBRD_AGENT_BOARD_ID` |
+| `KARDBRD_AGENT` | `KARDBRD_AGENT_NAME` |
+| `KARDBRD_URL` | `KARDBRD_API_URL` |
+| `AGENT_*` | `KARDBRD_AGENT_*` |

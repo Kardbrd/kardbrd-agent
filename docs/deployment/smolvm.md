@@ -53,7 +53,7 @@ git clone git@github.com:yourorg/yourrepo.git repository
 Create a `Smolfile` in the project directory:
 
 ```toml
-image = "python:3.12-slim"
+image = "golang:1.24-bookworm"
 net = true
 
 [network]
@@ -61,15 +61,15 @@ allow_hosts = [
   "api.anthropic.com",
   "app.kardbrd.com",
   "github.com",
-  "pypi.org",
-  "files.pythonhosted.org",
+  "proxy.golang.org",
+  "sum.golang.org",
 ]
 
 [dev]
 init = [
   "apt-get update && apt-get install -y git openssh-client curl",
   "curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg && echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main' > /etc/apt/sources.list.d/github-cli.list && apt-get update && apt-get install -y gh",
-  "curl -LsSf https://astral.sh/uv/install.sh | sh",
+  "GOBIN=/usr/local/bin go install github.com/Kardbrd/kardbrd-agent/cmd/kardbrd@latest",
   "curl -fsSL https://claude.ai/install.sh | bash",
 ]
 volumes = [
@@ -89,11 +89,11 @@ Create a `.env` file with your credentials:
 
 ```bash
 cat > .env << 'EOF'
-KARDBRD_ID=<board-id>
+KARDBRD_AGENT_BOARD_ID=<board-id>
 KARDBRD_TOKEN=<bot-token>
-KARDBRD_AGENT=<agent-name>
+KARDBRD_AGENT_NAME=<agent-name>
 ANTHROPIC_API_KEY=sk-ant-...
-# For Goose: AGENT_EXECUTOR=goose, GOOSE_PROVIDER=anthropic
+# For Goose: KARDBRD_AGENT_EXECUTOR=goose, GOOSE_PROVIDER=anthropic
 EOF
 ```
 
@@ -105,8 +105,7 @@ smolvm machine start --smolfile Smolfile --name kardbrd-agent
 
 # Load environment variables and run the agent
 smolvm machine exec --name kardbrd-agent --env-file .env -- \
-  uvx --from git+https://github.com/Kardbrd/kardbrd-agent.git \
-  kardbrd-agent start --cwd /home/agent/repository
+  kardbrd agent start --cwd /home/agent/repository
 ```
 
 ## Directory structure
@@ -132,8 +131,8 @@ allow_hosts = [
   "api.anthropic.com",     # Claude API
   "app.kardbrd.com",       # kardbrd API + WebSocket
   "github.com",            # Git operations
-  "pypi.org",              # Python packages
-  "files.pythonhosted.org", # Python package downloads
+  "proxy.golang.org",      # Go module downloads
+  "sum.golang.org",        # Go checksum database
 ]
 ```
 
