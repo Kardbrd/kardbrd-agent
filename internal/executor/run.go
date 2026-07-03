@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -11,7 +12,7 @@ import (
 	"time"
 )
 
-func runCommand(ctx context.Context, cfg Config, cwd string, args []string, promptText string, timeoutError string) (stdout string, stderr string, code *int, err error) {
+func runCommand(ctx context.Context, cfg Config, cwd string, args []string, promptText string, timeoutError string, onStdoutLine func(string)) (stdout string, stderr string, code *int, err error) {
 	commandCtx, cancel := context.WithTimeout(ctx, durationOrDefault(cfg.Timeout))
 	defer cancel()
 
@@ -27,10 +28,35 @@ func runCommand(ctx context.Context, cfg Config, cwd string, args []string, prom
 
 	var stdoutBuf bytes.Buffer
 	var stderrBuf bytes.Buffer
-	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = &stderrBuf
 
-	err = cmd.Run()
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", stderrBuf.String(), nil, err
+	}
+	if err = cmd.Start(); err != nil {
+		return "", stderrBuf.String(), nil, err
+	}
+
+	scanDone := make(chan error, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdoutPipe)
+		scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			stdoutBuf.WriteString(line)
+			stdoutBuf.WriteByte('\n')
+			if onStdoutLine != nil {
+				onStdoutLine(line)
+			}
+		}
+		scanDone <- scanner.Err()
+	}()
+
+	err = cmd.Wait()
+	if scanErr := <-scanDone; err == nil && scanErr != nil {
+		err = scanErr
+	}
 	if commandCtx.Err() == context.DeadlineExceeded {
 		return stdoutBuf.String(), stderrBuf.String(), nil, errors.New(timeoutError)
 	}

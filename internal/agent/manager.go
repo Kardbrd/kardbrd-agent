@@ -51,6 +51,7 @@ type Config struct {
 	Executor  executor.Interface
 	Worktree  Worktree
 	WebSocket WebSocketRunner
+	Reload    func(context.Context) (rules.Config, error)
 }
 
 type Manager struct {
@@ -74,6 +75,7 @@ type Manager struct {
 	Executor  executor.Interface
 	Worktree  Worktree
 	WebSocket WebSocketRunner
+	Reload    func(context.Context) (rules.Config, error)
 
 	sem chan struct{}
 	mu  sync.Mutex
@@ -121,6 +123,7 @@ func NewManager(cfg Config) *Manager {
 		Executor:      cfg.Executor,
 		Worktree:      cfg.Worktree,
 		WebSocket:     cfg.WebSocket,
+		Reload:        cfg.Reload,
 		sem:           make(chan struct{}, maxConcurrent),
 	}
 }
@@ -157,6 +160,9 @@ func (m *Manager) Stop(ctx context.Context) error {
 	for cardID, session := range m.Active {
 		if session.Process != nil && session.Process.Process != nil {
 			_ = session.Process.Process.Kill()
+		}
+		if session.Cancel != nil {
+			session.Cancel()
 		}
 		if session.Stream != nil {
 			_ = session.Stream.Close()
@@ -212,8 +218,11 @@ func (m *Manager) ProcessMention(ctx context.Context, cardID, commentID, content
 		worktreePath = path
 	}
 
+	execCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	m.mu.Lock()
-	m.Active[cardID] = &ActiveSession{CardID: cardID, WorktreePath: worktreePath, CommentID: commentID}
+	m.Active[cardID] = &ActiveSession{CardID: cardID, WorktreePath: worktreePath, CommentID: commentID, Cancel: cancel}
 	m.mu.Unlock()
 	defer func() {
 		m.mu.Lock()
@@ -236,11 +245,14 @@ func (m *Manager) ProcessMention(ctx context.Context, cardID, commentID, content
 		CWD:            worktreePath,
 	})
 
-	result := m.Executor.Execute(ctx, executor.Request{
+	result := m.Executor.Execute(execCtx, executor.Request{
 		Prompt:  promptText,
 		CWD:     worktreePath,
 		OnChunk: m.makeOnChunk(cardID),
 	})
+	if execCtx.Err() != nil {
+		return nil
+	}
 
 	m.mu.Lock()
 	if session := m.Active[cardID]; session != nil {
@@ -408,4 +420,11 @@ func (m *Manager) makeOnChunk(cardID string) func(content string, chunkType stri
 		}
 		sequence++
 	}
+}
+
+func (m *Manager) ApplyRulesConfig(cfg rules.Config) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Rules = &rules.Engine{Rules: append([]rules.Rule(nil), cfg.Rules...)}
+	m.Schedules = append([]rules.Schedule(nil), cfg.Schedules...)
 }

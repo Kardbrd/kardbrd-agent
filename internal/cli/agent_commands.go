@@ -88,6 +88,9 @@ func newAgentStartCommand(root *rootOptions) *cobra.Command {
 			}
 			if loadedRules {
 				applyRulesConfig(&cfg, rulesCfg)
+				if cfg.RulesFile == "" {
+					cfg.RulesFile = filepath.Join(cfg.CWD, "kardbrd.yml")
+				}
 			}
 
 			missing := missingAgentConfig(cfg)
@@ -217,6 +220,22 @@ func realRunAgentRuntime(ctx context.Context, runtime agentRuntime) error {
 		wt = worktreeAdapter{worktree.NewManager(runtime.GitRoot, cfg.WorktreesDir, cfg.SetupCommand, cfg.Executor)}
 	}
 	ws := api.NewWebSocketClient(cfg.APIURL, cfg.Token)
+	var scheduleManager *scheduler.Manager
+	var reload func(context.Context) (rules.Config, error)
+	if cfg.RulesFile != "" {
+		reload = func(ctx context.Context) (rules.Config, error) {
+			loaded, err := rules.LoadFile(cfg.RulesFile)
+			if err != nil {
+				return rules.Config{}, err
+			}
+			if scheduleManager != nil {
+				if err := scheduleManager.UpdateSchedules(loaded.Schedules); err != nil {
+					return rules.Config{}, err
+				}
+			}
+			return loaded, nil
+		}
+	}
 	manager := agent.NewManager(agent.Config{
 		BoardID:       cfg.BoardID,
 		APIURL:        cfg.APIURL,
@@ -232,7 +251,9 @@ func realRunAgentRuntime(ctx context.Context, runtime agentRuntime) error {
 		Executor:      exec,
 		Worktree:      wt,
 		WebSocket:     ws,
+		Reload:        reload,
 	})
+	scheduleManager = scheduler.NewManager(runtime.Schedules, cfg.BoardID, client, manager.ProcessSchedule)
 
 	ws.OnBoardEvent = func(raw json.RawMessage) {
 		var message map[string]any
@@ -242,10 +263,16 @@ func realRunAgentRuntime(ctx context.Context, runtime agentRuntime) error {
 		go func() { _ = manager.HandleBoardEvent(ctx, message) }()
 	}
 
-	errCh := make(chan error, 2)
-	if len(runtime.Schedules) > 0 {
-		scheduleManager := scheduler.NewManager(runtime.Schedules, cfg.BoardID, client, manager.ProcessSchedule)
-		go func() { errCh <- scheduleManager.Start(ctx) }()
+	errCh := make(chan error, 3)
+	if len(runtime.Schedules) > 0 || cfg.RulesFile != "" {
+		go func() {
+			if err := scheduleManager.Start(ctx); err != nil {
+				errCh <- err
+			}
+		}()
+	}
+	if cfg.RulesFile != "" {
+		go rulesReloadLoop(ctx, cfg.RulesFile, manager)
 	}
 	go statusPingLoop(ctx, ws, manager, cfg)
 	go func() { errCh <- manager.Start(ctx) }()
@@ -258,6 +285,38 @@ func realRunAgentRuntime(ctx context.Context, runtime agentRuntime) error {
 		_ = manager.Stop(context.Background())
 		return err
 	}
+}
+
+func rulesReloadLoop(ctx context.Context, path string, manager *agent.Manager) {
+	lastMod, _ := fileModTime(path)
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			modTime, ok := fileModTime(path)
+			if !ok || !modTime.After(lastMod) || manager.Reload == nil {
+				continue
+			}
+			loaded, err := manager.Reload(ctx)
+			if err != nil {
+				continue
+			}
+			manager.ApplyRulesConfig(loaded)
+			_ = manager.EnsureBotCard(ctx)
+			lastMod = modTime
+		}
+	}
+}
+
+func fileModTime(path string) (time.Time, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return info.ModTime(), true
 }
 
 func newExecutor(cfg config.AgentConfig) (executor.Interface, error) {

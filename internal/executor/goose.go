@@ -36,7 +36,8 @@ func (e Goose) Execute(ctx context.Context, req Request) Result {
 	if req.ResumeSessionID != "" {
 		cmd = []string{"goose", "run", "-t", "-", "--output-format", "stream-json", "-r", "-n", req.ResumeSessionID}
 	}
-	stdout, stderr, code, err := runCommand(ctx, e.cfg, e.cwd(req), cmd, req.Prompt, "Goose execution timed out")
-	emitChunks(stdout, "goose", req.OnChunk)
+	stdout, stderr, code, err := runCommand(ctx, e.cfg, e.cwd(req), cmd, req.Prompt, "Goose execution timed out", func(line string) {
+		emitChunkLine(line, "goose", req.OnChunk)
+	})
 	return resultFromRun(parseGooseOutput, stdout, stderr, code, cmd, err)
 }

@@ -34,7 +34,8 @@ func (e Codex) Execute(ctx context.Context, req Request) Result {
 	if req.Model != "" {
 		cmd = append(cmd, "--model", req.Model)
 	}
-	stdout, stderr, code, err := runCommand(ctx, e.cfg, e.cwd(req), cmd, req.Prompt, "Codex execution timed out")
-	emitChunks(stdout, "codex", req.OnChunk)
+	stdout, stderr, code, err := runCommand(ctx, e.cfg, e.cwd(req), cmd, req.Prompt, "Codex execution timed out", func(line string) {
+		emitChunkLine(line, "codex", req.OnChunk)
+	})
 	return resultFromRun(parseCodexOutput, stdout, stderr, code, cmd, err)
 }

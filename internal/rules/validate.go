@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/robfig/cron/v3"
 	"gopkg.in/yaml.v3"
 )
 
@@ -181,7 +182,12 @@ func parseEventNode(node *yaml.Node) []string {
 }
 
 func validCron(expr string) bool {
-	return len(strings.Fields(expr)) == 5
+	_, err := standardCronParser().Parse(expr)
+	return err == nil
+}
+
+func standardCronParser() cron.Parser {
+	return cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
 }
 
 func mapping(node *yaml.Node) map[string]*yaml.Node {

@@ -103,6 +103,30 @@ func TestEnsureWizardCardCreatesWhenRulesAreEmpty(t *testing.T) {
 	assertContains(t, client.comments[0].content, "@coder")
 }
 
+func TestBotCardReloadCommandRunsReloadHook(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Reload = func(ctx context.Context) (rules.Config, error) {
+		return rules.Config{
+			Rules: []rules.Rule{
+				{Name: "Explore", Events: []string{"card_created"}, Action: "/ke"},
+			},
+			Schedules: []rules.Schedule{
+				{Name: "Daily", Cron: "0 9 * * 1-5", Action: "summarize"},
+			},
+		}, nil
+	}
+
+	if err := manager.HandleBotCardCommand(context.Background(), "bot1", "/reload", "Paul"); err != nil {
+		t.Fatal(err)
+	}
+
+	assertEqual(t, 1, len(manager.Rules.Rules))
+	assertEqual(t, 1, len(manager.Schedules))
+	comment := manager.Client.(*fakeBoardClient).comments[0].content
+	assertContains(t, comment, "Reloaded 1 rule(s)")
+	assertContains(t, comment, "@Paul")
+}
+
 func writeText(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {

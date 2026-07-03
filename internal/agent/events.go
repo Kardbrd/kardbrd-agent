@@ -3,12 +3,18 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Kardbrd/kardbrd-agent/internal/api"
 	"github.com/Kardbrd/kardbrd-agent/internal/executor"
 	"github.com/Kardbrd/kardbrd-agent/internal/rules"
 )
+
+var connectStream = func(ctx context.Context, streamURL string) (api.StreamConn, error) {
+	return api.ConnectStream(ctx, streamURL)
+}
 
 func (m *Manager) HandleBoardEvent(ctx context.Context, message map[string]any) error {
 	eventType := stringField(message, "event_type")
@@ -39,7 +45,9 @@ func (m *Manager) HandleBoardEvent(ctx context.Context, message map[string]any) 
 			return err
 		}
 	case "stream_requested":
-		// Stream connection is handled by manager code once an active session exists.
+		if err := m.HandleStreamRequested(ctx, cardID, stringField(message, "stream_url")); err != nil {
+			return err
+		}
 	}
 
 	return m.CheckRules(ctx, eventType, message)
@@ -54,6 +62,9 @@ func (m *Manager) HandleCardMoved(ctx context.Context, message map[string]any) e
 	m.mu.Lock()
 	if session := m.Active[cardID]; session != nil && session.Process != nil && session.Process.Process != nil {
 		_ = session.Process.Process.Kill()
+	}
+	if session := m.Active[cardID]; session != nil && session.Cancel != nil {
+		session.Cancel()
 	}
 	delete(m.Active, cardID)
 	m.mu.Unlock()
@@ -76,6 +87,9 @@ func (m *Manager) HandleStopReaction(ctx context.Context, cardID string, comment
 	}
 	if session.Process != nil && session.Process.Process != nil {
 		_ = session.Process.Process.Kill()
+	}
+	if session.Cancel != nil {
+		session.Cancel()
 	}
 	delete(m.Active, cardID)
 	m.mu.Unlock()
@@ -136,8 +150,10 @@ func (m *Manager) ProcessRule(ctx context.Context, cardID string, rule rules.Rul
 		}
 		worktreePath = path
 	}
+	execCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	m.mu.Lock()
-	m.Active[cardID] = &ActiveSession{CardID: cardID, WorktreePath: worktreePath}
+	m.Active[cardID] = &ActiveSession{CardID: cardID, WorktreePath: worktreePath, Cancel: cancel}
 	m.mu.Unlock()
 	defer func() {
 		m.mu.Lock()
@@ -158,12 +174,15 @@ func (m *Manager) ProcessRule(ctx context.Context, cardID string, rule rules.Rul
 		BoardID:        m.BoardID,
 		CWD:            worktreePath,
 	})
-	result := m.Executor.Execute(ctx, executor.Request{
+	result := m.Executor.Execute(execCtx, executor.Request{
 		Prompt:  promptText,
 		CWD:     worktreePath,
 		Model:   rule.ModelID(),
 		OnChunk: m.makeOnChunk(cardID),
 	})
+	if execCtx.Err() != nil {
+		return nil
+	}
 	if result.Success {
 		if !m.hasRecentBotComment(ctx, cardID, 60*time.Second) {
 			if result.SessionID != "" {
@@ -183,6 +202,37 @@ func (m *Manager) ProcessSchedule(ctx context.Context, cardID string, schedule r
 		Action: schedule.Action,
 		Model:  schedule.Model,
 	}, map[string]any{"card_id": cardID})
+}
+
+func (m *Manager) HandleStreamRequested(ctx context.Context, cardID string, streamURL string) error {
+	if cardID == "" || streamURL == "" {
+		return nil
+	}
+
+	m.mu.Lock()
+	session := m.Active[cardID]
+	if session == nil || session.Stream != nil {
+		m.mu.Unlock()
+		return nil
+	}
+	m.mu.Unlock()
+
+	stream, err := connectStream(ctx, streamURL)
+	if err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	session = m.Active[cardID]
+	if session == nil {
+		m.mu.Unlock()
+		_ = stream.Close()
+		return nil
+	}
+	session.Stream = stream
+	session.Streaming = true
+	m.mu.Unlock()
+	return nil
 }
 
 func (m *Manager) enrichRuleMessage(ctx context.Context, message map[string]any) error {
@@ -291,8 +341,25 @@ func (m *Manager) HandleBotCardCommand(ctx context.Context, cardID string, conte
 		_, _ = m.Client.AddComment(ctx, cardID, "▶️ Resumed - automation rules are active again.\n\n@"+authorName)
 	case "/status":
 		_, _ = m.Client.AddComment(ctx, cardID, "🟢 **Online**\n\n@"+authorName)
+	case "/reload":
+		if m.Reload == nil {
+			_, _ = m.Client.AddComment(ctx, cardID, "⚠️ Rule engine is not reloadable (static rules)\n\n@"+authorName)
+			return nil
+		}
+		loaded, err := m.Reload(ctx)
+		if err != nil {
+			_, _ = m.Client.AddComment(ctx, cardID, "**Reload failed**\n\n```\n"+err.Error()+"\n```\n\n@"+authorName)
+			return nil
+		}
+		m.ApplyRulesConfig(loaded)
+		_ = m.EnsureBotCard(ctx)
+		_, _ = m.Client.AddComment(ctx, cardID, reloadMessage(loaded, authorName))
 	}
 	return nil
+}
+
+func reloadMessage(loaded rules.Config, authorName string) string {
+	return "🔄 Reloaded " + strconv.Itoa(len(loaded.Rules)) + " rule(s) and " + strconv.Itoa(len(loaded.Schedules)) + " schedule(s) from kardbrd.yml\n\n@" + authorName
 }
 
 func stringField(message map[string]any, key string) string {

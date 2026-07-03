@@ -78,6 +78,21 @@ func TestTriggerEnsuresCardAndRunsProcessor(t *testing.T) {
 	assertEqual(t, "new-card", processedCard)
 }
 
+func TestUpdateSchedulesReplacesConfiguredSchedules(t *testing.T) {
+	manager := NewManager([]rules.Schedule{
+		{Name: "Old", Cron: "0 8 * * *", Action: "old"},
+	}, "board1", &fakeScheduleClient{}, nil)
+
+	if err := manager.UpdateSchedules([]rules.Schedule{
+		{Name: "New", Cron: "0 9 * * *", Action: "new"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	assertEqual(t, 1, len(manager.Schedules))
+	assertEqual(t, "New", manager.Schedules[0].Name)
+}
+
 type fakeScheduleClient struct {
 	board         json.RawMessage
 	createdListID string

@@ -113,6 +113,83 @@ func TestHandleBoardEventSkipsDuplicateActiveCard(t *testing.T) {
 	assertEqual(t, 0, len(manager.Client.(*fakeBoardClient).comments))
 }
 
+func TestStopReactionCancelsRunningExecutor(t *testing.T) {
+	manager := newTestManager(t)
+	exec := manager.Executor.(*fakeExecutor)
+	exec.blockUntilCancel = true
+	exec.started = make(chan struct{})
+	exec.cancelled = make(chan struct{})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- manager.ProcessMention(context.Background(), "card1", "comment1", "@coder do work", "Paul")
+	}()
+
+	select {
+	case <-exec.started:
+	case <-time.After(time.Second):
+		t.Fatal("executor did not start")
+	}
+
+	if err := manager.HandleStopReaction(context.Background(), "card1", "comment1"); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-exec.cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("executor context was not cancelled")
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("mention processing did not finish")
+	}
+
+	client := manager.Client.(*fakeBoardClient)
+	assertEqual(t, 1, len(client.comments))
+	assertContains(t, client.comments[0].content, "Agent stopped")
+}
+
+func TestStreamRequestedConnectsActiveSessionAndForwardsChunks(t *testing.T) {
+	manager := newTestManager(t)
+	stream := &fakeStream{}
+	var gotURL string
+	oldConnect := connectStream
+	connectStream = func(ctx context.Context, streamURL string) (api.StreamConn, error) {
+		gotURL = streamURL
+		return stream, nil
+	}
+	defer func() { connectStream = oldConnect }()
+
+	manager.Active["card1"] = &ActiveSession{CardID: "card1", WorktreePath: "/tmp/card-card1"}
+	if err := manager.HandleBoardEvent(context.Background(), map[string]any{
+		"event_type": "stream_requested",
+		"card_id":    "card1",
+		"stream_url": "ws://stream.test/session",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	assertEqual(t, "ws://stream.test/session", gotURL)
+	assertEqual(t, true, manager.Active["card1"].Streaming)
+
+	onChunk := manager.makeOnChunk("card1")
+	onChunk("hello", "assistant")
+
+	assertEqual(t, 1, len(stream.payloads))
+	payload := stream.payloads[0].(map[string]any)
+	assertEqual(t, "stream_chunk", payload["type"].(string))
+	assertEqual(t, "card1", payload["card_id"].(string))
+	assertEqual(t, "hello", payload["text"].(string))
+	assertEqual(t, "assistant", payload["chunk_type"].(string))
+	assertEqual(t, 0, payload["sequence"].(int))
+}
+
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()
 	client := &fakeBoardClient{
@@ -216,6 +293,9 @@ type fakeExecutor struct {
 	executeCount       int
 	lastPromptRequest  prompt.Request
 	lastExecuteRequest executor.Request
+	blockUntilCancel   bool
+	started            chan struct{}
+	cancelled          chan struct{}
 }
 
 func (e *fakeExecutor) CheckAuth(ctx context.Context) executor.AuthStatus {
@@ -226,6 +306,20 @@ func (e *fakeExecutor) CheckAuth(ctx context.Context) executor.AuthStatus {
 func (e *fakeExecutor) Execute(ctx context.Context, req executor.Request) executor.Result {
 	e.executeCount++
 	e.lastExecuteRequest = req
+	if e.blockUntilCancel {
+		if e.started != nil {
+			close(e.started)
+		}
+		select {
+		case <-ctx.Done():
+			if e.cancelled != nil {
+				close(e.cancelled)
+			}
+			return executor.Result{Success: false, Error: ctx.Err().Error()}
+		case <-time.After(200 * time.Millisecond):
+			return executor.Result{Success: false, Error: "context was not cancelled"}
+		}
+	}
 	return e.result
 }
 
@@ -253,6 +347,25 @@ func (w *fakeWorktree) Create(cardID string) (string, error) {
 func (w *fakeWorktree) Remove(cardID string, force bool) error {
 	w.removedCard = cardID
 	w.forced = force
+	return nil
+}
+
+type fakeStream struct {
+	payloads []any
+	closed   bool
+}
+
+func (s *fakeStream) WriteJSON(value any) error {
+	s.payloads = append(s.payloads, value)
+	return nil
+}
+
+func (s *fakeStream) SetWriteDeadline(t time.Time) error {
+	return nil
+}
+
+func (s *fakeStream) Close() error {
+	s.closed = true
 	return nil
 }
 

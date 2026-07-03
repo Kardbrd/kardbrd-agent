@@ -14,20 +14,27 @@ func emitChunks(stdout string, executorName string, onChunk func(content string,
 		if line == "" {
 			continue
 		}
-		var item map[string]any
-		if err := json.Unmarshal([]byte(line), &item); err != nil {
-			continue
-		}
-		switch executorName {
-		case "claude":
-			emitClaudeChunk(item, onChunk)
-		case "codex":
-			emitCodexChunk(item, onChunk)
-		case "goose":
-			emitGooseChunk(item, onChunk)
-		case "pi":
-			emitPiChunk(item, onChunk)
-		}
+		emitChunkLine(line, executorName, onChunk)
+	}
+}
+
+func emitChunkLine(line string, executorName string, onChunk func(content string, chunkType string)) {
+	if onChunk == nil || line == "" {
+		return
+	}
+	var item map[string]any
+	if err := json.Unmarshal([]byte(line), &item); err != nil {
+		return
+	}
+	switch executorName {
+	case "claude":
+		emitClaudeChunk(item, onChunk)
+	case "codex":
+		emitCodexChunk(item, onChunk)
+	case "goose":
+		emitGooseChunk(item, onChunk)
+	case "pi":
+		emitPiChunk(item, onChunk)
 	}
 }
 

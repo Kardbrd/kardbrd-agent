@@ -1,9 +1,10 @@
 package agent
 
 import (
+	"context"
 	"os/exec"
 
-	"github.com/gorilla/websocket"
+	"github.com/Kardbrd/kardbrd-agent/internal/api"
 )
 
 type ActiveSession struct {
@@ -11,7 +12,8 @@ type ActiveSession struct {
 	WorktreePath string
 	CommentID    string
 	Process      *exec.Cmd
+	Cancel       context.CancelFunc
 	SessionID    string
-	Stream       *websocket.Conn
+	Stream       api.StreamConn
 	Streaming    bool
 }

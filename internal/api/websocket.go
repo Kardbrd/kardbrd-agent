@@ -36,6 +36,12 @@ type WebSocketClient struct {
 	OnError      func(string)
 }
 
+type StreamConn interface {
+	WriteJSON(v any) error
+	SetWriteDeadline(t time.Time) error
+	Close() error
+}
+
 func NewWebSocketClient(baseURL string, token string) *WebSocketClient {
 	return &WebSocketClient{
 		BaseURL: strings.TrimRight(baseURL, "/"),
@@ -162,7 +168,7 @@ func ConnectStream(ctx context.Context, streamURL string) (*websocket.Conn, erro
 	return conn, nil
 }
 
-func SendStreamChunk(ctx context.Context, conn *websocket.Conn, cardID, text, chunkType string, sequence int) error {
+func SendStreamChunk(ctx context.Context, conn StreamConn, cardID, text, chunkType string, sequence int) error {
 	payload := map[string]any{
 		"type":       "stream_chunk",
 		"card_id":    cardID,
@@ -211,7 +217,7 @@ func (c *WebSocketClient) handleMessage(data []byte) error {
 	return nil
 }
 
-func writeWebSocketJSON(ctx context.Context, conn *websocket.Conn, payload any) error {
+func writeWebSocketJSON(ctx context.Context, conn StreamConn, payload any) error {
 	if deadline, ok := ctx.Deadline(); ok {
 		if err := conn.SetWriteDeadline(deadline); err != nil {
 			return err

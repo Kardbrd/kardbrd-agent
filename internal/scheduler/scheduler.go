@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 
 	"github.com/Kardbrd/kardbrd-agent/internal/api"
 	"github.com/Kardbrd/kardbrd-agent/internal/rules"
@@ -24,6 +25,10 @@ type Manager struct {
 	Client    Client
 	Processor Processor
 	parser    cron.Parser
+	cron      *cron.Cron
+	entries   []cron.EntryID
+	ctx       context.Context
+	mu        sync.Mutex
 }
 
 func NewManager(schedules []rules.Schedule, boardID string, client Client, processor Processor) *Manager {
@@ -43,20 +48,61 @@ func ValidateCron(expr string) error {
 
 func (m *Manager) Start(ctx context.Context) error {
 	c := cron.New(cron.WithParser(m.parser))
-	for _, schedule := range m.Schedules {
-		schedule := schedule
-		if _, err := c.AddFunc(schedule.Cron, func() {
-			if ctx.Err() == nil {
-				_ = m.Trigger(ctx, schedule)
-			}
-		}); err != nil {
-			return err
-		}
+	m.mu.Lock()
+	m.cron = c
+	m.ctx = ctx
+	if err := m.installSchedulesLocked(ctx); err != nil {
+		m.mu.Unlock()
+		return err
 	}
+	m.mu.Unlock()
+
 	c.Start()
 	<-ctx.Done()
 	stopCtx := c.Stop()
 	<-stopCtx.Done()
+	m.mu.Lock()
+	if m.cron == c {
+		m.cron = nil
+		m.entries = nil
+		m.ctx = nil
+	}
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Manager) UpdateSchedules(schedules []rules.Schedule) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.Schedules = append([]rules.Schedule(nil), schedules...)
+	if m.cron == nil {
+		return nil
+	}
+	for _, entry := range m.entries {
+		m.cron.Remove(entry)
+	}
+	m.entries = nil
+	ctx := m.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return m.installSchedulesLocked(ctx)
+}
+
+func (m *Manager) installSchedulesLocked(ctx context.Context) error {
+	for _, schedule := range m.Schedules {
+		schedule := schedule
+		entryID, err := m.cron.AddFunc(schedule.Cron, func() {
+			if ctx.Err() == nil {
+				_ = m.Trigger(ctx, schedule)
+			}
+		})
+		if err != nil {
+			return err
+		}
+		m.entries = append(m.entries, entryID)
+	}
 	return nil
 }
 

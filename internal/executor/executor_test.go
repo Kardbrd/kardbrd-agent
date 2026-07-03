@@ -72,6 +72,39 @@ printf '{"type":"AgentMessageChunk","content":"ok"}\n'
 	assertContains(t, args, "-r\n-n\nsession1")
 }
 
+func TestExecutorEmitsChunksBeforeProcessExit(t *testing.T) {
+	dir := fakeBinary(t, "goose", `#!/bin/sh
+printf '{"type":"AgentMessageChunk","content":"live"}\n'
+sleep 1
+printf '{"type":"AgentMessageChunk","content":"done"}\n'
+`)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	exec := NewGoose(Config{CWD: t.TempDir(), Timeout: 2 * time.Second})
+	chunks := make(chan string, 2)
+	done := make(chan Result, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), Request{
+			Prompt: "hello",
+			OnChunk: func(content string, chunkType string) {
+				chunks <- content
+			},
+		})
+	}()
+
+	select {
+	case got := <-chunks:
+		assertEqual(t, "live", got)
+	case <-done:
+		t.Fatal("executor returned before streaming first chunk")
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("first chunk was not streamed while process was running")
+	}
+
+	result := <-done
+	assertEqual(t, true, result.Success)
+}
+
 func TestPiExecutorCommand(t *testing.T) {
 	dir := fakeBinary(t, "pi", `#!/bin/sh
 printf '%s\n' "$@" > "$FAKE_ARGS"

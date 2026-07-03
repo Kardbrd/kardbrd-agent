@@ -53,6 +53,24 @@ func TestValidateRulesFileMissingAndEmpty(t *testing.T) {
 	assertIssueContains(t, empty.Errors, "File is empty")
 }
 
+func TestValidateRulesFileRejectsOutOfRangeCronFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bad-cron.yml")
+	writeFile(t, path, `
+board_id: board1
+agent: Bot
+schedules:
+  - name: Bad Range
+    cron: "61 25 * * *"
+    action: summarize
+`)
+
+	result := ValidateFile(path)
+	if result.IsValid() {
+		t.Fatal("expected invalid result")
+	}
+	assertIssueContains(t, result.Errors, "invalid cron expression")
+}
+
 func writeFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(strings.TrimLeft(content, "\n")), 0o600); err != nil {
