@@ -6,6 +6,21 @@
 - git
 - One executor CLI: Claude, Goose, Codex, or Pi
 
+## Download Linux binary
+
+Download the release archive for your CPU architecture:
+
+```bash
+VERSION=v0.1.0
+ARCH=amd64  # or: arm64
+curl -LO "https://github.com/Kardbrd/kardbrd-agent/releases/download/${VERSION}/kardbrd_${VERSION}_linux_${ARCH}.tar.gz"
+curl -LO "https://github.com/Kardbrd/kardbrd-agent/releases/download/${VERSION}/checksums.txt"
+sha256sum -c --ignore-missing checksums.txt
+tar -xzf "kardbrd_${VERSION}_linux_${ARCH}.tar.gz"
+mkdir -p ~/.local/bin
+install -m 0755 "kardbrd_${VERSION}_linux_${ARCH}/kardbrd" ~/.local/bin/kardbrd
+```
+
 ## Build from source
 
 ```bash
