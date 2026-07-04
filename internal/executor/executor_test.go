@@ -13,6 +13,7 @@ const testCommandTimeout = 5 * time.Second
 
 func TestClaudeExecutorCommandEnvAndResume(t *testing.T) {
 	dir := fakeBinary(t, "claude", `#!/bin/sh
+cat >/dev/null
 printf '%s\n' "$@" > "$FAKE_ARGS"
 printf '%s\n' "$KARDBRD_TOKEN|$KARDBRD_API_URL" > "$FAKE_ENV"
 printf '{"type":"result","result":"ok","session_id":"s1"}\n'
@@ -36,6 +37,7 @@ printf '{"type":"result","result":"ok","session_id":"s1"}\n'
 
 func TestCodexExecutorCommand(t *testing.T) {
 	dir := fakeBinary(t, "codex", `#!/bin/sh
+cat >/dev/null
 printf '%s\n' "$@" > "$FAKE_ARGS"
 printf '{"type":"item.message","content":"ok"}\n'
 `)
@@ -55,6 +57,7 @@ printf '{"type":"item.message","content":"ok"}\n'
 
 func TestGooseExecutorCommand(t *testing.T) {
 	dir := fakeBinary(t, "goose", `#!/bin/sh
+cat >/dev/null
 printf '%s\n' "$@" > "$FAKE_ARGS"
 printf '{"type":"AgentMessageChunk","content":"ok"}\n'
 `)
@@ -64,7 +67,9 @@ printf '{"type":"AgentMessageChunk","content":"ok"}\n'
 
 	exec := NewGoose(Config{CWD: t.TempDir(), Timeout: testCommandTimeout})
 	result := exec.Execute(context.Background(), Request{Prompt: "hello", ResumeSessionID: "session1"})
-	assertEqual(t, true, result.Success)
+	if !result.Success {
+		t.Fatalf("goose execute failed: error=%q stderr=%q command=%v", result.Error, result.Stderr, result.Command)
+	}
 	args := readFile(t, argsFile)
 	assertContains(t, args, "run\n")
 	assertContains(t, args, "-t\n-")
@@ -74,6 +79,7 @@ printf '{"type":"AgentMessageChunk","content":"ok"}\n'
 
 func TestExecutorEmitsChunksBeforeProcessExit(t *testing.T) {
 	dir := fakeBinary(t, "goose", `#!/bin/sh
+cat >/dev/null
 printf '{"type":"AgentMessageChunk","content":"live"}\n'
 sleep 2
 printf '{"type":"AgentMessageChunk","content":"done"}\n'
@@ -107,6 +113,7 @@ printf '{"type":"AgentMessageChunk","content":"done"}\n'
 
 func TestPiExecutorCommand(t *testing.T) {
 	dir := fakeBinary(t, "pi", `#!/bin/sh
+cat >/dev/null
 printf '%s\n' "$@" > "$FAKE_ARGS"
 printf '{"type":"session","id":"s1"}\n{"type":"message_end","message":"ok"}\n'
 `)
