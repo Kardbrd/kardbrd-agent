@@ -13,9 +13,9 @@ In your board, go to **Settings** → **Bots** → **Create Bot**. Choose a name
 ## 3. Set up environment
 
 ```bash
-export KARDBRD_ID=<board-id>
+export KARDBRD_AGENT_BOARD_ID=<board-id>
 export KARDBRD_TOKEN=<bot-token>
-export KARDBRD_AGENT=<agent-name>    # must match the bot name
+export KARDBRD_AGENT_NAME=<agent-name>    # must match the bot name
 export ANTHROPIC_API_KEY=<api-key>   # or GOOSE_PROVIDER + provider key
 ```
 
@@ -24,26 +24,27 @@ export ANTHROPIC_API_KEY=<api-key>   # or GOOSE_PROVIDER + provider key
 === "Claude (default)"
 
     ```bash
-    kardbrd-agent start --cwd /path/to/your/repo
+    kardbrd agent start --cwd /path/to/your/repo
     ```
 
 === "Goose"
 
     ```bash
-    kardbrd-agent start --cwd /path/to/your/repo --executor goose
+    kardbrd agent start --cwd /path/to/your/repo --executor goose
     ```
 
 === "Codex"
 
     ```bash
-    kardbrd-agent start --cwd /path/to/your/repo --executor codex
+    kardbrd agent start --cwd /path/to/your/repo --executor codex
     ```
 
 You should see the agent connect and begin listening:
 
 ```
-INFO  kardbrd_agent: Connected to board 0gl5MlBZ as MyBot
-INFO  kardbrd_agent: Listening for @mentions and rule events...
+Starting kardbrd agent
+Board: 0gl5MlBZ
+Agent: @MyBot
 ```
 
 ## 5. Trigger the agent
@@ -82,12 +83,10 @@ rules:
     action: __stop__
 ```
 
-The agent hot-reloads rules when the file changes — no restart needed.
-
 Validate your rules:
 
 ```bash
-kardbrd-agent validate
+kardbrd agent validate
 ```
 
 ## What's next?

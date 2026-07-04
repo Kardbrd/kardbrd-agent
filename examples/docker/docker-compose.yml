@@ -2,25 +2,23 @@ services:
   agent:
     build:
       context: ./repository
-      target: agent                                # uses the agent target from your Dockerfile
-      # dockerfile: Dockerfile.agent               # uncomment if using a separate Dockerfile.agent
+      target: agent
     user: "1000:1000"
     restart: unless-stopped
+    command: ["agent", "start", "--cwd", "/home/agent/repository"]
     environment:
-      - KARDBRD_ID                                 # Board ID (required)
-      - KARDBRD_TOKEN                              # Bot token (required)
-      - KARDBRD_AGENT                              # Agent name for @mentions (required)
-      # - KARDBRD_URL=https://app.kardbrd.com      # API URL (optional)
+      - KARDBRD_API_URL=${KARDBRD_API_URL:-https://app.kardbrd.com}
+      - KARDBRD_TOKEN
+      - KARDBRD_AGENT_BOARD_ID
+      - KARDBRD_AGENT_NAME
       - ANTHROPIC_API_KEY
-      # - AGENT_EXECUTOR=goose                         # Uncomment for Goose executor
-      # - GOOSE_PROVIDER=anthropic                     # Required when using Goose (e.g. anthropic, openai, ollama)
-      - LOG_LEVEL=INFO
-      - AGENT_CWD=/home/agent/repository
-      - AGENT_WORKTREES_DIR=/home/agent/workspaces
-      - AGENT_SETUP_CMD=pnpm install              # Match your project's install command
-      - AGENT_TEST_CMD=pnpm build                  # Match your project's build/test command
-      - AGENT_MAX_CONCURRENT=2
-      - AGENT_TIMEOUT=7200
+      - KARDBRD_AGENT_CWD=/home/agent/repository
+      - KARDBRD_AGENT_WORKTREES_DIR=/home/agent/workspaces
+      - KARDBRD_AGENT_SETUP_CMD=${KARDBRD_AGENT_SETUP_CMD:-}
+      - KARDBRD_AGENT_MAX_CONCURRENT=${KARDBRD_AGENT_MAX_CONCURRENT:-2}
+      - KARDBRD_AGENT_TIMEOUT=${KARDBRD_AGENT_TIMEOUT:-7200}
+      - KARDBRD_AGENT_EXECUTOR=${KARDBRD_AGENT_EXECUTOR:-claude}
+      # - GOOSE_PROVIDER=anthropic
       - GIT_AUTHOR_NAME=Kardbrd Agent
       - GIT_AUTHOR_EMAIL=agent@example.com
       - GIT_COMMITTER_NAME=Kardbrd Agent

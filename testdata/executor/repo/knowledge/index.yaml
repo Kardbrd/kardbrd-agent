@@ -1,0 +1,7 @@
+documents:
+  - path: high.md
+    title: High Priority
+    priority: high
+  - path: skipped.md
+    title: Skipped
+    priority: low

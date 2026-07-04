@@ -17,9 +17,9 @@ cp path/to/kardbrd-agent/examples/smolvm/Smolfile .
 
 # 4. Configure credentials
 cat > .env << 'EOF'
-KARDBRD_ID=<board-id>
+KARDBRD_AGENT_BOARD_ID=<board-id>
 KARDBRD_TOKEN=<bot-token>
-KARDBRD_AGENT=<agent-name>
+KARDBRD_AGENT_NAME=<agent-name>
 ANTHROPIC_API_KEY=sk-ant-...
 EOF
 
@@ -29,8 +29,7 @@ ssh-add path/to/deploy_key
 # 6. Start
 smolvm machine start --smolfile Smolfile --name kardbrd-agent
 smolvm machine exec --name kardbrd-agent --env-file .env -- \
-  uvx --from git+https://github.com/Kardbrd/kardbrd-agent.git \
-  kardbrd-agent start --cwd /home/agent/repository
+  kardbrd agent start --cwd /home/agent/repository
 ```
 
 ## Management

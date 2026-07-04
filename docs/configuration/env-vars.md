@@ -6,23 +6,22 @@ All configuration can be set via environment variables. CLI flags take precedenc
 
 | Variable | CLI flag | Description |
 |----------|----------|-------------|
-| `KARDBRD_ID` | `--board-id` | Board ID |
+| `KARDBRD_AGENT_BOARD_ID` | `--board-id` | Board ID |
 | `KARDBRD_TOKEN` | `--token` | Bot authentication token |
-| `KARDBRD_AGENT` | `--name` | Agent name for @mentions |
+| `KARDBRD_AGENT_NAME` | `--name` | Agent name for @mentions |
 
 ## Agent configuration
 
 | Variable | CLI flag | Default | Description |
 |----------|----------|---------|-------------|
-| `KARDBRD_URL` | `--api-url` | `https://app.kardbrd.com` | API base URL |
-| `AGENT_EXECUTOR` | `--executor` | `claude` | Executor: `claude`, `goose`, or `codex` |
-| `AGENT_CWD` | `--cwd` | current directory | Working directory (project repo) |
-| `AGENT_TIMEOUT` | `--timeout` | `3600` | Max seconds per session |
-| `AGENT_MAX_CONCURRENT` | `--max-concurrent` | `3` | Parallel sessions |
-| `AGENT_WORKTREES_DIR` | `--worktrees-dir` | parent of cwd | Where worktrees are created |
-| `AGENT_SETUP_CMD` | `--setup-cmd` | — | Run in each worktree (e.g., `npm install`) |
-| `AGENT_RULES_FILE` | `--rules` | `<cwd>/kardbrd.yml` | Path to rules file |
-| `LOG_LEVEL` | — | `INFO` | Logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `KARDBRD_API_URL` | `--api-url` | `https://app.kardbrd.com` | API base URL |
+| `KARDBRD_AGENT_EXECUTOR` | `--executor` | `claude` | Executor: `claude`, `goose`, `codex`, or `pi` |
+| `KARDBRD_AGENT_CWD` | `--cwd` | current directory | Working directory (project repo) |
+| `KARDBRD_AGENT_TIMEOUT` | `--timeout` | `3600` | Max seconds per session |
+| `KARDBRD_AGENT_MAX_CONCURRENT` | `--max-concurrent` | `3` | Parallel sessions |
+| `KARDBRD_AGENT_WORKTREES_DIR` | `--worktrees-dir` | parent of cwd | Where worktrees are created |
+| `KARDBRD_AGENT_SETUP_CMD` | `--setup-cmd` | — | Run in each worktree (e.g., `npm install`) |
+| `KARDBRD_AGENT_RULES_FILE` | `--rules` | `<cwd>/kardbrd.yml` | Path to rules file |
 
 ## LLM provider keys
 
@@ -47,19 +46,19 @@ All configuration can be set via environment variables. CLI flags take precedenc
 
 ```bash
 # Board configuration
-KARDBRD_ID=0gl5MlBZ
+KARDBRD_AGENT_BOARD_ID=0gl5MlBZ
 KARDBRD_TOKEN=tok_xxx
-KARDBRD_AGENT=MyBot
+KARDBRD_AGENT_NAME=MyBot
 
 # LLM provider
 ANTHROPIC_API_KEY=sk-ant-...
 
 # Optional
-# AGENT_EXECUTOR=goose
+# KARDBRD_AGENT_EXECUTOR=goose
 # GOOSE_PROVIDER=anthropic
-# AGENT_SETUP_CMD=pnpm install
-# AGENT_MAX_CONCURRENT=3
-# AGENT_TIMEOUT=3600
+# KARDBRD_AGENT_SETUP_CMD=pnpm install
+# KARDBRD_AGENT_MAX_CONCURRENT=3
+# KARDBRD_AGENT_TIMEOUT=3600
 # LOG_LEVEL=INFO
 ```
 

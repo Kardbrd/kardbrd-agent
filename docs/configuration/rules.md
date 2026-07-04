@@ -186,8 +186,8 @@ rules:
 Validate your rules file before deploying:
 
 ```bash
-kardbrd-agent validate              # validates ./kardbrd.yml
-kardbrd-agent validate path/to/kardbrd.yml
+kardbrd agent validate              # validates ./kardbrd.yml
+kardbrd agent validate path/to/kardbrd.yml
 ```
 
 ## Hot-reload

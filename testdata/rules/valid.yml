@@ -1,0 +1,23 @@
+board_id: board1
+agent: BotName
+api_url: https://example.test
+executor: codex
+rules:
+  - name: Explore
+    event:
+      - card_created
+      - card_moved
+    list: Ideas
+    model: sonnet
+    action: /ke
+  - name: Stop
+    event: reaction_added
+    emoji: "🛑"
+    action: __stop__
+schedules:
+  - name: Daily Summary
+    cron: "0 9 * * 1-5"
+    model: haiku
+    list: Reports
+    assignee: user1
+    action: summarize

@@ -1,6 +1,6 @@
 site_name: kardbrd-agent
 site_url: https://kardbrd.github.io/kardbrd-agent/
-site_description: AI agent proxy for kardbrd boards — spawn Claude or Goose in isolated worktrees
+site_description: Kardbrd Go CLI and agent daemon for board automation
 repo_url: https://github.com/Kardbrd/kardbrd-agent
 repo_name: Kardbrd/kardbrd-agent
 
@@ -35,13 +35,6 @@ theme:
 
 plugins:
   - search
-  - mkdocstrings:
-      handlers:
-        python:
-          options:
-            show_source: true
-            show_root_heading: true
-            heading_level: 3
 
 markdown_extensions:
   - admonition
@@ -75,7 +68,7 @@ nav:
       - Overview: deployment/index.md
       - Docker: deployment/docker.md
       - smolvm: deployment/smolvm.md
-      - uv (no Docker): deployment/uv.md
+      - Host binary: deployment/uv.md
       - Linux (systemd): deployment/linux.md
       - macOS (launchd): deployment/macos.md
   - Architecture:

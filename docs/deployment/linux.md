@@ -102,9 +102,9 @@ Edit `~/.config/kardbrd-agent/agent.env`:
 CONTAINER_CMD=podman
 
 # Board configuration (required)
-KARDBRD_ID=<board-id>
+KARDBRD_AGENT_BOARD_ID=<board-id>
 KARDBRD_TOKEN=<bot-token>
-KARDBRD_AGENT=<agent-name>
+KARDBRD_AGENT_NAME=<agent-name>
 
 # LLM provider
 ANTHROPIC_API_KEY=sk-ant-...

@@ -34,7 +34,7 @@ repos:
     hooks:
       - id: validate-kardbrd-yml
         name: validate kardbrd.yml
-        entry: uv run kardbrd-agent validate
+        entry: go run ./cmd/kardbrd agent validate
         language: system
         files: (^|/)kardbrd\.yml$
         exclude: \.example$

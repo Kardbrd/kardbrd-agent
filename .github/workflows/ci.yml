@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Pre-commit hooks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install pre-commit
+        run: python -m pip install --upgrade pip pre-commit
+
+      - name: Run pre-commit
+        run: pre-commit run --all-files
+
+  go:
+    name: Go checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Check formatting
+        run: |
+          set -euo pipefail
+          files="$(gofmt -l $(git ls-files '*.go'))"
+          if [ -n "$files" ]; then
+            echo "$files"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Build binary
+        run: go build -trimpath -o /tmp/kardbrd ./cmd/kardbrd
+
+  docs:
+    name: Docs build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install MkDocs
+        run: python -m pip install --upgrade pip 'mkdocs-material>=9.5,<10'
+
+      - name: Build docs
+        run: mkdocs build --strict
+
+  package-smoke:
+    name: Release package smoke test (${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+
+      - name: Build release-shaped archive
+        env:
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          version="ci-${GITHUB_SHA::12}"
+          archive_dir="kardbrd_${version}_linux_${GOARCH}"
+          mkdir -p "dist/${archive_dir}"
+          CGO_ENABLED=0 GOOS=linux GOARCH="${GOARCH}" go build \
+            -trimpath \
+            -ldflags="-s -w -X github.com/Kardbrd/kardbrd-agent/internal/version.Version=${version}" \
+            -o "dist/${archive_dir}/kardbrd" \
+            ./cmd/kardbrd
+          tar -C dist -czf "dist/${archive_dir}.tar.gz" "${archive_dir}"
+          cd dist
+          sha256sum "${archive_dir}.tar.gz" > checksums.txt
+          sha256sum -c checksums.txt
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kardbrd-ci-linux-${{ matrix.goarch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7

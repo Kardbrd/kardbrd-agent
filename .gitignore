@@ -1,4 +1,8 @@
-# Python
+# Go
+/kardbrd
+coverage.out
+
+# Python docs tooling
 __pycache__/
 *.py[cod]
 *$py.class
@@ -12,12 +16,13 @@ build/
 .venv/
 venv/
 
-# uv
-
 # Environment files
 .env
 .env.*
 !*.env.example
+
+# Local client deployments
+clients/
 
 # IDE
 .idea/
@@ -34,6 +39,9 @@ Thumbs.db
 .coverage
 htmlcov/
 .pytest_cache/
+
+# Docs
+site/
 
 # Claude Code
 .claude/settings.local.json

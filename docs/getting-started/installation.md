@@ -2,36 +2,37 @@
 
 ## Prerequisites
 
-- **Python 3.12+**
-- **[uv](https://docs.astral.sh/uv/)** — Python package manager
-- **git**
-- **One of the following AI agent CLIs:**
-    - [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) — default executor
-    - [Goose](https://block.github.io/goose/) — open-source, multi-provider executor
-    - [Codex CLI](https://github.com/openai/codex) — OpenAI Codex executor
+- Go 1.24+
+- git
+- One executor CLI: Claude, Goose, Codex, or Pi
 
-## Install from source
+## Download Linux binary
+
+Download the release archive for your CPU architecture:
 
 ```bash
-git clone https://github.com/kardbrd/kardbrd-agent.git
+VERSION=v0.1.0
+ARCH=amd64  # or: arm64
+curl -LO "https://github.com/Kardbrd/kardbrd-agent/releases/download/${VERSION}/kardbrd_${VERSION}_linux_${ARCH}.tar.gz"
+curl -LO "https://github.com/Kardbrd/kardbrd-agent/releases/download/${VERSION}/checksums.txt"
+sha256sum -c --ignore-missing checksums.txt
+tar -xzf "kardbrd_${VERSION}_linux_${ARCH}.tar.gz"
+mkdir -p ~/.local/bin
+install -m 0755 "kardbrd_${VERSION}_linux_${ARCH}/kardbrd" ~/.local/bin/kardbrd
+```
+
+## Build from source
+
+```bash
+git clone https://github.com/Kardbrd/kardbrd-agent.git
 cd kardbrd-agent
-uv sync --dev
+go build -o kardbrd ./cmd/kardbrd
 ```
 
-## Install with uvx (no clone)
-
-Run directly from GitHub without cloning:
+Put the binary somewhere on `PATH`:
 
 ```bash
-uvx --from "git+https://github.com/Kardbrd/kardbrd-agent.git" \
-  kardbrd-agent start --cwd /path/to/your/repo
-```
-
-This fetches the latest version automatically. To pin a specific version:
-
-```bash
-uvx --from "git+https://github.com/Kardbrd/kardbrd-agent.git@v1.0.0" \
-  kardbrd-agent start --cwd /path/to/your/repo
+install -m 0755 kardbrd ~/.local/bin/kardbrd
 ```
 
 ## Install executor CLIs
@@ -54,17 +55,15 @@ uvx --from "git+https://github.com/Kardbrd/kardbrd-agent.git@v1.0.0" \
     npm install -g @openai/codex
     ```
 
-## Verify installation
+## Verify
 
 ```bash
-# Check kardbrd-agent
-kardbrd-agent --help
-
-# Check your executor
+kardbrd --help
+kardbrd agent --help
 claude --version     # or: goose --version, codex --version
 ```
 
 ## Next steps
 
-- [Set up authentication](authentication.md) for your board and LLM provider
-- [Quick start guide](quickstart.md) for an end-to-end walkthrough
+- [Set up authentication](authentication.md)
+- [Quick start](quickstart.md)

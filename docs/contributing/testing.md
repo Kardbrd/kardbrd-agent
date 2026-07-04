@@ -1,99 +1,31 @@
 # Testing
 
-## Running tests
+## Run Tests
 
 ```bash
-# All tests
-uv run pytest
-
-# Single file
-uv run pytest kardbrd_agent/tests/test_rules.py
-
-# Specific test
-uv run pytest kardbrd_agent/tests/test_integration.py::TestConcurrentProcessingIntegration
-
-# Verbose output
-uv run pytest -v
-
-# Stop on first failure
-uv run pytest -x
+go test ./...
+go test ./internal/agent
+go test ./internal/cli
+go test ./internal/api
 ```
 
-## Test architecture
+Some API and CLI tests bind local `httptest` servers.
 
-Tests use **pytest** with **pytest-asyncio** for async test support. All async tests are decorated with `@pytest.mark.asyncio`.
+## Coverage Areas
 
-### Fixtures
+| Package | Coverage |
+| --- | --- |
+| `internal/api` | HTTP requests, markdown, attachments, WebSockets |
+| `internal/agent` | event routing, rules, bot card, wizard |
+| `internal/cli` | command tree, output, config diagnostics |
+| `internal/executor` | subprocess command construction and stream parsing |
+| `internal/rules` | loading, validation, matching |
+| `internal/scheduler` | cron and schedule cards |
+| `internal/worktree` | branch naming, worktree commands, symlinks |
 
-Shared fixtures are defined in `kardbrd_agent/tests/conftest.py`:
+## Writing Tests
 
-| Fixture | Description |
-|---------|-------------|
-| `git_repo` | Temporary git repository for worktree testing |
-| `mock_kardbrd_client` | Mocked kardbrd API client |
-| `mock_claude_result` | Pre-built `ExecutorResult` for testing |
-
-### Test files
-
-| File | Coverage |
-|------|----------|
-| `test_rules.py` | Rule engine matching, condition evaluation, validation |
-| `test_executor.py` | Executor Protocol, output parsing, auth checking |
-| `test_integration.py` | End-to-end flows, concurrent processing |
-| `test_worktree.py` | Worktree creation, symlinks, cleanup |
-| `test_scheduler.py` | Cron schedule evaluation, card find-or-create |
-
-## Async test patterns
-
-All I/O-bound tests use async/await:
-
-```python
-import pytest
-
-@pytest.mark.asyncio
-async def test_executor_runs(mock_claude_result):
-    result = await executor.execute(prompt="test", cwd=Path("/tmp"))
-    assert result.success
-```
-
-## Fixtures example
-
-```python
-import pytest
-from kardbrd_agent.executor import ExecutorResult
-
-@pytest.fixture
-def mock_claude_result():
-    return ExecutorResult(
-        success=True,
-        result_text="Task completed successfully",
-        session_id="test-session-123",
-    )
-```
-
-## Pre-commit hooks
-
-Linting and formatting run automatically on commit via pre-commit:
-
-```bash
-# Run all hooks manually
-uv run pre-commit run --all-files
-
-# Run ruff only
-uv run pre-commit run ruff --all-files
-```
-
-Hooks include:
-
-- **ruff** — linting and import sorting
-- **yamllint** — YAML file validation
-- **trailing-whitespace** — removes trailing whitespace
-- **end-of-file-fixer** — ensures files end with newline
-
-## Writing new tests
-
-1. Place tests in `kardbrd_agent/tests/`
-2. Name test files `test_<module>.py`
-3. Use `@pytest.mark.asyncio` for async tests
-4. Use fixtures from `conftest.py` where possible
-5. Tests must pass before committing (`uv run pytest`)
+- Use fakes for network, git, and executor boundaries.
+- Keep tests package-local when they need unexported helpers.
+- Use `httptest` for API and WebSocket behavior.
+- Keep fixtures under `testdata/`.

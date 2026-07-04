@@ -1,82 +1,24 @@
 # API Reference
 
-Auto-generated from source code docstrings.
+The Go code is organized into internal packages. Use `go doc` for symbol-level details:
 
-## Executor Protocol
+```bash
+go doc ./internal/api
+go doc ./internal/agent
+go doc ./internal/executor
+go doc ./internal/rules
+```
 
-::: kardbrd_agent.executor.Executor
-    options:
-      show_source: false
-      members:
-        - execute
-        - build_prompt
-        - extract_command
-        - check_auth
+## Packages
 
-## ExecutorResult
-
-::: kardbrd_agent.executor.ExecutorResult
-
-## AuthStatus
-
-::: kardbrd_agent.executor.AuthStatus
-
-## ClaudeExecutor
-
-::: kardbrd_agent.executor.ClaudeExecutor
-    options:
-      members:
-        - execute
-        - check_auth
-
-## GooseExecutor
-
-::: kardbrd_agent.goose_executor.GooseExecutor
-    options:
-      members:
-        - execute
-        - check_auth
-
-## RuleEngine
-
-::: kardbrd_agent.rules.RuleEngine
-
-## Rule
-
-::: kardbrd_agent.rules.Rule
-
-## Schedule
-
-::: kardbrd_agent.rules.Schedule
-
-## BoardConfig
-
-::: kardbrd_agent.rules.BoardConfig
-
-## ProxyManager
-
-::: kardbrd_agent.manager.ProxyManager
-    options:
-      show_source: false
-      members:
-        - start
-        - stop
-
-## WorktreeManager
-
-::: kardbrd_agent.worktree.WorktreeManager
-    options:
-      members:
-        - create_worktree
-        - remove_worktree
-        - get_worktree_path
-        - list_worktrees
-
-## ScheduleManager
-
-::: kardbrd_agent.scheduler.ScheduleManager
-    options:
-      show_source: false
-      members:
-        - start
-        - stop
+| Package | Purpose |
+| --- | --- |
+| `internal/api` | Kardbrd HTTP and WebSocket clients |
+| `internal/agent` | Agent manager, bot card, wizard, events, sessions |
+| `internal/cli` | Cobra command tree and output formatting |
+| `internal/config` | Environment and flag config loading |
+| `internal/executor` | Claude, Codex, Goose, and Pi subprocess adapters |
+| `internal/prompt` | Prompt construction and local knowledge loading |
+| `internal/rules` | `kardbrd.yml` loading, validation, and matching |
+| `internal/scheduler` | Cron schedule dispatch |
+| `internal/worktree` | Git worktree management |
