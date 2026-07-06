@@ -19,7 +19,7 @@ func (e Codex) CheckAuth(ctx context.Context) AuthStatus {
 	}
 	status := authCommand(ctx, "codex", "login", "status")
 	if !status.Authenticated {
-		status.AuthHint = "Run 'codex login' for subscription access, or set CODEX_API_KEY environment variable."
+		status.AuthHint = "Run 'codex login' for subscription access, or authenticate with OPENAI_API_KEY via `codex login --with-api-key`."
 		return status
 	}
 	status.AuthMethod = "codex"

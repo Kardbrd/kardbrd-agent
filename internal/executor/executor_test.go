@@ -55,6 +55,23 @@ printf '{"type":"item.message","content":"ok"}\n'
 	assertContains(t, args, "--model\ngpt-5.4")
 }
 
+func TestCodexAuthHintMentionsOpenAIAPIKey(t *testing.T) {
+	dir := fakeBinary(t, "codex", `#!/bin/sh
+if [ "$1" = "login" ] && [ "$2" = "status" ]; then
+  echo "not logged in" >&2
+  exit 1
+fi
+exit 0
+`)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	exec := NewCodex(Config{Timeout: testCommandTimeout})
+	status := exec.CheckAuth(context.Background())
+
+	assertEqual(t, false, status.Authenticated)
+	assertContains(t, status.AuthHint, "OPENAI_API_KEY")
+}
+
 func TestGooseExecutorCommand(t *testing.T) {
 	dir := fakeBinary(t, "goose", `#!/bin/sh
 cat >/dev/null

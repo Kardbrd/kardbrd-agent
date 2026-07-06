@@ -45,6 +45,7 @@ services:
 
       # Executor
       - ANTHROPIC_API_KEY
+      - OPENAI_API_KEY
       - KARDBRD_AGENT_EXECUTOR=${KARDBRD_AGENT_EXECUTOR:-claude}
       # - GOOSE_PROVIDER=anthropic
 
@@ -64,6 +65,7 @@ services:
       - ./repository:/home/agent/repository
       - ./workspaces:/home/agent/workspaces
       - ./claude:/home/agent/.claude
+      - ./codex:/home/agent/.codex
       - ./ssh/id_ed25519:/home/agent/.ssh/id_ed25519:ro
 
   # ---------------------------------------------------------------------------

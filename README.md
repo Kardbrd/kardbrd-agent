@@ -31,6 +31,8 @@ export KARDBRD_AGENT_BOARD_ID=<board-id>
 export KARDBRD_AGENT_NAME=<agent-name>
 export KARDBRD_AGENT_CWD=/path/to/your/repo
 export ANTHROPIC_API_KEY=<api-key>
+# For Codex executor:
+# export OPENAI_API_KEY=<api-key>
 
 ./kardbrd agent start
 ```
@@ -117,8 +119,10 @@ docker run --rm \
   -e KARDBRD_AGENT_NAME=<agent-name> \
   -e KARDBRD_AGENT_CWD=/home/agent/repository \
   -e ANTHROPIC_API_KEY=<api-key> \
+  -e OPENAI_API_KEY=<api-key> \
   -v ./repository:/home/agent/repository \
   -v ./workspaces:/home/agent/workspaces \
+  -v ./codex:/home/agent/.codex \
   kardbrd
 ```
 

@@ -9,7 +9,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/kardbrd
 FROM debian:bookworm-slim AS agent
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates git openssh-client curl bash \
+    ca-certificates git openssh-client curl bash nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -g 1000 agent \
@@ -20,6 +20,8 @@ RUN groupadd -g 1000 agent \
 RUN echo "Host *\n    StrictHostKeyChecking accept-new" > /etc/ssh/ssh_config.d/defaults.conf
 
 COPY --from=build /out/kardbrd /usr/local/bin/kardbrd
+
+RUN npm install -g @openai/codex
 
 WORKDIR /app
 ENV PATH="/home/agent/.local/bin:$PATH"

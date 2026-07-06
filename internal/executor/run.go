@@ -55,7 +55,9 @@ func runCommand(ctx context.Context, cfg Config, cwd string, args []string, prom
 
 	err = cmd.Wait()
 	if scanErr := <-scanDone; err == nil && scanErr != nil {
-		err = scanErr
+		if !errors.Is(scanErr, os.ErrClosed) {
+			err = scanErr
+		}
 	}
 	if commandCtx.Err() == context.DeadlineExceeded {
 		return stdoutBuf.String(), stderrBuf.String(), nil, errors.New(timeoutError)

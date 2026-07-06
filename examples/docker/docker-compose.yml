@@ -12,6 +12,7 @@ services:
       - KARDBRD_AGENT_BOARD_ID
       - KARDBRD_AGENT_NAME
       - ANTHROPIC_API_KEY
+      - OPENAI_API_KEY
       - KARDBRD_AGENT_CWD=/home/agent/repository
       - KARDBRD_AGENT_WORKTREES_DIR=/home/agent/workspaces
       - KARDBRD_AGENT_SETUP_CMD=${KARDBRD_AGENT_SETUP_CMD:-}
@@ -32,6 +33,9 @@ services:
 
       # Claude CLI home (API creds, session data, settings)
       - ./claude:/home/agent/.claude
+
+      # Codex CLI home (API creds, session data, settings)
+      - ./codex:/home/agent/.codex
 
       # SSH key (read-only) — use a DEDICATED key, not personal
       - ./ssh/id_ed25519:/home/agent/.ssh/id_ed25519:ro
