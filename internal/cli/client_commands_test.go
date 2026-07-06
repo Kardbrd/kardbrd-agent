@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -145,6 +146,185 @@ func TestCommentAddExpandsEscapedNewlines(t *testing.T) {
 		t.Fatalf("unexpected error: %v\nstderr: %s", err, stderr)
 	}
 	assertEqual(t, "Ready to roll.\n\n@Paul", body["content"])
+}
+
+func TestPublishingCommandsExpandEscapedNewlines(t *testing.T) {
+	value := "First\\n\\nSecond"
+	wantValue := "First\n\nSecond"
+
+	tests := []struct {
+		name     string
+		method   string
+		path     string
+		args     []string
+		wantBody map[string]any
+	}{
+		{
+			name:     "board update name",
+			method:   "PATCH",
+			path:     "/api/boards/board1/",
+			args:     []string{"board", "update", "board1", "--name", value},
+			wantBody: map[string]any{"name": wantValue},
+		},
+		{
+			name:   "card create title and description",
+			method: "POST",
+			path:   "/api/boards/board1/lists/list1/cards/",
+			args:   []string{"card", "create", "--board", "board1", "--list", "list1", "--title", value, "--description", value},
+			wantBody: map[string]any{
+				"title":       wantValue,
+				"description": wantValue,
+			},
+		},
+		{
+			name:   "card update title and description",
+			method: "POST",
+			path:   "/api/cards/card1/",
+			args:   []string{"card", "update", "card1", "--title", value, "--description", value},
+			wantBody: map[string]any{
+				"title":       wantValue,
+				"description": wantValue,
+			},
+		},
+		{
+			name:     "checklist create title",
+			method:   "POST",
+			path:     "/api/cards/card1/checklists/",
+			args:     []string{"checklist", "create", "card1", "--title", value},
+			wantBody: map[string]any{"title": wantValue},
+		},
+		{
+			name:     "checklist add todo title",
+			method:   "POST",
+			path:     "/api/cards/card1/checklists/check1/items/",
+			args:     []string{"checklist", "add-todo", "card1", "--checklist", "check1", "--title", value},
+			wantBody: map[string]any{"title": wantValue},
+		},
+		{
+			name:   "checklist add todos title and items",
+			method: "POST",
+			path:   "/api/cards/card1/checklists/bulk/",
+			args:   []string{"checklist", "add-todos", "card1", "--title", value, value, "Plain"},
+			wantBody: map[string]any{
+				"title": wantValue,
+				"items": []any{wantValue, "Plain"},
+			},
+		},
+		{
+			name:     "checklist update title",
+			method:   "PATCH",
+			path:     "/api/cards/card1/checklists/check1/items/item1/",
+			args:     []string{"checklist", "update", "card1", "--checklist", "check1", "--item", "item1", "--title", value},
+			wantBody: map[string]any{"title": wantValue},
+		},
+		{
+			name:     "checklist extract todos prefix",
+			method:   "POST",
+			path:     "/api/cards/card1/extract-todos-to-cards/",
+			args:     []string{"checklist", "extract", "card1", "--target-list", "list1", "--prefix", value},
+			wantBody: map[string]any{"prefix": wantValue},
+		},
+		{
+			name:     "checklist extract checklist prefix",
+			method:   "POST",
+			path:     "/api/cards/card1/checklists/check1/extract-to-cards/",
+			args:     []string{"checklist", "extract", "card1", "--checklist", "check1", "--target-list", "list1", "--prefix", value},
+			wantBody: map[string]any{"prefix": wantValue},
+		},
+		{
+			name:     "link add display text",
+			method:   "POST",
+			path:     "/api/cards/card1/links/",
+			args:     []string{"link", "add", "card1", "https://example.com", "--text", value},
+			wantBody: map[string]any{"display_text": wantValue},
+		},
+		{
+			name:     "link update display text",
+			method:   "PATCH",
+			path:     "/api/cards/card1/links/link1/",
+			args:     []string{"link", "update", "card1", "link1", "--text", value},
+			wantBody: map[string]any{"display_text": wantValue},
+		},
+		{
+			name:     "list create name",
+			method:   "POST",
+			path:     "/api/boards/board1/lists/",
+			args:     []string{"list", "create", "board1", "--name", value},
+			wantBody: map[string]any{"name": wantValue},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != tt.method || r.URL.Path != tt.path {
+					t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				writeCLITestJSON(t, w, map[string]any{"data": map[string]string{"id": "ok"}})
+			}))
+			defer server.Close()
+
+			args := append([]string{"--api-url", server.URL, "--token", "tok"}, tt.args...)
+			_, stderr, err := executeRoot(args...)
+			if err != nil {
+				t.Fatalf("unexpected error: %v\nstderr: %s", err, stderr)
+			}
+			for key, want := range tt.wantBody {
+				if !reflect.DeepEqual(want, body[key]) {
+					t.Fatalf("%s: want %#v, got %#v", key, want, body[key])
+				}
+			}
+		})
+	}
+}
+
+func TestAttachmentMarkdownContentExpandsEscapedNewlines(t *testing.T) {
+	var uploadedBody string
+	uploadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PUT" {
+			t.Fatalf("unexpected upload request %s", r.Method)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		uploadedBody = string(body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer uploadServer.Close()
+
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/cards/card1/attachments/presign/":
+			if r.Method != "POST" {
+				t.Fatalf("unexpected presign method %s", r.Method)
+			}
+			writeCLITestJSON(t, w, map[string]any{
+				"data": map[string]string{
+					"upload_url": uploadServer.URL,
+					"s3_key":     "uploads/notes.md",
+				},
+			})
+		case "/api/cards/card1/attachments/confirm/":
+			if r.Method != "POST" {
+				t.Fatalf("unexpected confirm method %s", r.Method)
+			}
+			writeCLITestJSON(t, w, map[string]any{"data": map[string]string{"id": "att1"}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer apiServer.Close()
+
+	_, stderr, err := executeRoot("--api-url", apiServer.URL, "--token", "tok", "attachment", "markdown", "card1", "--filename", "notes.md", "--content", "First\\n\\nSecond")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr: %s", err, stderr)
+	}
+	assertEqual(t, "First\n\nSecond", uploadedBody)
 }
 
 func TestCardUpdateAcceptsLabelIDsAlias(t *testing.T) {
