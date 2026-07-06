@@ -226,7 +226,7 @@ func boardUpdate(root *rootOptions) *cobra.Command {
 	var name string
 	cmd := jsonCommand("update BOARD_ID", "Update a board's name", cobra.ExactArgs(1), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
 		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
-			return client.UpdateBoard(ctx, args[0], name)
+			return client.UpdateBoard(ctx, args[0], expandPublishedText(name))
 		}
 	})
 	cmd.Flags().StringVar(&name, "name", "", "New board name")
@@ -297,7 +297,7 @@ func cardCreate(root *rootOptions) *cobra.Command {
 	var boardID, listID, title, description string
 	cmd := jsonCommand("create", "Create a new card in a list", cobra.NoArgs, root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
 		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
-			return client.CreateCard(ctx, boardID, listID, title, description)
+			return client.CreateCard(ctx, boardID, listID, expandPublishedText(title), expandPublishedText(description))
 		}
 	})
 	cmd.Flags().StringVar(&boardID, "board", "", "Board ID")
@@ -315,7 +315,7 @@ func cardUpdate(root *rootOptions) *cobra.Command {
 	var labelIDs []string
 	cmd := jsonCommand("update CARD_ID", "Update a card's fields", cobra.ExactArgs(1), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
 		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
-			patch, err := buildCardPatch(title, description, dueDate, assigneeID, labelIDs)
+			patch, err := buildCardPatch(expandPublishedText(title), expandPublishedText(description), dueDate, assigneeID, labelIDs)
 			if err != nil {
 				return nil, err
 			}
@@ -412,7 +412,7 @@ func newCommentCommand(root *rootOptions) *cobra.Command {
 	group.AddCommand(
 		jsonCommand("add CARD_ID MESSAGE", "Add a comment to a card", cobra.ExactArgs(2), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
 			return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
-				return client.AddComment(ctx, args[0], args[1])
+				return client.AddComment(ctx, args[0], expandPublishedText(args[1]))
 			}
 		}),
 		&cobra.Command{
@@ -450,7 +450,7 @@ func checklistCreate(root *rootOptions) *cobra.Command {
 	var title string
 	cmd := jsonCommand("create CARD_ID", "Create a new checklist on a card", cobra.ExactArgs(1), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
 		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
-			return client.CreateChecklist(ctx, args[0], title)
+			return client.CreateChecklist(ctx, args[0], expandPublishedText(title))
 		}
 	})
 	cmd.Flags().StringVar(&title, "title", "", "Checklist title")
@@ -462,7 +462,7 @@ func checklistAddTodo(root *rootOptions) *cobra.Command {
 	var checklistID, title string
 	cmd := jsonCommand("add-todo CARD_ID", "Add a todo item to a checklist", cobra.ExactArgs(1), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
 		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
-			return client.AddTodo(ctx, args[0], checklistID, title)
+			return client.AddTodo(ctx, args[0], checklistID, expandPublishedText(title))
 		}
 	})
 	cmd.Flags().StringVar(&checklistID, "checklist", "", "Checklist ID")
@@ -476,7 +476,7 @@ func checklistAddTodos(root *rootOptions) *cobra.Command {
 	var title string
 	cmd := jsonCommand("add-todos CARD_ID ITEMS...", "Create a checklist with multiple items at once", cobra.MinimumNArgs(2), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
 		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
-			return client.AddTodos(ctx, args[0], title, args[1:])
+			return client.AddTodos(ctx, args[0], expandPublishedText(title), expandPublishedTextSlice(args[1:]))
 		}
 	})
 	cmd.Flags().StringVar(&title, "title", "", "Checklist title")
@@ -492,7 +492,7 @@ func checklistUpdate(root *rootOptions) *cobra.Command {
 	var assignees []string
 	cmd := jsonCommand("update CARD_ID", "Update a todo item", cobra.ExactArgs(1), root, func(cmd *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
 		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
-			patch, err := buildTodoPatch(title, dueDate, completed, completedSet, assignees)
+			patch, err := buildTodoPatch(expandPublishedText(title), dueDate, completed, completedSet, assignees)
 			if err != nil {
 				return nil, err
 			}
@@ -546,9 +546,9 @@ func checklistExtract(root *rootOptions) *cobra.Command {
 	cmd := jsonCommand("extract CARD_ID", "Extract todos into separate cards", cobra.ExactArgs(1), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
 		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
 			if checklistID != "" {
-				return client.ExtractChecklistToCards(ctx, args[0], checklistID, targetListID, prefix)
+				return client.ExtractChecklistToCards(ctx, args[0], checklistID, targetListID, expandPublishedText(prefix))
 			}
-			return client.ExtractTodosToCards(ctx, args[0], targetListID, prefix)
+			return client.ExtractTodosToCards(ctx, args[0], targetListID, expandPublishedText(prefix))
 		}
 	})
 	cmd.Flags().StringVar(&targetListID, "target-list", "", "Target list ID")
@@ -625,7 +625,7 @@ func linkAdd(root *rootOptions) *cobra.Command {
 	var displayText string
 	cmd := jsonCommand("add CARD_ID URL", "Add a URL link to a card", cobra.ExactArgs(2), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
 		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
-			return client.AddCardLink(ctx, args[0], args[1], displayText)
+			return client.AddCardLink(ctx, args[0], args[1], expandPublishedText(displayText))
 		}
 	})
 	cmd.Flags().StringVar(&displayText, "text", "", "Display text for the link")
@@ -636,7 +636,7 @@ func linkUpdate(root *rootOptions) *cobra.Command {
 	var linkURL, displayText string
 	cmd := jsonCommand("update CARD_ID LINK_ID", "Update a link", cobra.ExactArgs(2), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
 		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
-			patch, err := buildLinkPatch(linkURL, displayText)
+			patch, err := buildLinkPatch(linkURL, expandPublishedText(displayText))
 			if err != nil {
 				return nil, err
 			}
@@ -709,7 +709,7 @@ func listCreate(root *rootOptions) *cobra.Command {
 	var name string
 	cmd := jsonCommand("create BOARD_ID", "Create a new list on a board", cobra.ExactArgs(1), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
 		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
-			return client.CreateList(ctx, args[0], name)
+			return client.CreateList(ctx, args[0], expandPublishedText(name))
 		}
 	})
 	cmd.Flags().StringVar(&name, "name", "", "List name")
@@ -761,6 +761,18 @@ func extractMembersSection(markdown string) string {
 		return "No members section found."
 	}
 	return strings.TrimSpace(strings.Join(out, "\n")) + "\n"
+}
+
+func expandPublishedText(value string) string {
+	return strings.ReplaceAll(value, `\n`, "\n")
+}
+
+func expandPublishedTextSlice(values []string) []string {
+	out := make([]string, len(values))
+	for i, value := range values {
+		out[i] = expandPublishedText(value)
+	}
+	return out
 }
 
 func buildCardPatch(title, description, dueDate, assigneeID string, labelIDs []string) (api.CardPatch, error) {
@@ -828,7 +840,7 @@ func contentFromFlags(content, contentFile string, stdin io.Reader) (string, err
 		return "", fmt.Errorf("--content and --content-file are mutually exclusive")
 	}
 	if content != "" {
-		return content, nil
+		return expandPublishedText(content), nil
 	}
 	if contentFile == "" {
 		return "", fmt.Errorf("--content or --content-file is required")
