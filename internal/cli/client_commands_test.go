@@ -127,6 +127,26 @@ func TestCommentDeleteConfirmation(t *testing.T) {
 	}
 }
 
+func TestCommentAddExpandsEscapedNewlines(t *testing.T) {
+	var body map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" || r.URL.Path != "/api/cards/card1/comments/" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		writeCLITestJSON(t, w, map[string]any{"data": map[string]string{"id": "comment1"}})
+	}))
+	defer server.Close()
+
+	_, stderr, err := executeRoot("--api-url", server.URL, "--token", "tok", "comment", "add", "card1", "Ready to roll.\\n\\n@Paul")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr: %s", err, stderr)
+	}
+	assertEqual(t, "Ready to roll.\n\n@Paul", body["content"])
+}
+
 func TestCardUpdateAcceptsLabelIDsAlias(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

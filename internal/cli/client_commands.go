@@ -412,7 +412,7 @@ func newCommentCommand(root *rootOptions) *cobra.Command {
 	group.AddCommand(
 		jsonCommand("add CARD_ID MESSAGE", "Add a comment to a card", cobra.ExactArgs(2), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
 			return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
-				return client.AddComment(ctx, args[0], args[1])
+				return client.AddComment(ctx, args[0], expandCommentMessage(args[1]))
 			}
 		}),
 		&cobra.Command{
@@ -438,6 +438,10 @@ func newCommentCommand(root *rootOptions) *cobra.Command {
 		}),
 	)
 	return group
+}
+
+func expandCommentMessage(message string) string {
+	return strings.ReplaceAll(message, `\n`, "\n")
 }
 
 func newChecklistCommand(root *rootOptions) *cobra.Command {
