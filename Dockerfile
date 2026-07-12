@@ -21,7 +21,7 @@ RUN echo "Host *\n    StrictHostKeyChecking accept-new" > /etc/ssh/ssh_config.d/
 
 COPY --from=build /out/kardbrd /usr/local/bin/kardbrd
 
-RUN npm install -g @openai/codex
+RUN npm install -g @openai/codex@0.144.1
 
 WORKDIR /app
 ENV PATH="/home/agent/.local/bin:$PATH"

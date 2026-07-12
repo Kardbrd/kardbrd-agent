@@ -30,7 +30,8 @@ rules:
     list: To Do
     assignee:
       - __self__
-    model: opus
+    model: gpt-5.6-terra
+    reasoning: xhigh
     action: /explore
 
   # Card moves to In Progress → implement
@@ -38,7 +39,8 @@ rules:
     event: card_moved
     list: In Progress
     require_label: Agent
-    model: sonnet
+    model: gpt-5.6-terra
+    reasoning: xhigh
     action: /implement
 
   # ── Reaction-based triggers ────────────────────────────────────
@@ -49,7 +51,8 @@ rules:
     emoji: "✅"
     require_label: Agent
     require_user: E21K9jmv
-    model: sonnet
+    model: gpt-5.6-terra
+    reasoning: xhigh
     action: |
       The operator approved this card by reacting with ✅.
       Ship this card to production (merge the PR into main):
