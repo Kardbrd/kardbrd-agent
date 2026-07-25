@@ -33,6 +33,8 @@ func TestBuildPromptForSlashCommandIncludesAgentFilesKnowledgeAndCLIInstructions
 	assertContains(t, got, "**Card ID:** card1")
 	assertContains(t, got, "# Card\nDetails")
 	assertContains(t, got, "kardbrd board labels board1")
+	assertContains(t, got, "kardbrd card update card1 --label-ids ID1 --label-ids ID2")
+	assertContains(t, got, "kardbrd card update card1 --clear-labels")
 	assertContains(t, got, "kardbrd comment add card1")
 	assertContains(t, got, "End your comment by mentioning the requester: @alice")
 }

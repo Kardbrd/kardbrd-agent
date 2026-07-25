@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -327,26 +328,79 @@ func TestAttachmentMarkdownContentExpandsEscapedNewlines(t *testing.T) {
 	assertEqual(t, "First\n\nSecond", uploadedBody)
 }
 
-func TestCardUpdateAcceptsLabelIDsAlias(t *testing.T) {
-	var body map[string]any
+func TestCardLabelReplacementUsesDedicatedEndpoints(t *testing.T) {
+	type label struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+
+	labels := []label{{ID: "A", Name: "A"}, {ID: "B", Name: "B"}}
+	validLabels := []label{{ID: "A", Name: "A"}, {ID: "B", Name: "B"}, {ID: "C", Name: "C"}}
+	var additions, removals []string
+	genericUpdates := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" || r.URL.Path != "/api/cards/card1/" {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/cards/card1/":
+			writeCLITestJSON(t, w, map[string]any{"data": map[string]any{
+				"id": "card1", "board": map[string]string{"id": "board1"}, "labels": labels,
+			}})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/boards/board1/":
+			writeCLITestJSON(t, w, map[string]any{"data": map[string]any{"id": "board1", "labels": validLabels}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/cards/card1/labels/":
+			var body struct {
+				LabelID string `json:"label_id"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			additions = append(additions, body.LabelID)
+			for _, candidate := range validLabels {
+				if candidate.ID == body.LabelID {
+					labels = append(labels, candidate)
+				}
+			}
+			writeCLITestJSON(t, w, map[string]any{"data": map[string]any{}})
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/cards/card1/labels/"):
+			labelID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/cards/card1/labels/"), "/")
+			removals = append(removals, labelID)
+			for index, candidate := range labels {
+				if candidate.ID == labelID {
+					labels = append(labels[:index], labels[index+1:]...)
+					break
+				}
+			}
+			writeCLITestJSON(t, w, map[string]any{"data": map[string]any{}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/cards/card1/":
+			genericUpdates++
+			writeCLITestJSON(t, w, map[string]any{"data": map[string]string{"id": "card1"}})
+		default:
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatal(err)
-		}
-		writeCLITestJSON(t, w, map[string]any{"data": map[string]string{"id": "card1"}})
 	}))
 	defer server.Close()
 
-	_, stderr, err := executeRoot("--api-url", server.URL, "--token", "tok", "card", "update", "card1", "--label-ids", "lbl1", "--label-ids", "lbl2")
+	stdout, stderr, err := executeRoot("--api-url", server.URL, "--token", "tok", "card", "update", "card1", "--label-ids", "B", "--label-ids", "C")
 	if err != nil {
 		t.Fatalf("unexpected error: %v\nstderr: %s", err, stderr)
 	}
-	labels := body["label_ids"].([]any)
-	assertEqual(t, "lbl1", labels[0].(string))
-	assertEqual(t, "lbl2", labels[1].(string))
+	if !reflect.DeepEqual(additions, []string{"C"}) {
+		t.Fatalf("additions = %#v, want []string{\"C\"}", additions)
+	}
+	if !reflect.DeepEqual(removals, []string{"A"}) {
+		t.Fatalf("removals = %#v, want []string{\"A\"}", removals)
+	}
+	if genericUpdates != 0 {
+		t.Fatalf("generic card updates = %d, want 0", genericUpdates)
+	}
+	var result struct {
+		Labels []label `json:"labels"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result.Labels, []label{{ID: "B", Name: "B"}, {ID: "C", Name: "C"}}) {
+		t.Fatalf("final labels = %#v", result.Labels)
+	}
 }
 
 func TestChecklistUpdateAcceptsNoCompleted(t *testing.T) {

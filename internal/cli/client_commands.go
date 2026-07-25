@@ -158,11 +158,25 @@ func boardList(root *rootOptions) *cobra.Command {
 }
 
 func boardLabels(root *rootOptions) *cobra.Command {
-	return jsonCommand("labels BOARD_ID", "Get all labels defined on a board", cobra.ExactArgs(1), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
-		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
-			return client.GetBoardLabels(ctx, args[0])
-		}
-	})
+	return &cobra.Command{
+		Use:   "labels BOARD_ID",
+		Short: "Get all labels defined on a board",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if root.format == "md" {
+				return runMarkdown(cmd, root, func(ctx context.Context, client *api.Client) (string, error) {
+					markdown, err := client.GetBoardMarkdown(ctx, args[0], false)
+					if err != nil {
+						return "", err
+					}
+					return extractLabelsSection(markdown), nil
+				})
+			}
+			return runJSON(cmd, root, func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
+				return client.GetBoardLabels(ctx, args[0])
+			})
+		},
+	}
 }
 
 func boardActivity(root *rootOptions) *cobra.Command {
@@ -313,21 +327,81 @@ func cardCreate(root *rootOptions) *cobra.Command {
 func cardUpdate(root *rootOptions) *cobra.Command {
 	var title, description, dueDate, assigneeID string
 	var labelIDs []string
-	cmd := jsonCommand("update CARD_ID", "Update a card's fields", cobra.ExactArgs(1), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
-		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
-			patch, err := buildCardPatch(expandPublishedText(title), expandPublishedText(description), dueDate, assigneeID, labelIDs)
-			if err != nil {
-				return nil, err
+	var clearLabels bool
+	cmd := &cobra.Command{
+		Use:   "update CARD_ID",
+		Short: "Update a card's fields",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			labelReplace := cmd.Flags().Changed("label") || cmd.Flags().Changed("label-ids") || clearLabels
+			if clearLabels && (cmd.Flags().Changed("label") || cmd.Flags().Changed("label-ids")) {
+				return fmt.Errorf("--clear-labels cannot be combined with --label or --label-ids")
 			}
-			return client.UpdateCard(ctx, args[0], patch)
-		}
-	})
+
+			patch := buildCardPatch(expandPublishedText(title), expandPublishedText(description), dueDate, assigneeID)
+			if !hasCardPatchUpdates(patch) && !labelReplace {
+				return fmt.Errorf("at least one update flag is required")
+			}
+
+			client, err := newClient(root)
+			if err != nil {
+				return err
+			}
+			ctx := cmd.Context()
+			if !labelReplace {
+				raw, err := client.UpdateCard(ctx, args[0], patch)
+				if err != nil {
+					return err
+				}
+				return outputRawJSON(cmd.OutOrStdout(), raw)
+			}
+
+			state, err := client.GetCardLabelState(ctx, args[0])
+			if err != nil {
+				return err
+			}
+			catalog, err := client.GetBoardLabelCatalog(ctx, state.Board.ID)
+			if err != nil {
+				return err
+			}
+			desiredLabelIDs := labelIDs
+			if clearLabels {
+				desiredLabelIDs = nil
+			}
+			plan, err := reconcileLabelIDs(labelIDsFromLabels(state.Labels), labelIDsFromLabels(catalog.Labels), desiredLabelIDs)
+			if err != nil {
+				return err
+			}
+
+			if hasCardPatchUpdates(patch) {
+				if _, err := client.UpdateCard(ctx, args[0], patch); err != nil {
+					return fmt.Errorf("card scalar update failed before label reconciliation: %w", err)
+				}
+			}
+			for _, labelID := range plan.Additions {
+				if err := client.AddCardLabel(ctx, args[0], labelID); err != nil {
+					return fmt.Errorf("label reconciliation incomplete while adding %q; no removals attempted: %w", labelID, err)
+				}
+			}
+			for _, labelID := range plan.Removals {
+				if err := client.RemoveCardLabel(ctx, args[0], labelID); err != nil {
+					return fmt.Errorf("label reconciliation incomplete while removing %q: %w", labelID, err)
+				}
+			}
+			raw, err := client.GetCard(ctx, args[0])
+			if err != nil {
+				return fmt.Errorf("label reconciliation completed but final card refresh failed: %w", err)
+			}
+			return outputRawJSON(cmd.OutOrStdout(), raw)
+		},
+	}
 	cmd.Flags().StringVar(&title, "title", "", "New title")
 	cmd.Flags().StringVar(&description, "description", "", "New description")
 	cmd.Flags().StringVar(&dueDate, "due", "", "Due date")
 	cmd.Flags().StringVar(&assigneeID, "assignee", "", "Assignee user ID")
-	cmd.Flags().StringArrayVar(&labelIDs, "label", nil, "Label IDs")
-	cmd.Flags().StringArrayVar(&labelIDs, "label-ids", nil, "Label IDs")
+	cmd.Flags().StringArrayVar(&labelIDs, "label", nil, "Label ID in the complete desired label set; repeat for each label")
+	cmd.Flags().StringArrayVar(&labelIDs, "label-ids", nil, "Label ID in the complete desired label set; repeat for each label")
+	cmd.Flags().BoolVar(&clearLabels, "clear-labels", false, "Replace the card's labels with an empty set")
 	return cmd
 }
 
@@ -741,24 +815,32 @@ func jsonCommand(use string, short string, args cobra.PositionalArgs, root *root
 }
 
 func extractMembersSection(markdown string) string {
+	return extractMarkdownSection(markdown, "## Members", "No members section found.")
+}
+
+func extractLabelsSection(markdown string) string {
+	return extractMarkdownSection(markdown, "## Labels", "No labels section found.")
+}
+
+func extractMarkdownSection(markdown, heading, emptyMessage string) string {
 	lines := strings.Split(markdown, "\n")
 	var out []string
-	inMembers := false
+	inSection := false
 	for _, line := range lines {
-		if strings.HasPrefix(line, "## Members") {
-			inMembers = true
+		if strings.HasPrefix(line, heading) {
+			inSection = true
 			out = append(out, line)
 			continue
 		}
-		if inMembers && strings.HasPrefix(line, "## ") {
+		if inSection && strings.HasPrefix(line, "## ") {
 			break
 		}
-		if inMembers {
+		if inSection {
 			out = append(out, line)
 		}
 	}
 	if len(out) == 0 {
-		return "No members section found."
+		return emptyMessage
 	}
 	return strings.TrimSpace(strings.Join(out, "\n")) + "\n"
 }
@@ -775,7 +857,7 @@ func expandPublishedTextSlice(values []string) []string {
 	return out
 }
 
-func buildCardPatch(title, description, dueDate, assigneeID string, labelIDs []string) (api.CardPatch, error) {
+func buildCardPatch(title, description, dueDate, assigneeID string) api.CardPatch {
 	patch := api.CardPatch{}
 	if title != "" {
 		patch.Title = &title
@@ -790,14 +872,19 @@ func buildCardPatch(title, description, dueDate, assigneeID string, labelIDs []s
 		patch.AssigneeID = &assigneeID
 		patch.AssigneeSet = true
 	}
-	if len(labelIDs) > 0 {
-		patch.LabelIDs = labelIDs
-		patch.LabelSet = true
+	return patch
+}
+
+func hasCardPatchUpdates(patch api.CardPatch) bool {
+	return patch.Title != nil || patch.Description != nil || patch.DueDate != nil || patch.AssigneeSet
+}
+
+func labelIDsFromLabels(labels []api.Label) []string {
+	labelIDs := make([]string, 0, len(labels))
+	for _, label := range labels {
+		labelIDs = append(labelIDs, label.ID)
 	}
-	if patch.Title == nil && patch.Description == nil && patch.DueDate == nil && !patch.AssigneeSet && !patch.LabelSet {
-		return patch, fmt.Errorf("at least one update flag is required")
-	}
-	return patch, nil
+	return labelIDs
 }
 
 func buildTodoPatch(title, dueDate string, completed bool, completedSet bool, assignees []string) (api.TodoPatch, error) {

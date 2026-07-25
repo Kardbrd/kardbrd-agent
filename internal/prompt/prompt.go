@@ -97,10 +97,11 @@ DO NOT just output text - you must use the kardbrd CLI to post your response.
 Cards may have labels (shown as "Labels: ..." in card markdown).
 Available CLI commands:
 - `+"`"+`kardbrd board labels %s`+"`"+` to discover available labels
-- `+"`"+`kardbrd card update %s --label-ids ID1 ID2`+"`"+` to set labels
+- `+"`"+`kardbrd card update %s --label-ids ID1 --label-ids ID2`+"`"+` to replace labels
+- `+"`"+`kardbrd card update %s --clear-labels`+"`"+` to remove every label
 
-**Important:** `+"`"+`--label-ids`+"`"+` does a full replace - to add a label, first read current labels, then send the full list.
-`, req.BoardID, req.CardID)
+**Important:** `+"`"+`--label`+"`"+` and `+"`"+`--label-ids`+"`"+` are repeatable aliases for the complete desired label set. Include labels you want to keep; `+"`"+`--clear-labels`+"`"+` cannot be combined with either alias.
+`, req.BoardID, req.CardID, req.CardID)
 
 		cliInstructions = fmt.Sprintf(`
 ## kardbrd CLI Reference

@@ -61,6 +61,40 @@ kardbrd md card <card-id>
 kardbrd comment add <card-id> "Done. @alice"
 ```
 
+### Labels
+
+Discover the labels available to a board from its board-detail response:
+
+```bash
+kardbrd board labels BOARD_ID
+kardbrd --format md board labels BOARD_ID
+```
+
+JSON output is the label collection itself. Markdown output is the Labels
+section from the board detail.
+
+`card update --label` and `--label-ids` are repeatable aliases. They replace
+the complete desired label set, rather than adding labels to the existing set:
+
+```bash
+# Keep LABEL_A and LABEL_B, removing every other label from the card.
+kardbrd card update CARD_ID --label-ids LABEL_A --label-ids LABEL_B
+
+# Remove every label explicitly.
+kardbrd card update CARD_ID --clear-labels
+```
+
+The CLI de-duplicates requested IDs, validates every requested label against
+the card's board before mutation, adds missing labels before removing obsolete
+ones, and does nothing for an already-matching set. `--clear-labels` cannot be
+combined with `--label` or `--label-ids`.
+
+Scalar card fields and labels use separate server endpoints. A command that
+updates both is therefore not database-atomic: scalar changes can succeed
+before label reconciliation fails. The command exits non-zero with a clear
+reconciliation error; retrying the same complete desired set converges without
+duplicate effects.
+
 ## Legacy Env Names
 
 Old agent env names are rejected with explicit rename messages:
