@@ -61,7 +61,7 @@ func (s *labelContractServer) handle(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/boards/board1/":
 		s.calls = append(s.calls, "get-board")
 		if r.Header.Get("Accept") == "text/markdown" {
-			_, _ = w.Write([]byte("# Board\n\n## Labels\n\n- A\n- B\n\n## Lists\n\n- Todo\n"))
+			_, _ = w.Write([]byte("# Board\n\n## Lists\n\n- Todo\n"))
 			return
 		}
 		writeCLITestJSON(s.t, w, map[string]any{"data": map[string]any{"id": "board1", "labels": s.catalog}})
@@ -305,7 +305,7 @@ func TestBoardLabelsExtractsDetailCatalogInJSONAndMarkdown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("markdown labels error: %v\nstderr: %s", err, stderr)
 	}
-	if stdout != "## Labels\n\n- A\n- B\n" {
+	if stdout != "## Labels\n\n- A (`A`)\n- B (`B`)\n- C (`C`)\n" {
 		t.Fatalf("markdown labels = %q", stdout)
 	}
 }

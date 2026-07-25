@@ -165,11 +165,11 @@ func boardLabels(root *rootOptions) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if root.format == "md" {
 				return runMarkdown(cmd, root, func(ctx context.Context, client *api.Client) (string, error) {
-					markdown, err := client.GetBoardMarkdown(ctx, args[0], false)
+					catalog, err := client.GetBoardLabelCatalog(ctx, args[0])
 					if err != nil {
 						return "", err
 					}
-					return extractLabelsSection(markdown), nil
+					return formatLabelsMarkdown(catalog.Labels), nil
 				})
 			}
 			return runJSON(cmd, root, func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
@@ -818,10 +818,6 @@ func extractMembersSection(markdown string) string {
 	return extractMarkdownSection(markdown, "## Members", "No members section found.")
 }
 
-func extractLabelsSection(markdown string) string {
-	return extractMarkdownSection(markdown, "## Labels", "No labels section found.")
-}
-
 func extractMarkdownSection(markdown, heading, emptyMessage string) string {
 	lines := strings.Split(markdown, "\n")
 	var out []string
@@ -843,6 +839,23 @@ func extractMarkdownSection(markdown, heading, emptyMessage string) string {
 		return emptyMessage
 	}
 	return strings.TrimSpace(strings.Join(out, "\n")) + "\n"
+}
+
+func formatLabelsMarkdown(labels []api.Label) string {
+	var out strings.Builder
+	out.WriteString("## Labels\n\n")
+	if len(labels) == 0 {
+		out.WriteString("_No labels defined._\n")
+		return out.String()
+	}
+	for _, label := range labels {
+		name := label.Name
+		if name == "" {
+			name = label.ID
+		}
+		fmt.Fprintf(&out, "- %s (`%s`)\n", name, label.ID)
+	}
+	return out.String()
 }
 
 func expandPublishedText(value string) string {
