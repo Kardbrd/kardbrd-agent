@@ -70,8 +70,8 @@ kardbrd board labels BOARD_ID
 kardbrd --format md board labels BOARD_ID
 ```
 
-JSON output is the label collection itself. Markdown output is the Labels
-section from the board detail.
+JSON output is the label collection itself. Markdown output is a label list
+rendered from that same board-detail catalog, including each label ID.
 
 `card update --label` and `--label-ids` are repeatable aliases. They replace
 the complete desired label set, rather than adding labels to the existing set:
