@@ -41,8 +41,31 @@ type CardPatch struct {
 	DueDate     *string
 	AssigneeID  *string
 	AssigneeSet bool
-	LabelIDs    []string
-	LabelSet    bool
+}
+
+// Label is the minimal label representation returned by card and board detail
+// endpoints.
+type Label struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Color string `json:"color"`
+}
+
+// CardLabelState is the subset of a card response required to reconcile its
+// label set.
+type CardLabelState struct {
+	ID    string `json:"id"`
+	Board struct {
+		ID string `json:"id"`
+	} `json:"board"`
+	Labels []Label `json:"labels"`
+}
+
+// BoardLabelCatalog is the subset of a board response required to validate
+// card labels.
+type BoardLabelCatalog struct {
+	ID     string  `json:"id"`
+	Labels []Label `json:"labels"`
 }
 
 type TodoPatch struct {
@@ -198,7 +221,11 @@ func (c *Client) doMarkdown(ctx context.Context, path string) (string, error) {
 }
 
 func parseAPIError(status int, data []byte) error {
-	apiErr := &APIError{StatusCode: status, Message: strings.TrimSpace(string(data))}
+	message := strings.TrimSpace(string(data))
+	if strings.HasPrefix(message, "<") {
+		message = "API returned an HTML error response"
+	}
+	apiErr := &APIError{StatusCode: status, Message: message}
 	var payload struct {
 		Error string `json:"error"`
 		Code  string `json:"code"`
@@ -237,7 +264,15 @@ func (c *Client) GetBoardMarkdown(ctx context.Context, boardID string, includeAr
 }
 
 func (c *Client) GetBoardLabels(ctx context.Context, boardID string) (json.RawMessage, error) {
-	return c.RequestRaw(ctx, "GET", "/api/boards/"+url.PathEscape(boardID)+"/labels/", nil)
+	catalog, err := c.GetBoardLabelCatalog(ctx, boardID)
+	if err != nil {
+		return nil, err
+	}
+	labels, err := json.Marshal(catalog.Labels)
+	if err != nil {
+		return nil, fmt.Errorf("encode board label catalog: %w", err)
+	}
+	return labels, nil
 }
 
 func (c *Client) UpdateBoard(ctx context.Context, boardID, name string) (json.RawMessage, error) {
@@ -265,8 +300,41 @@ func (c *Client) GetCard(ctx context.Context, cardID string) (json.RawMessage, e
 	return c.RequestRaw(ctx, "GET", "/api/cards/"+url.PathEscape(cardID)+"/", nil)
 }
 
+func (c *Client) GetCardLabelState(ctx context.Context, cardID string) (CardLabelState, error) {
+	raw, err := c.GetCard(ctx, cardID)
+	if err != nil {
+		return CardLabelState{}, err
+	}
+	var state CardLabelState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return CardLabelState{}, fmt.Errorf("decode card %q label state: %w", cardID, err)
+	}
+	if state.ID == "" {
+		return CardLabelState{}, fmt.Errorf("decode card %q label state: missing card ID", cardID)
+	}
+	if state.Board.ID == "" {
+		return CardLabelState{}, fmt.Errorf("decode card %q label state: missing board ID", cardID)
+	}
+	return state, nil
+}
+
 func (c *Client) GetCardMarkdown(ctx context.Context, cardID string) (string, error) {
 	return c.RequestMarkdown(ctx, "/api/cards/"+url.PathEscape(cardID)+"/")
+}
+
+func (c *Client) GetBoardLabelCatalog(ctx context.Context, boardID string) (BoardLabelCatalog, error) {
+	raw, err := c.GetBoard(ctx, boardID, false)
+	if err != nil {
+		return BoardLabelCatalog{}, err
+	}
+	var catalog BoardLabelCatalog
+	if err := json.Unmarshal(raw, &catalog); err != nil {
+		return BoardLabelCatalog{}, fmt.Errorf("decode board %q label catalog: %w", boardID, err)
+	}
+	if catalog.ID == "" {
+		return BoardLabelCatalog{}, fmt.Errorf("decode board %q label catalog: missing board ID", boardID)
+	}
+	return catalog, nil
 }
 
 func (c *Client) CreateCard(ctx context.Context, boardID, listID, title, description string) (json.RawMessage, error) {
@@ -294,10 +362,19 @@ func (c *Client) UpdateCard(ctx context.Context, cardID string, patch CardPatch)
 			body["assignee_id"] = *patch.AssigneeID
 		}
 	}
-	if patch.LabelSet {
-		body["label_ids"] = patch.LabelIDs
-	}
 	return c.RequestRaw(ctx, "POST", "/api/cards/"+url.PathEscape(cardID)+"/", body)
+}
+
+func (c *Client) AddCardLabel(ctx context.Context, cardID, labelID string) error {
+	_, err := c.RequestRaw(ctx, "POST", "/api/cards/"+url.PathEscape(cardID)+"/labels/", struct {
+		LabelID string `json:"label_id"`
+	}{LabelID: labelID})
+	return err
+}
+
+func (c *Client) RemoveCardLabel(ctx context.Context, cardID, labelID string) error {
+	_, err := c.RequestRaw(ctx, "DELETE", "/api/cards/"+url.PathEscape(cardID)+"/labels/"+url.PathEscape(labelID)+"/", nil)
+	return err
 }
 
 func (c *Client) MoveCard(ctx context.Context, cardID, listID string, position *int) (json.RawMessage, error) {

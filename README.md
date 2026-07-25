@@ -61,6 +61,25 @@ Equivalent flags:
 | `kardbrd search ...` | Search cards |
 | `kardbrd activity ...` | Read activity |
 
+## Label updates
+
+Use board-detail label discovery, then provide the complete desired label set
+with repeated flags:
+
+```bash
+kardbrd board labels BOARD_ID
+kardbrd card update CARD_ID --label-ids LABEL_A --label-ids LABEL_B
+kardbrd card update CARD_ID --clear-labels
+```
+
+`--label` is an alias for `--label-ids`; both are repeatable and perform a
+full replacement. The CLI validates requested IDs before mutations, adds before
+removing, and returns the refreshed card. `--clear-labels` is the explicit empty
+replacement and cannot be combined with either label flag. When scalar fields
+and labels are changed together, server endpoints make the operation
+non-atomic; a reported reconciliation failure is safe to retry with the same
+full set.
+
 ## Agent Configuration
 
 | Environment variable | Flag | Default |

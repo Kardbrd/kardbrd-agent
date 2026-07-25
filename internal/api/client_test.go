@@ -6,8 +6,71 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 )
+
+func TestCardLabelEndpointsEscapeIDs(t *testing.T) {
+	var paths []string
+	var addBody struct {
+		LabelID string `json:"label_id"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.EscapedPath())
+		switch r.Method {
+		case http.MethodPost:
+			if err := json.NewDecoder(r.Body).Decode(&addBody); err != nil {
+				t.Fatal(err)
+			}
+		case http.MethodDelete:
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+		writeJSON(t, w, map[string]any{"data": map[string]any{}})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "tok")
+	if err := client.AddCardLabel(context.Background(), "card/one", "label/two"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.RemoveCardLabel(context.Background(), "card/one", "label/two"); err != nil {
+		t.Fatal(err)
+	}
+
+	assertEqual(t, "label/two", addBody.LabelID)
+	if want := []string{"/api/cards/card%2Fone/labels/", "/api/cards/card%2Fone/labels/label%2Ftwo/"}; !reflect.DeepEqual(paths, want) {
+		t.Fatalf("paths = %#v, want %#v", paths, want)
+	}
+}
+
+func TestGetBoardLabelsExtractsCatalogFromBoardDetail(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		assertEqual(t, http.MethodGet, r.Method)
+		assertEqual(t, "/api/boards/board1/", r.URL.Path)
+		writeJSON(t, w, map[string]any{"data": map[string]any{
+			"id":     "board1",
+			"labels": []map[string]string{{"id": "label1", "name": "One", "color": "blue"}},
+		}})
+	}))
+	defer server.Close()
+
+	raw, err := NewClient(server.URL, "tok").GetBoardLabels(context.Background(), "board1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var labels []Label
+	if err := json.Unmarshal(raw, &labels); err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, 1, requests)
+	if !reflect.DeepEqual(labels, []Label{{ID: "label1", Name: "One", Color: "blue"}}) {
+		t.Fatalf("labels = %#v", labels)
+	}
+}
 
 func TestRequestUnwrapsDataAndSendsAuth(t *testing.T) {
 	var authHeader string
@@ -71,6 +134,44 @@ func TestRequestReturnsAPIError(t *testing.T) {
 	assertEqual(t, "bad token", apiErr.Message)
 	assertEqual(t, "auth", apiErr.Code)
 	assertEqual(t, http.StatusUnauthorized, apiErr.StatusCode)
+}
+
+func TestRequestErrorsRemainControlled(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     int
+		body       string
+		wantCode   string
+		wantMsg    string
+		forbidText string
+	}{
+		{name: "unauthorized", status: http.StatusUnauthorized, body: `{"error":"bad token","code":"auth"}`, wantCode: "auth", wantMsg: "bad token"},
+		{name: "forbidden", status: http.StatusForbidden, body: `{"error":"forbidden","code":"permission"}`, wantCode: "permission", wantMsg: "forbidden"},
+		{name: "not found", status: http.StatusNotFound, body: `{"error":"missing","code":"not_found"}`, wantCode: "not_found", wantMsg: "missing"},
+		{name: "html not found", status: http.StatusNotFound, body: "<html><body>missing</body></html>", wantMsg: "API returned an HTML error response", forbidText: "<html>"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			_, err := NewClient(server.URL, "tok").RequestRaw(context.Background(), http.MethodGet, "/api/boards/board1/", nil)
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) {
+				t.Fatalf("expected APIError, got %v", err)
+			}
+			assertEqual(t, tt.status, apiErr.StatusCode)
+			assertEqual(t, tt.wantCode, apiErr.Code)
+			assertEqual(t, tt.wantMsg, apiErr.Message)
+			if tt.forbidText != "" && strings.Contains(apiErr.Error(), tt.forbidText) {
+				t.Fatalf("error leaked response body: %q", apiErr.Error())
+			}
+		})
+	}
 }
 
 func TestRequestRetriesServerErrors(t *testing.T) {

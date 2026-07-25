@@ -10,6 +10,9 @@
 ### Changed
 
 - Replaced Python agent/client packaging with one Go `kardbrd` binary.
+- `card update --label` and `--label-ids` now reconcile complete label sets
+  through the production add/remove endpoints, with `--clear-labels` for an
+  explicit empty set. `board labels` now reads the board-detail label catalog.
 
 ## 0.1.0
 
