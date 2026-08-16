@@ -67,6 +67,7 @@ type Manager struct {
 	Rules         *rules.Engine
 	Schedules     []rules.Schedule
 	Active        map[string]*ActiveSession
+	pending       map[string]pendingMention
 	Paused        bool
 	BotCardID     string
 	StartTime     time.Time
@@ -118,6 +119,7 @@ func NewManager(cfg Config) *Manager {
 		Rules:         ruleEngine,
 		Schedules:     cfg.Schedules,
 		Active:        map[string]*ActiveSession{},
+		pending:       map[string]pendingMention{},
 		StartTime:     time.Now().UTC(),
 		Client:        cfg.Client,
 		Executor:      cfg.Executor,
@@ -169,6 +171,7 @@ func (m *Manager) Stop(ctx context.Context) error {
 		}
 		delete(m.Active, cardID)
 	}
+	m.pending = map[string]pendingMention{}
 	return ctx.Err()
 }
 
@@ -183,17 +186,44 @@ func (m *Manager) ActiveCardIDs() []string {
 }
 
 func (m *Manager) ProcessMention(ctx context.Context, cardID, commentID, content, authorName string) error {
+	if m.queueMentionIfActive(ctx, cardID, commentID, content, authorName) {
+		return nil
+	}
 	if err := m.acquire(ctx); err != nil {
 		return err
 	}
-	defer m.release()
 
+	execCtx, cancel := context.WithCancel(ctx)
+	session := &ActiveSession{CardID: cardID, CommentID: commentID, Cancel: cancel}
 	m.mu.Lock()
-	if _, exists := m.Active[cardID]; exists {
-		m.mu.Unlock()
-		return nil
+	_, exists := m.Active[cardID]
+	if exists {
+		if m.pending == nil {
+			m.pending = map[string]pendingMention{}
+		}
+		m.pending[cardID] = pendingMention{
+			ctx:        ctx,
+			cardID:     cardID,
+			commentID:  commentID,
+			content:    content,
+			authorName: authorName,
+		}
+	}
+	if !exists {
+		m.Active[cardID] = session
 	}
 	m.mu.Unlock()
+	if exists {
+		cancel()
+		m.release()
+		m.addReaction(ctx, cardID, commentID, "👀")
+		return nil
+	}
+	defer func() {
+		cancel()
+		m.finishActiveSession(session)
+		m.release()
+	}()
 
 	m.addReaction(ctx, cardID, commentID, "👀")
 
@@ -218,17 +248,7 @@ func (m *Manager) ProcessMention(ctx context.Context, cardID, commentID, content
 		worktreePath = path
 	}
 
-	execCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	m.mu.Lock()
-	m.Active[cardID] = &ActiveSession{CardID: cardID, WorktreePath: worktreePath, CommentID: commentID, Cancel: cancel}
-	m.mu.Unlock()
-	defer func() {
-		m.mu.Lock()
-		delete(m.Active, cardID)
-		m.mu.Unlock()
-	}()
+	session.WorktreePath = worktreePath
 
 	cardMarkdown, err := m.Client.GetCardMarkdown(ctx, cardID)
 	if err != nil {
@@ -257,27 +277,67 @@ func (m *Manager) ProcessMention(ctx context.Context, cardID, commentID, content
 	}
 
 	m.mu.Lock()
-	if session := m.Active[cardID]; session != nil {
+	if m.Active[cardID] == session {
 		session.SessionID = result.SessionID
 	}
 	m.mu.Unlock()
 
 	if result.Success {
-		if m.hasRecentBotComment(ctx, cardID, 60*time.Second) {
-			m.addReaction(ctx, cardID, commentID, "✅")
-			return nil
-		}
-		if result.SessionID != "" {
-			return m.resumeToPublish(ctx, cardID, commentID, result.SessionID, authorName, worktreePath)
-		}
-		m.postFallbackComment(ctx, cardID, result, authorName, commentID)
-		return nil
+		return m.completeSuccessfulResult(ctx, cardID, commentID, result, authorName, worktreePath)
 	}
 
 	m.addReaction(ctx, cardID, commentID, "🛑")
 	message := buildErrorComment(result, "Error") + "\n\n@" + authorName
 	_, _ = m.Client.AddComment(ctx, cardID, message)
 	return nil
+}
+
+type pendingMention struct {
+	ctx        context.Context
+	cardID     string
+	commentID  string
+	content    string
+	authorName string
+}
+
+func (m *Manager) queueMentionIfActive(ctx context.Context, cardID, commentID, content, authorName string) bool {
+	m.mu.Lock()
+	_, active := m.Active[cardID]
+	if active {
+		if m.pending == nil {
+			m.pending = map[string]pendingMention{}
+		}
+		m.pending[cardID] = pendingMention{
+			ctx:        ctx,
+			cardID:     cardID,
+			commentID:  commentID,
+			content:    content,
+			authorName: authorName,
+		}
+	}
+	m.mu.Unlock()
+	if active {
+		m.addReaction(ctx, cardID, commentID, "👀")
+	}
+	return active
+}
+
+func (m *Manager) finishActiveSession(session *ActiveSession) {
+	m.mu.Lock()
+	if m.Active[session.CardID] != session {
+		m.mu.Unlock()
+		return
+	}
+	delete(m.Active, session.CardID)
+	pending, queued := m.pending[session.CardID]
+	delete(m.pending, session.CardID)
+	m.mu.Unlock()
+	if !queued {
+		return
+	}
+	go func() {
+		_ = m.ProcessMention(pending.ctx, pending.cardID, pending.commentID, pending.content, pending.authorName)
+	}()
 }
 
 func (m *Manager) acquire(ctx context.Context) error {
@@ -300,59 +360,46 @@ func (m *Manager) addReaction(ctx context.Context, cardID, commentID, emoji stri
 	_, _ = m.Client.ToggleReaction(ctx, cardID, commentID, emoji)
 }
 
-func (m *Manager) postFallbackComment(ctx context.Context, cardID string, result executor.Result, authorName, commentID string) bool {
-	if result.ResultText == "" {
-		m.addReaction(ctx, cardID, commentID, "⚠️")
-		return false
+func (m *Manager) completeSuccessfulResult(ctx context.Context, cardID, commentID string, result executor.Result, authorName, worktreePath string) error {
+	if strings.TrimSpace(result.ResultText) != "" {
+		m.publishTerminalSummary(ctx, cardID, commentID, result.ResultText, authorName)
+		return nil
 	}
-	text := result.ResultText
+	if result.SessionID != "" {
+		return m.resumeToPublish(ctx, cardID, commentID, result.SessionID, authorName, worktreePath)
+	}
+	m.postEmptyResultWarning(ctx, cardID, commentID, authorName)
+	return nil
+}
+
+func (m *Manager) publishTerminalSummary(ctx context.Context, cardID, commentID, text, authorName string) bool {
 	const maxCommentLength = 12000
 	if len(text) > maxCommentLength {
 		text = text[:maxCommentLength] + "\n\n*(output truncated)*"
 	}
-	_, _ = m.Client.AddComment(ctx, cardID, text+"\n\n@"+authorName)
+	if _, err := m.Client.AddComment(ctx, cardID, text+"\n\n@"+authorName); err != nil {
+		m.addReaction(ctx, cardID, commentID, "🛑")
+		m.postTerminalPublishFailure(ctx, cardID, authorName, err)
+		return false
+	}
 	m.addReaction(ctx, cardID, commentID, "✅")
 	return true
 }
 
-func (m *Manager) hasRecentBotComment(ctx context.Context, cardID string, window time.Duration) bool {
-	raw, err := m.Client.GetCard(ctx, cardID)
-	if err != nil {
-		return false
-	}
-	var card struct {
-		Comments []struct {
-			CreatedAt string `json:"created_at"`
-			Author    struct {
-				IsBot bool `json:"is_bot"`
-			} `json:"author"`
-		} `json:"comments"`
-	}
-	if err := json.Unmarshal(raw, &card); err != nil {
-		return false
-	}
-	cutoff := time.Now().Add(-window)
-	for _, comment := range card.Comments {
-		if !comment.Author.IsBot || comment.CreatedAt == "" {
-			continue
-		}
-		createdAt, err := time.Parse(time.RFC3339, strings.Replace(comment.CreatedAt, "Z", "+00:00", 1))
-		if err == nil && createdAt.After(cutoff) {
-			return true
-		}
-	}
-	return false
+func (m *Manager) postTerminalPublishFailure(ctx context.Context, cardID, authorName string, publishErr error) {
+	message := fmt.Sprintf("**Unable to publish terminal summary**\n\n```\n%s\n```\n\n@%s", publishErr, authorName)
+	_, _ = m.Client.AddComment(ctx, cardID, message)
+}
+
+func (m *Manager) postEmptyResultWarning(ctx context.Context, cardID, commentID, authorName string) {
+	m.addReaction(ctx, cardID, commentID, "⚠️")
+	_, _ = m.Client.AddComment(ctx, cardID, "**No terminal response received**\n\nThe executor completed without a final response, so this run was not marked successful.\n\n@"+authorName)
 }
 
 func (m *Manager) resumeToPublish(ctx context.Context, cardID, commentID, sessionID, authorName, worktreePath string) error {
-	resumePrompt := fmt.Sprintf(`You completed the task but forgot to publish your response.
+	resumePrompt := `The previous execution completed without a final response.
 
-Please post a summary comment using:
-kardbrd comment add %s "Your summary here"
-
-End your comment by mentioning @%s.
-
-DO NOT do any new work - just publish what you already did.`, cardID, authorName)
+Do not do any new work. Return the concise terminal summary normally so the agent manager can publish it. Do not call kardbrd comment add.`
 
 	result := m.Executor.Execute(ctx, executor.Request{
 		CardID:          cardID,
@@ -362,10 +409,11 @@ DO NOT do any new work - just publish what you already did.`, cardID, authorName
 		CWD:             worktreePath,
 	})
 	if result.Success {
-		if result.ResultText != "" && !m.hasRecentBotComment(ctx, cardID, 60*time.Second) {
-			_, _ = m.Client.AddComment(ctx, cardID, result.ResultText+"\n\n@"+authorName)
+		if strings.TrimSpace(result.ResultText) != "" {
+			m.publishTerminalSummary(ctx, cardID, commentID, result.ResultText, authorName)
+			return nil
 		}
-		m.addReaction(ctx, cardID, commentID, "✅")
+		m.postEmptyResultWarning(ctx, cardID, commentID, authorName)
 		return nil
 	}
 	m.addReaction(ctx, cardID, commentID, "🛑")

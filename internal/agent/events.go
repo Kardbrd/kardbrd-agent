@@ -6,7 +6,6 @@ import (
 	"errors"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/Kardbrd/kardbrd-agent/internal/api"
 	"github.com/Kardbrd/kardbrd-agent/internal/executor"
@@ -68,6 +67,7 @@ func (m *Manager) HandleCardMoved(ctx context.Context, message map[string]any) e
 		session.Cancel()
 	}
 	delete(m.Active, cardID)
+	delete(m.pending, cardID)
 	m.mu.Unlock()
 	if m.Worktree != nil {
 		return m.Worktree.Remove(cardID, false)
@@ -93,6 +93,7 @@ func (m *Manager) HandleStopReaction(ctx context.Context, cardID string, comment
 		session.Cancel()
 	}
 	delete(m.Active, cardID)
+	delete(m.pending, cardID)
 	m.mu.Unlock()
 
 	_, _ = m.Client.AddComment(ctx, cardID, "**Agent stopped** 🛑\n\nThe active session was terminated.")
@@ -159,14 +160,13 @@ func (m *Manager) processRule(ctx context.Context, cardID string, rule rules.Rul
 		worktreePath = path
 	}
 	execCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	session := &ActiveSession{CardID: cardID, WorktreePath: worktreePath, Cancel: cancel}
 	m.mu.Lock()
-	m.Active[cardID] = &ActiveSession{CardID: cardID, WorktreePath: worktreePath, Cancel: cancel}
+	m.Active[cardID] = session
 	m.mu.Unlock()
 	defer func() {
-		m.mu.Lock()
-		delete(m.Active, cardID)
-		m.mu.Unlock()
+		cancel()
+		m.finishActiveSession(session)
 	}()
 
 	cardMarkdown, err := m.Client.GetCardMarkdown(ctx, cardID)
@@ -197,13 +197,7 @@ func (m *Manager) processRule(ctx context.Context, cardID string, rule rules.Rul
 		if !publishResult {
 			return nil
 		}
-		if !m.hasRecentBotComment(ctx, cardID, 60*time.Second) {
-			if result.SessionID != "" {
-				return m.resumeToPublish(ctx, cardID, "", result.SessionID, "automation", worktreePath)
-			}
-			m.postFallbackComment(ctx, cardID, result, "automation", "")
-		}
-		return nil
+		return m.completeSuccessfulResult(ctx, cardID, "", result, "automation", worktreePath)
 	}
 	if !publishResult {
 		return errors.New("executor failed")

@@ -90,3 +90,31 @@ func TestRuleDispatchPostsAuthError(t *testing.T) {
 
 	assertContains(t, manager.Client.(*fakeBoardClient).comments[0].content, "login required")
 }
+
+func TestRuleDispatchPublishesTerminalSummaryWithoutResume(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Executor.(*fakeExecutor).result = executor.Result{
+		Success:    true,
+		ResultText: "automation terminal response",
+		SessionID:  "session1",
+	}
+	manager.Rules = &rules.Engine{Rules: []rules.Rule{{
+		Name:   "Auto",
+		Events: []string{"card_created"},
+		Action: "summarize",
+	}}}
+
+	if err := manager.HandleBoardEvent(context.Background(), map[string]any{
+		"event_type": "card_created",
+		"card_id":    "card1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	exec := manager.Executor.(*fakeExecutor)
+	assertEqual(t, 1, exec.executionCount())
+	comments := manager.Client.(*fakeBoardClient).commentsSnapshot()
+	assertEqual(t, 1, len(comments))
+	assertContains(t, comments[0].content, "automation terminal response")
+	assertContains(t, comments[0].content, "@automation")
+}
