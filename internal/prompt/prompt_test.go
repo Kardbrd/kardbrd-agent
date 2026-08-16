@@ -36,7 +36,12 @@ func TestBuildPromptForSlashCommandIncludesAgentFilesKnowledgeAndCLIInstructions
 	assertContains(t, got, "kardbrd card update card1 --label-ids ID1 --label-ids ID2")
 	assertContains(t, got, "kardbrd card update card1 --clear-labels")
 	assertContains(t, got, "kardbrd comment add card1")
-	assertContains(t, got, "End your comment by mentioning the requester: @alice")
+	assertContains(t, got, "You may post progress updates to the card while you work")
+	assertContains(t, got, "Return your final response normally")
+	assertContains(t, got, "The agent manager will publish it once as the terminal summary")
+	if strings.Contains(got, "When you complete this task, you MUST post your response as a comment") {
+		t.Fatal("prompt still requires executors to publish their own terminal comment")
+	}
 }
 
 func TestBuildPromptForFreeFormRequest(t *testing.T) {
