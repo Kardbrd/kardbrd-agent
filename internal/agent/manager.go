@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Kardbrd/kardbrd-agent/internal/api"
 	"github.com/Kardbrd/kardbrd-agent/internal/executor"
@@ -20,6 +21,7 @@ type BoardClient interface {
 	GetCard(ctx context.Context, cardID string) (json.RawMessage, error)
 	GetCardMarkdown(ctx context.Context, cardID string) (string, error)
 	AddComment(ctx context.Context, cardID, content string) (json.RawMessage, error)
+	AddCommentOnce(ctx context.Context, cardID, content string) (json.RawMessage, error)
 	GetComment(ctx context.Context, cardID, commentID string) (json.RawMessage, error)
 	ToggleReaction(ctx context.Context, cardID, commentID, emoji string) (json.RawMessage, error)
 	UpdateCard(ctx context.Context, cardID string, patch api.CardPatch) (json.RawMessage, error)
@@ -219,29 +221,32 @@ func (m *Manager) ProcessMention(ctx context.Context, cardID, commentID, content
 		m.addReaction(ctx, cardID, commentID, "👀")
 		return nil
 	}
+	m.addReaction(ctx, cardID, commentID, "👀")
+	return m.processClaimedMention(ctx, execCtx, session, content, authorName)
+}
+
+func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *ActiveSession, content, authorName string) error {
 	defer func() {
-		cancel()
+		session.Cancel()
 		m.finishActiveSession(session)
 		m.release()
 	}()
 
-	m.addReaction(ctx, cardID, commentID, "👀")
-
 	auth := m.Executor.CheckAuth(ctx)
 	if !auth.Authenticated {
-		m.addReaction(ctx, cardID, commentID, "🛑")
+		m.addReaction(ctx, session.CardID, session.CommentID, "🛑")
 		hint := auth.AuthHint
 		if hint == "" {
 			hint = "Check your LLM provider configuration."
 		}
-		message := fmt.Sprintf("**Agent not authenticated**\n\n```\n%s\n```\n\n%s\n\n@%s", auth.Error, hint, authorName)
-		_, _ = m.Client.AddComment(ctx, cardID, message)
+		message := fmt.Sprintf("**Agent not authenticated**\n\n```\n%s\n```\n\n%s\n\n%s", auth.Error, hint, requesterMention(authorName))
+		_, _ = m.Client.AddComment(ctx, session.CardID, message)
 		return nil
 	}
 
 	worktreePath := m.CWD
 	if m.Worktree != nil {
-		path, err := m.Worktree.Create(cardID)
+		path, err := m.Worktree.Create(session.CardID)
 		if err != nil {
 			return err
 		}
@@ -250,13 +255,13 @@ func (m *Manager) ProcessMention(ctx context.Context, cardID, commentID, content
 
 	session.WorktreePath = worktreePath
 
-	cardMarkdown, err := m.Client.GetCardMarkdown(ctx, cardID)
+	cardMarkdown, err := m.Client.GetCardMarkdown(ctx, session.CardID)
 	if err != nil {
 		return err
 	}
 	command := m.Executor.ExtractCommand(content, m.Mention)
 	promptText := m.Executor.BuildPrompt(executor.PromptRequest{
-		CardID:         cardID,
+		CardID:         session.CardID,
 		CardMarkdown:   cardMarkdown,
 		Command:        command,
 		CommentContent: content,
@@ -266,29 +271,29 @@ func (m *Manager) ProcessMention(ctx context.Context, cardID, commentID, content
 	})
 
 	result := m.Executor.Execute(execCtx, executor.Request{
-		CardID:  cardID,
+		CardID:  session.CardID,
 		BoardID: m.BoardID,
 		Prompt:  promptText,
 		CWD:     worktreePath,
-		OnChunk: m.makeOnChunk(cardID),
+		OnChunk: m.makeOnChunk(session.CardID),
 	})
 	if execCtx.Err() != nil {
 		return nil
 	}
 
 	m.mu.Lock()
-	if m.Active[cardID] == session {
+	if m.Active[session.CardID] == session {
 		session.SessionID = result.SessionID
 	}
 	m.mu.Unlock()
 
 	if result.Success {
-		return m.completeSuccessfulResult(ctx, cardID, commentID, result, authorName, worktreePath)
+		return m.completeSuccessfulResult(execCtx, session.CardID, session.CommentID, result, authorName, worktreePath)
 	}
 
-	m.addReaction(ctx, cardID, commentID, "🛑")
-	message := buildErrorComment(result, "Error") + "\n\n@" + authorName
-	_, _ = m.Client.AddComment(ctx, cardID, message)
+	m.addReaction(ctx, session.CardID, session.CommentID, "🛑")
+	message := buildErrorComment(result, "Error") + "\n\n" + requesterMention(authorName)
+	_, _ = m.Client.AddComment(ctx, session.CardID, message)
 	return nil
 }
 
@@ -328,15 +333,34 @@ func (m *Manager) finishActiveSession(session *ActiveSession) {
 		m.mu.Unlock()
 		return
 	}
+	stream := session.Stream
+	session.Stream = nil
+	session.Streaming = false
 	delete(m.Active, session.CardID)
 	pending, queued := m.pending[session.CardID]
 	delete(m.pending, session.CardID)
+	var pendingSession *ActiveSession
+	var pendingExecCtx context.Context
+	var pendingCancel context.CancelFunc
+	if queued {
+		pendingExecCtx, pendingCancel = context.WithCancel(pending.ctx)
+		pendingSession = &ActiveSession{CardID: pending.cardID, CommentID: pending.commentID, Cancel: pendingCancel}
+		m.Active[session.CardID] = pendingSession
+	}
 	m.mu.Unlock()
+	if stream != nil {
+		_ = stream.Close()
+	}
 	if !queued {
 		return
 	}
 	go func() {
-		_ = m.ProcessMention(pending.ctx, pending.cardID, pending.commentID, pending.content, pending.authorName)
+		if err := m.acquire(pendingExecCtx); err != nil {
+			pendingSession.Cancel()
+			m.finishActiveSession(pendingSession)
+			return
+		}
+		_ = m.processClaimedMention(pending.ctx, pendingExecCtx, pendingSession, pending.content, pending.authorName)
 	}()
 }
 
@@ -360,6 +384,15 @@ func (m *Manager) addReaction(ctx context.Context, cardID, commentID, emoji stri
 	_, _ = m.Client.ToggleReaction(ctx, cardID, commentID, emoji)
 }
 
+func requesterMention(authorName string) string {
+	name := strings.ReplaceAll(strings.Join(strings.Fields(authorName), " "), "@", "")
+	if name == "" {
+		return ""
+	}
+	name = truncateUTF8(name, 255)
+	return "@" + name
+}
+
 func (m *Manager) completeSuccessfulResult(ctx context.Context, cardID, commentID string, result executor.Result, authorName, worktreePath string) error {
 	if strings.TrimSpace(result.ResultText) != "" {
 		m.publishTerminalSummary(ctx, cardID, commentID, result.ResultText, authorName)
@@ -374,26 +407,43 @@ func (m *Manager) completeSuccessfulResult(ctx context.Context, cardID, commentI
 
 func (m *Manager) publishTerminalSummary(ctx context.Context, cardID, commentID, text, authorName string) bool {
 	const maxCommentLength = 12000
-	if len(text) > maxCommentLength {
-		text = text[:maxCommentLength] + "\n\n*(output truncated)*"
+	mention := requesterMention(authorName)
+	suffix := ""
+	if mention != "" {
+		suffix = "\n\n" + mention
 	}
-	if _, err := m.Client.AddComment(ctx, cardID, text+"\n\n@"+authorName); err != nil {
+	const truncationMarker = "\n\n*(output truncated)*"
+	maxTextLength := maxCommentLength - len(suffix)
+	if len(text) > maxTextLength {
+		text = truncateUTF8(text, maxTextLength-len(truncationMarker)) + truncationMarker
+	}
+	if _, err := m.Client.AddCommentOnce(ctx, cardID, text+suffix); err != nil {
 		m.addReaction(ctx, cardID, commentID, "🛑")
-		m.postTerminalPublishFailure(ctx, cardID, authorName, err)
+		m.postTerminalPublishFailure(ctx, cardID, authorName)
 		return false
 	}
 	m.addReaction(ctx, cardID, commentID, "✅")
 	return true
 }
 
-func (m *Manager) postTerminalPublishFailure(ctx context.Context, cardID, authorName string, publishErr error) {
-	message := fmt.Sprintf("**Unable to publish terminal summary**\n\n```\n%s\n```\n\n@%s", publishErr, authorName)
+func truncateUTF8(text string, maxLength int) string {
+	if len(text) <= maxLength {
+		return text
+	}
+	for maxLength > 0 && !utf8.ValidString(text[:maxLength]) {
+		maxLength--
+	}
+	return text[:maxLength]
+}
+
+func (m *Manager) postTerminalPublishFailure(ctx context.Context, cardID, authorName string) {
+	message := "**Unable to confirm terminal summary publication**\n\nThe final response may or may not have been saved. Check the card before retrying.\n\n" + requesterMention(authorName)
 	_, _ = m.Client.AddComment(ctx, cardID, message)
 }
 
 func (m *Manager) postEmptyResultWarning(ctx context.Context, cardID, commentID, authorName string) {
 	m.addReaction(ctx, cardID, commentID, "⚠️")
-	_, _ = m.Client.AddComment(ctx, cardID, "**No terminal response received**\n\nThe executor completed without a final response, so this run was not marked successful.\n\n@"+authorName)
+	_, _ = m.Client.AddComment(ctx, cardID, "**No terminal response received**\n\nThe executor completed without a final response, so this run was not marked successful.\n\n"+requesterMention(authorName))
 }
 
 func (m *Manager) resumeToPublish(ctx context.Context, cardID, commentID, sessionID, authorName, worktreePath string) error {
@@ -417,7 +467,7 @@ Do not do any new work. Return the concise terminal summary normally so the agen
 		return nil
 	}
 	m.addReaction(ctx, cardID, commentID, "🛑")
-	_, _ = m.Client.AddComment(ctx, cardID, fmt.Sprintf("**Error resuming session**\n\n```\n%s\n```\n\n@%s", result.Error, authorName))
+	_, _ = m.Client.AddComment(ctx, cardID, fmt.Sprintf("**Error resuming session**\n\n```\n%s\n```\n\n%s", result.Error, requesterMention(authorName)))
 	return nil
 }
 
@@ -458,16 +508,23 @@ func (m *Manager) makeOnChunk(cardID string) func(content string, chunkType stri
 	return func(content string, chunkType string) {
 		m.mu.Lock()
 		session := m.Active[cardID]
+		var stream api.StreamConn
+		if session != nil {
+			stream = session.Stream
+		}
 		m.mu.Unlock()
-		if session == nil || session.Stream == nil {
+		if session == nil || stream == nil {
 			return
 		}
-		err := api.SendStreamChunk(context.Background(), session.Stream, cardID, content, chunkType, sequence)
+		err := api.SendStreamChunk(context.Background(), stream, cardID, content, chunkType, sequence)
 		if err != nil {
 			m.mu.Lock()
-			session.Stream = nil
-			session.Streaming = false
+			if m.Active[cardID] == session {
+				session.Stream = nil
+				session.Streaming = false
+			}
 			m.mu.Unlock()
+			_ = stream.Close()
 			return
 		}
 		sequence++

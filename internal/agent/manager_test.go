@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Kardbrd/kardbrd-agent/internal/api"
 	"github.com/Kardbrd/kardbrd-agent/internal/executor"
@@ -97,6 +98,85 @@ func TestHandleBoardEventProcessesMention(t *testing.T) {
 	assertContains(t, client.comments[0].content, "Done")
 	assertContains(t, client.comments[0].content, "@Paul")
 	assertEqual(t, 0, len(manager.Active))
+}
+
+func TestProcessSchedulePassesSelectedCardIdentity(t *testing.T) {
+	manager := newTestManager(t)
+	exec := manager.Executor.(*fakeExecutor)
+
+	if err := manager.ProcessSchedule(context.Background(), "scheduled-card", rules.Schedule{Name: "CBA watcher", Action: "inspect"}); err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, "scheduled-card", exec.lastExecuteRequest.CardID)
+	assertEqual(t, "board1", exec.lastExecuteRequest.BoardID)
+}
+
+func TestProcessScheduleSuppressesDaemonPublicationWhenDisabled(t *testing.T) {
+	manager := newTestManager(t)
+	client := manager.Client.(*fakeBoardClient)
+	exec := manager.Executor.(*fakeExecutor)
+	exec.result = executor.Result{Success: true, ResultText: "script-owned result", SessionID: "session1"}
+
+	if err := manager.ProcessSchedule(context.Background(), "scheduled-card", rules.Schedule{
+		Name:          "CBA watcher",
+		Action:        "inspect",
+		PublishResult: boolPtr(false),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	assertEqual(t, 1, exec.executeCount)
+	assertEqual(t, 0, client.getCardCalls)
+	assertEqual(t, 0, len(client.comments))
+}
+
+func TestProcessScheduleReturnsExecutorFailureWithoutDaemonCommentWhenPublicationDisabled(t *testing.T) {
+	manager := newTestManager(t)
+	client := manager.Client.(*fakeBoardClient)
+	manager.Executor.(*fakeExecutor).result = executor.Result{Success: false, Error: "provider failure: tok_secret"}
+
+	err := manager.ProcessSchedule(context.Background(), "scheduled-card", rules.Schedule{
+		Name:          "CBA watcher",
+		Action:        "inspect",
+		PublishResult: boolPtr(false),
+	})
+	if err == nil {
+		t.Fatal("expected executor failure")
+	}
+	assertContains(t, err.Error(), "executor failed")
+	assertNotContains(t, err.Error(), "tok_secret")
+	assertEqual(t, 0, len(client.comments))
+}
+
+func TestProcessScheduleReturnsAuthenticationFailureWithoutDaemonCommentWhenPublicationDisabled(t *testing.T) {
+	manager := newTestManager(t)
+	client := manager.Client.(*fakeBoardClient)
+	manager.Executor = &fakeExecutor{auth: executor.AuthStatus{Authenticated: false, Error: "login required: tok_secret"}}
+
+	err := manager.ProcessSchedule(context.Background(), "scheduled-card", rules.Schedule{
+		Name:          "CBA watcher",
+		Action:        "inspect",
+		PublishResult: boolPtr(false),
+	})
+	if err == nil {
+		t.Fatal("expected authentication failure")
+	}
+	assertContains(t, err.Error(), "executor authentication failed")
+	assertNotContains(t, err.Error(), "tok_secret")
+	assertEqual(t, 0, len(client.comments))
+}
+
+func TestProcessSchedulePublishesByDefault(t *testing.T) {
+	manager := newTestManager(t)
+	client := manager.Client.(*fakeBoardClient)
+
+	if err := manager.ProcessSchedule(context.Background(), "scheduled-card", rules.Schedule{Name: "Legacy schedule", Action: "inspect"}); err != nil {
+		t.Fatal(err)
+	}
+
+	assertEqual(t, 0, client.getCardCalls)
+	assertEqual(t, 1, len(client.comments))
+	assertContains(t, client.comments[0].content, "Done")
 }
 
 func TestProcessMentionPublishesTerminalSummaryAfterProgressUpdates(t *testing.T) {
@@ -210,11 +290,31 @@ func TestProcessMentionDoesNotMarkSuccessWhenTerminalPublishFails(t *testing.T) 
 	}
 
 	assertEqual(t, 1, manager.Executor.(*fakeExecutor).executionCount())
+	assertEqual(t, 1, client.commentOnceAttemptCount())
 	assertEqual(t, 2, client.commentAttemptCount())
 	assertEqual(t, 1, client.commentCount())
-	assertContains(t, client.commentsSnapshot()[0].content, "Unable to publish terminal summary")
+	assertContains(t, client.commentsSnapshot()[0].content, "Unable to confirm terminal summary publication")
 	assertReaction(t, client.reactionsSnapshot(), "comment1", "🛑")
 	assertNoReaction(t, client.reactionsSnapshot(), "comment1", "✅")
+}
+
+func TestProcessMentionBoundsTerminalSummaryWithoutBreakingUTF8(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Executor.(*fakeExecutor).result = executor.Result{Success: true, ResultText: "x" + strings.Repeat("é", 7000)}
+
+	if err := manager.ProcessMention(context.Background(), "card1", "comment1", "@coder do work", "Paul"); err != nil {
+		t.Fatal(err)
+	}
+
+	content := manager.Client.(*fakeBoardClient).commentsSnapshot()[0].content
+	if len(content) > 12000 {
+		t.Fatalf("terminal summary length = %d, want at most 12000", len(content))
+	}
+	if !utf8.ValidString(content) {
+		t.Fatal("terminal summary is not valid UTF-8")
+	}
+	assertContains(t, content, "*(output truncated)*")
+	assertContains(t, content, "@Paul")
 }
 
 func TestProcessMentionEmptyResultIsVisibleWithoutSuccess(t *testing.T) {
@@ -251,6 +351,77 @@ func TestProcessMentionRecoversEmptyResultWithBoundedResume(t *testing.T) {
 	assertEqual(t, 1, len(comments))
 	assertContains(t, comments[0].content, "recovered terminal response")
 	assertReaction(t, manager.Client.(*fakeBoardClient).reactionsSnapshot(), "comment1", "✅")
+}
+
+func TestProcessMentionClosesStreamAfterTerminalSummary(t *testing.T) {
+	manager := newTestManager(t)
+	exec := manager.Executor.(*fakeExecutor)
+	exec.started = make(chan struct{})
+	exec.blockUntilRelease = make(chan struct{})
+	stream := &fakeStream{}
+	done := make(chan error, 1)
+	go func() {
+		done <- manager.ProcessMention(context.Background(), "card1", "comment1", "@coder do work", "Paul")
+	}()
+	select {
+	case <-exec.started:
+	case <-time.After(time.Second):
+		t.Fatal("executor did not start")
+	}
+
+	manager.mu.Lock()
+	manager.Active["card1"].Stream = stream
+	manager.Active["card1"].Streaming = true
+	manager.mu.Unlock()
+	close(exec.blockUntilRelease)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("mention processing did not finish")
+	}
+	assertEqual(t, true, stream.closed)
+}
+
+func TestStopReactionCancelsEmptyResultResume(t *testing.T) {
+	manager := newTestManager(t)
+	exec := manager.Executor.(*fakeExecutor)
+	exec.results = []executor.Result{
+		{Success: true, SessionID: "session1"},
+		{Success: true, ResultText: "recovered terminal response"},
+	}
+	exec.started = make(chan struct{})
+	exec.blockUntilRelease = make(chan struct{})
+	exec.blockOnExecute = 2
+	done := make(chan error, 1)
+	go func() {
+		done <- manager.ProcessMention(context.Background(), "card1", "comment1", "@coder do work", "Paul")
+	}()
+	select {
+	case <-exec.started:
+	case <-time.After(time.Second):
+		t.Fatal("resume execution did not start")
+	}
+
+	if err := manager.HandleStopReaction(context.Background(), "card1", "comment1"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stop reaction did not cancel the resume execution")
+	}
+	assertEqual(t, 2, exec.executionCount())
+}
+
+func TestRequesterMentionSanitizesDisplayNames(t *testing.T) {
+	assertEqual(t, "@Paul Other", requesterMention(" Paul\n@Other "))
+	assertEqual(t, "", requesterMention(" \t"))
 }
 
 func TestProcessMentionFailedExecutorIsVisibleWithoutSuccess(t *testing.T) {
@@ -305,6 +476,10 @@ func TestStopReactionCancelsRunningExecutor(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("executor did not start")
 	}
+	stream := &fakeStream{}
+	manager.mu.Lock()
+	manager.Active["card1"].Stream = stream
+	manager.mu.Unlock()
 
 	if err := manager.HandleStopReaction(context.Background(), "card1", "comment1"); err != nil {
 		t.Fatal(err)
@@ -328,6 +503,7 @@ func TestStopReactionCancelsRunningExecutor(t *testing.T) {
 	client := manager.Client.(*fakeBoardClient)
 	assertEqual(t, 1, len(client.comments))
 	assertContains(t, client.comments[0].content, "Agent stopped")
+	assertEqual(t, true, stream.closed)
 }
 
 func TestStreamRequestedConnectsActiveSessionAndForwardsChunks(t *testing.T) {
@@ -365,6 +541,69 @@ func TestStreamRequestedConnectsActiveSessionAndForwardsChunks(t *testing.T) {
 	assertEqual(t, 0, payload["sequence"].(int))
 }
 
+func TestStreamRequestedKeepsFirstRegisteredStreamDuringConcurrentRequests(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Active["card1"] = &ActiveSession{CardID: "card1"}
+	firstStream := &fakeStream{}
+	secondStream := &fakeStream{}
+	firstConnectStarted := make(chan struct{})
+	releaseFirstConnect := make(chan struct{})
+	var connectCalls int
+	var connectMu sync.Mutex
+	oldConnect := connectStream
+	connectStream = func(ctx context.Context, streamURL string) (api.StreamConn, error) {
+		connectMu.Lock()
+		connectCalls++
+		call := connectCalls
+		connectMu.Unlock()
+		if call == 1 {
+			close(firstConnectStarted)
+			<-releaseFirstConnect
+			return firstStream, nil
+		}
+		return secondStream, nil
+	}
+	defer func() { connectStream = oldConnect }()
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- manager.HandleStreamRequested(context.Background(), "card1", "ws://stream.test/first")
+	}()
+	select {
+	case <-firstConnectStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first stream connection did not start")
+	}
+	if err := manager.HandleStreamRequested(context.Background(), "card1", "ws://stream.test/second"); err != nil {
+		t.Fatal(err)
+	}
+	close(releaseFirstConnect)
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first stream request did not finish")
+	}
+
+	assertEqual(t, api.StreamConn(secondStream), manager.Active["card1"].Stream)
+	assertEqual(t, true, firstStream.closed)
+	assertEqual(t, false, secondStream.closed)
+}
+
+func TestStreamFailureClosesConnection(t *testing.T) {
+	manager := newTestManager(t)
+	stream := &fakeStream{writeErr: errors.New("stream write failed")}
+	manager.Active["card1"] = &ActiveSession{CardID: "card1", Stream: stream, Streaming: true}
+
+	manager.makeOnChunk("card1")("hello", "assistant")
+
+	assertEqual(t, true, stream.closed)
+	assertEqual(t, false, manager.Active["card1"].Streaming)
+	assertEqual(t, api.StreamConn(nil), manager.Active["card1"].Stream)
+}
+
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()
 	client := &fakeBoardClient{
@@ -389,26 +628,27 @@ func newTestManager(t *testing.T) *Manager {
 }
 
 type fakeBoardClient struct {
-	mu                 sync.Mutex
-	board              json.RawMessage
-	card               json.RawMessage
-	comment            json.RawMessage
-	markdown           string
-	getBoardCalled     bool
-	getCardCalls       int
-	comments           []commentCall
-	reactions          []reactionCall
-	updatedCardID      string
-	updatedDescription string
-	createdBoardID     string
-	createdListID      string
-	createdTitle       string
-	createdDescription string
-	onAddComment       func(cardID, content string)
-	onReaction         func(cardID, commentID, emoji string)
-	addCommentErrors   []error
-	commentAttempts    []commentCall
-	events             []string
+	mu                  sync.Mutex
+	board               json.RawMessage
+	card                json.RawMessage
+	comment             json.RawMessage
+	markdown            string
+	getBoardCalled      bool
+	getCardCalls        int
+	comments            []commentCall
+	reactions           []reactionCall
+	updatedCardID       string
+	updatedDescription  string
+	createdBoardID      string
+	createdListID       string
+	createdTitle        string
+	createdDescription  string
+	onAddComment        func(cardID, content string)
+	onReaction          func(cardID, commentID, emoji string)
+	addCommentErrors    []error
+	commentAttempts     []commentCall
+	commentOnceAttempts int
+	events              []string
 }
 
 type commentCall struct {
@@ -458,6 +698,13 @@ func (c *fakeBoardClient) AddComment(ctx context.Context, cardID, content string
 	return mustRawJSON(map[string]any{"id": "comment-new"}), nil
 }
 
+func (c *fakeBoardClient) AddCommentOnce(ctx context.Context, cardID, content string) (json.RawMessage, error) {
+	c.mu.Lock()
+	c.commentOnceAttempts++
+	c.mu.Unlock()
+	return c.AddComment(ctx, cardID, content)
+}
+
 func (c *fakeBoardClient) GetComment(ctx context.Context, cardID, commentID string) (json.RawMessage, error) {
 	if len(c.comment) == 0 {
 		return mustRawJSON(map[string]any{"author": map[string]any{}}), nil
@@ -492,6 +739,12 @@ func (c *fakeBoardClient) commentAttemptCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.commentAttempts)
+}
+
+func (c *fakeBoardClient) commentOnceAttemptCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.commentOnceAttempts
 }
 
 func (c *fakeBoardClient) reactionsSnapshot() []reactionCall {
@@ -535,6 +788,8 @@ type fakeExecutor struct {
 	started            chan struct{}
 	cancelled          chan struct{}
 	onExecute          func()
+	blockUntilRelease  chan struct{}
+	blockOnExecute     int
 }
 
 func (e *fakeExecutor) CheckAuth(ctx context.Context) executor.AuthStatus {
@@ -545,15 +800,18 @@ func (e *fakeExecutor) CheckAuth(ctx context.Context) executor.AuthStatus {
 func (e *fakeExecutor) Execute(ctx context.Context, req executor.Request) executor.Result {
 	e.mu.Lock()
 	e.executeCount++
+	executionCount := e.executeCount
 	e.lastExecuteRequest = req
 	result := e.result
-	if len(e.results) >= e.executeCount {
-		result = e.results[e.executeCount-1]
+	if len(e.results) >= executionCount {
+		result = e.results[executionCount-1]
 	}
 	onExecute := e.onExecute
 	blockUntilCancel := e.blockUntilCancel
 	started := e.started
 	cancelled := e.cancelled
+	blockUntilRelease := e.blockUntilRelease
+	blockOnExecute := e.blockOnExecute
 	e.mu.Unlock()
 	if onExecute != nil {
 		onExecute()
@@ -570,6 +828,17 @@ func (e *fakeExecutor) Execute(ctx context.Context, req executor.Request) execut
 			return executor.Result{Success: false, Error: ctx.Err().Error()}
 		case <-time.After(200 * time.Millisecond):
 			return executor.Result{Success: false, Error: "context was not cancelled"}
+		}
+	}
+	if blockUntilRelease != nil && (blockOnExecute == 0 || blockOnExecute == executionCount) {
+		if started != nil {
+			close(started)
+		}
+		select {
+		case <-ctx.Done():
+			return executor.Result{Success: false, Error: ctx.Err().Error()}
+		case <-blockUntilRelease:
+			return result
 		}
 	}
 	return result
@@ -595,9 +864,13 @@ type fakeWorktree struct {
 	createdCard string
 	removedCard string
 	forced      bool
+	onCreate    func(cardID string)
 }
 
 func (w *fakeWorktree) Create(cardID string) (string, error) {
+	if w.onCreate != nil {
+		w.onCreate(cardID)
+	}
 	w.createdCard = cardID
 	return w.path, nil
 }
@@ -611,9 +884,13 @@ func (w *fakeWorktree) Remove(cardID string, force bool) error {
 type fakeStream struct {
 	payloads []any
 	closed   bool
+	writeErr error
 }
 
 func (s *fakeStream) WriteJSON(value any) error {
+	if s.writeErr != nil {
+		return s.writeErr
+	}
 	s.payloads = append(s.payloads, value)
 	return nil
 }
@@ -656,6 +933,17 @@ func assertContains(t *testing.T, got string, want string) {
 	if !strings.Contains(got, want) {
 		t.Fatalf("expected %q to contain %q", got, want)
 	}
+}
+
+func assertNotContains(t *testing.T, got string, want string) {
+	t.Helper()
+	if strings.Contains(got, want) {
+		t.Fatalf("expected %q not to contain %q", got, want)
+	}
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }
 
 func assertReaction(t *testing.T, reactions []reactionCall, commentID, emoji string) {

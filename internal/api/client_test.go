@@ -274,6 +274,24 @@ func TestNoRetryMakesMarkdownReadOneAttempt(t *testing.T) {
 	assertEqual(t, 1, attempts)
 }
 
+func TestAddCommentOnceDoesNotRetryServerErrors(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		assertEqual(t, http.MethodPost, r.Method)
+		assertEqual(t, "/api/cards/card1/comments/", r.URL.Path)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("try again"))
+	}))
+	defer server.Close()
+
+	_, err := NewClient(server.URL, "tok").AddCommentOnce(context.Background(), "card1", "terminal summary")
+	if err == nil {
+		t.Fatal("expected comment publication error")
+	}
+	assertEqual(t, 1, attempts)
+}
+
 func writeJSON(t *testing.T, w http.ResponseWriter, value any) {
 	t.Helper()
 	w.Header().Set("Content-Type", "application/json")

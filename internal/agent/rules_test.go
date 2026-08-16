@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Kardbrd/kardbrd-agent/internal/executor"
 	"github.com/Kardbrd/kardbrd-agent/internal/rules"
@@ -57,7 +59,8 @@ func TestStopReactionRemovesActiveSessionAndPostsConfirmation(t *testing.T) {
 
 func TestCardMovedToDoneRemovesWorktree(t *testing.T) {
 	manager := newTestManager(t)
-	manager.Active["card1"] = &ActiveSession{CardID: "card1"}
+	stream := &fakeStream{}
+	manager.Active["card1"] = &ActiveSession{CardID: "card1", Stream: stream}
 
 	if err := manager.HandleBoardEvent(context.Background(), map[string]any{
 		"event_type": "card_moved",
@@ -70,6 +73,7 @@ func TestCardMovedToDoneRemovesWorktree(t *testing.T) {
 	worktrees := manager.Worktree.(*fakeWorktree)
 	assertEqual(t, "card1", worktrees.removedCard)
 	assertEqual(t, false, worktrees.forced)
+	assertEqual(t, true, stream.closed)
 }
 
 func TestRuleDispatchPostsAuthError(t *testing.T) {
@@ -117,4 +121,54 @@ func TestRuleDispatchPublishesTerminalSummaryWithoutResume(t *testing.T) {
 	assertEqual(t, 1, len(comments))
 	assertContains(t, comments[0].content, "automation terminal response")
 	assertContains(t, comments[0].content, "@automation")
+}
+
+func TestProcessRuleReservesCardBeforeWorktreeCreate(t *testing.T) {
+	manager := newTestManager(t)
+	worktrees := manager.Worktree.(*fakeWorktree)
+	firstCreateStarted := make(chan struct{})
+	releaseFirstCreate := make(chan struct{})
+	var blockFirstCreate sync.Once
+	worktrees.onCreate = func(string) {
+		blockFirstCreate.Do(func() {
+			close(firstCreateStarted)
+			<-releaseFirstCreate
+		})
+	}
+	rule := rules.Rule{Name: "Auto", Action: "summarize"}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- manager.ProcessRule(context.Background(), "card1", rule, nil)
+	}()
+	select {
+	case <-firstCreateStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first rule did not start worktree creation")
+	}
+
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- manager.ProcessRule(context.Background(), "card1", rule, nil)
+	}()
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second rule did not return while the card was reserved")
+	}
+
+	close(releaseFirstCreate)
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first rule did not finish")
+	}
+
+	assertEqual(t, 1, manager.Executor.(*fakeExecutor).executionCount())
 }

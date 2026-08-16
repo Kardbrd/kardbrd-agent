@@ -39,6 +39,7 @@ func TestBuildPromptForSlashCommandIncludesAgentFilesKnowledgeAndCLIInstructions
 	assertContains(t, got, "You may post progress updates to the card while you work")
 	assertContains(t, got, "Return your final response normally")
 	assertContains(t, got, "The agent manager will publish it once as the terminal summary")
+	assertContains(t, got, "This instruction overrides any earlier generic instruction to post a comment when finished")
 	if strings.Contains(got, "When you complete this task, you MUST post your response as a comment") {
 		t.Fatal("prompt still requires executors to publish their own terminal comment")
 	}
