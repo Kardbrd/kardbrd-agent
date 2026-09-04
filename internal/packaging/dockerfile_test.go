@@ -32,7 +32,8 @@ func TestAgentDockerfileProvidesDeliveryTooling(t *testing.T) {
 
 	smoke := "RUN kardbrd --version \\\n    && codex --version \\\n    && gh --version \\\n    && go version \\\n    && pre-commit --version"
 	assertContains(t, dockerfile, smoke)
-	if userIndex := strings.Index(dockerfile, "USER agent"); userIndex == -1 || userIndex > strings.Index(dockerfile, smoke) {
+	beforeSmoke := dockerfile[:strings.Index(dockerfile, smoke)]
+	if userIndex := strings.LastIndex(beforeSmoke, "USER "); userIndex == -1 || !strings.HasPrefix(beforeSmoke[userIndex:], "USER agent\n") {
 		t.Fatal("expected delivery-tooling smoke to run as the non-root agent user")
 	}
 }
