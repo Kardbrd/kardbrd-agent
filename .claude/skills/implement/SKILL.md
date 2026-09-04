@@ -32,26 +32,28 @@ If the task is purely configuration, documentation, or non-testable infrastructu
 1. Read the current task from the plan
 2. Read the files that will be modified (verify they match what the plan expects)
 3. Write the failing test (RED)
-4. Run `uv run pytest` — confirm the new test fails and all other tests still pass
+4. Run `go test ./...` — confirm the new test fails and all other tests still pass
 5. Write the production code (GREEN)
-6. Run `uv run pytest` — confirm ALL tests pass
-7. Run `uv run pre-commit run --all-files` — confirm lint passes
-8. Commit with a descriptive message
-9. Mark the checklist todo as complete: `kardbrd checklist complete <card_id> <todo_id>`
-10. Move to the next task
+6. Run `go test ./...` — confirm ALL tests pass
+7. Run `go vet ./...` — confirm static analysis passes
+8. Run `pre-commit run --all-files` — confirm lint passes
+9. Commit with a descriptive message
+10. Mark the checklist todo as complete: `kardbrd checklist complete <card_id> <todo_id>`
+11. Move to the next task
 
 ## After All Tasks Complete
 
-1. Run full test suite: `uv run pytest`
-2. Run full lint: `uv run pre-commit run --all-files`
-3. Read FULL output of both commands — not just exit code
-4. If anything fails, fix it before claiming completion
-5. Upload `implementation-report.md` attachment with:
+1. Run full test suite: `go test ./...`
+2. Run static analysis: `go vet ./...`
+3. Run full lint: `pre-commit run --all-files`
+4. Read FULL output of all commands — not just exit code
+5. If anything fails, fix it before claiming completion
+6. Upload `implementation-report.md` attachment with:
    - What was implemented (task by task)
    - Any deviations from the plan and why
    - Test results (paste actual output)
    - Lint results (paste actual output)
-6. Post comment: completion summary + "Ready for /review" + @mention requester
+7. Post comment: completion summary + "Ready for /review" + @mention requester
 
 ## Anti-Rationalization Guards
 
@@ -68,16 +70,17 @@ If the task is purely configuration, documentation, or non-testable infrastructu
 
 - Writing production code before the test
 - Tests that pass on the first run (your test doesn’t test what you think)
-- Committing without running both pytest and pre-commit
+- Committing without running go test, go vet, and pre-commit
 - Skipping checklist updates
 - No implementation-report.md attachment at the end
 - Qualifier language: "should work," "seems to pass," "probably fine"
 
 ## Verification Before Completion
 
-1. Run `uv run pytest` — read FULL output, confirm all pass
-2. Run `uv run pre-commit run --all-files` — read FULL output, confirm all pass
-3. Verify implementation-report.md attachment exists
-4. Verify ALL "Implementation Tasks" checklist items are marked complete
-5. Verify completion comment was posted
-6. Only then claim completion
+1. Run `go test ./...` — read FULL output, confirm all pass
+2. Run `go vet ./...` — read FULL output, confirm static analysis passes
+3. Run `pre-commit run --all-files` — read FULL output, confirm lint passes
+4. Verify implementation-report.md attachment exists
+5. Verify ALL "Implementation Tasks" checklist items are marked complete
+6. Verify completion comment was posted
+7. Only then claim completion
