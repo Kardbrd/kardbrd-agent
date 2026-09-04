@@ -20,7 +20,13 @@ import (
 	"time"
 )
 
-const defaultLatestReleaseURL = "https://api.github.com/repos/Kardbrd/kardbrd-agent/releases/latest"
+const (
+	defaultLatestReleaseURL        = "https://api.github.com/repos/Kardbrd/kardbrd-agent/releases/latest"
+	defaultMaxReleaseMetadataSize  = 1 << 20
+	defaultMaxChecksumManifestSize = 1 << 20
+	defaultMaxArchiveSize          = 100 << 20
+	defaultMaxExtractedBinarySize  = 100 << 20
+)
 
 // Config contains the updater's external dependencies. The fields exist so
 // callers can test updates without contacting GitHub or replacing themselves.
@@ -34,11 +40,15 @@ type Config struct {
 
 // Updater downloads and atomically installs a compatible kardbrd release.
 type Updater struct {
-	client           *http.Client
-	latestReleaseURL string
-	executablePath   func() (string, error)
-	goos             string
-	goarch           string
+	client                  *http.Client
+	latestReleaseURL        string
+	executablePath          func() (string, error)
+	goos                    string
+	goarch                  string
+	maxReleaseMetadataSize  int64
+	maxChecksumManifestSize int64
+	maxArchiveSize          int64
+	maxExtractedBinarySize  int64
 }
 
 // Result describes a successfully installed release.
@@ -70,11 +80,15 @@ func New(config Config) *Updater {
 		goarch = runtime.GOARCH
 	}
 	return &Updater{
-		client:           client,
-		latestReleaseURL: latestReleaseURL,
-		executablePath:   executablePath,
-		goos:             goos,
-		goarch:           goarch,
+		client:                  client,
+		latestReleaseURL:        latestReleaseURL,
+		executablePath:          executablePath,
+		goos:                    goos,
+		goarch:                  goarch,
+		maxReleaseMetadataSize:  defaultMaxReleaseMetadataSize,
+		maxChecksumManifestSize: defaultMaxChecksumManifestSize,
+		maxArchiveSize:          defaultMaxArchiveSize,
+		maxExtractedBinarySize:  defaultMaxExtractedBinarySize,
 	}
 }
 
@@ -88,11 +102,11 @@ func (u *Updater) Update(ctx context.Context) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	checksums, err := u.download(ctx, checksumAsset.BrowserDownloadURL)
+	checksums, err := u.download(ctx, checksumAsset.BrowserDownloadURL, u.maxChecksumManifestSize)
 	if err != nil {
 		return Result{}, fmt.Errorf("download checksums.txt: %w", err)
 	}
-	archive, err := u.download(ctx, archiveAsset.BrowserDownloadURL)
+	archive, err := u.download(ctx, archiveAsset.BrowserDownloadURL, u.maxArchiveSize)
 	if err != nil {
 		return Result{}, fmt.Errorf("download %s: %w", archiveAsset.Name, err)
 	}
@@ -127,7 +141,7 @@ func (u *Updater) Update(ctx context.Context) (Result, error) {
 	defer os.RemoveAll(workDir)
 	extractedBinary := filepath.Join(workDir, "kardbrd")
 	archiveDir := strings.TrimSuffix(archiveAsset.Name, ".tar.gz")
-	if err := extractBinary(archive, archiveDir, extractedBinary); err != nil {
+	if err := extractBinaryWithLimit(archive, archiveDir, extractedBinary, u.maxExtractedBinarySize); err != nil {
 		return Result{}, err
 	}
 
@@ -223,6 +237,10 @@ func checksumFor(manifest []byte, assetName string) (string, error) {
 }
 
 func extractBinary(archive []byte, archiveDir, destination string) (err error) {
+	return extractBinaryWithLimit(archive, archiveDir, destination, defaultMaxExtractedBinarySize)
+}
+
+func extractBinaryWithLimit(archive []byte, archiveDir, destination string, maxBinarySize int64) (err error) {
 	gzipReader, err := gzip.NewReader(bytes.NewReader(archive))
 	if err != nil {
 		return fmt.Errorf("open archive: %w", err)
@@ -252,6 +270,9 @@ func extractBinary(archive []byte, archiveDir, destination string) (err error) {
 		case expectedBinary:
 			if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
 				return fmt.Errorf("archive binary %q is not a regular file", expectedBinary)
+			}
+			if header.Size < 0 || header.Size > maxBinarySize {
+				return fmt.Errorf("archive binary %q exceeds maximum size of %d bytes", expectedBinary, maxBinarySize)
 			}
 			if foundBinary {
 				return fmt.Errorf("archive has duplicate binary %q", expectedBinary)
@@ -294,8 +315,12 @@ func (u *Updater) fetchRelease(ctx context.Context) (release, error) {
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return release{}, fmt.Errorf("fetch latest release: HTTP %d", resp.StatusCode)
 	}
+	contents, err := readLimited(resp.Body, u.maxReleaseMetadataSize)
+	if err != nil {
+		return release{}, fmt.Errorf("read latest release: %w", err)
+	}
 	var releaseValue release
-	if err := json.NewDecoder(resp.Body).Decode(&releaseValue); err != nil {
+	if err := json.Unmarshal(contents, &releaseValue); err != nil {
 		return release{}, fmt.Errorf("decode latest release: %w", err)
 	}
 	if releaseValue.TagName == "" {
@@ -304,7 +329,7 @@ func (u *Updater) fetchRelease(ctx context.Context) (release, error) {
 	return releaseValue, nil
 }
 
-func (u *Updater) download(ctx context.Context, url string) ([]byte, error) {
+func (u *Updater) download(ctx context.Context, url string, maxSize int64) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create download request: %w", err)
@@ -317,9 +342,20 @@ func (u *Updater) download(ctx context.Context, url string) ([]byte, error) {
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	contents, err := io.ReadAll(resp.Body)
+	contents, err := readLimited(resp.Body, maxSize)
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
+	}
+	return contents, nil
+}
+
+func readLimited(reader io.Reader, maxSize int64) ([]byte, error) {
+	contents, err := io.ReadAll(io.LimitReader(reader, maxSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(contents)) > maxSize {
+		return nil, fmt.Errorf("response exceeds maximum size of %d bytes", maxSize)
 	}
 	return contents, nil
 }

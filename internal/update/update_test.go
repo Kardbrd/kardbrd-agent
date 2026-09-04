@@ -121,6 +121,26 @@ func TestChecksumFor(t *testing.T) {
 	}
 }
 
+func TestReadLimited(t *testing.T) {
+	t.Parallel()
+
+	got, err := readLimited(strings.NewReader("abc"), 3)
+	if err != nil {
+		t.Fatalf("readLimited within limit: %v", err)
+	}
+	if string(got) != "abc" {
+		t.Fatalf("contents = %q, want abc", got)
+	}
+
+	_, err = readLimited(strings.NewReader("abcd"), 3)
+	if err == nil {
+		t.Fatal("readLimited accepted a response larger than its limit")
+	}
+	if !strings.Contains(err.Error(), "maximum size") {
+		t.Fatalf("error = %q, want maximum-size context", err)
+	}
+}
+
 func TestExtractBinary(t *testing.T) {
 	t.Parallel()
 
@@ -192,6 +212,24 @@ func TestExtractBinary(t *testing.T) {
 	}
 }
 
+func TestExtractBinaryWithLimitRejectsOversizedBinary(t *testing.T) {
+	t.Parallel()
+
+	const archiveDir = "kardbrd_v9.9.9_linux_amd64"
+	err := extractBinaryWithLimit(
+		makeArchive(t, []tarEntry{{name: archiveDir + "/kardbrd", mode: 0o755, body: "new executable"}}),
+		archiveDir,
+		filepath.Join(t.TempDir(), "kardbrd"),
+		3,
+	)
+	if err == nil {
+		t.Fatal("extractBinaryWithLimit accepted an oversized binary")
+	}
+	if !strings.Contains(err.Error(), "maximum size") {
+		t.Fatalf("error = %q, want maximum-size context", err)
+	}
+}
+
 func TestUpdateReplacesExecutableFromVerifiedPlatformRelease(t *testing.T) {
 	const tag = "v9.9.9"
 	const assetName = "kardbrd_v9.9.9_darwin_arm64.tar.gz"
@@ -246,11 +284,15 @@ func TestUpdateLeavesExecutableUntouchedOnFailure(t *testing.T) {
 		manifest      string
 		releaseStatus int
 		archiveStatus int
+		maxArchive    int64
+		maxBinary     int64
 	}{
 		{name: "release error", archive: validArchive, manifest: checksumManifest(assetName, validArchive), releaseStatus: http.StatusInternalServerError, archiveStatus: http.StatusOK},
 		{name: "archive error", archive: validArchive, manifest: checksumManifest(assetName, validArchive), releaseStatus: http.StatusOK, archiveStatus: http.StatusBadGateway},
 		{name: "checksum mismatch", archive: validArchive, manifest: strings.Repeat("0", 64) + "  " + assetName + "\n", releaseStatus: http.StatusOK, archiveStatus: http.StatusOK},
 		{name: "unsafe archive", archive: makeArchive(t, []tarEntry{{name: "../kardbrd", mode: 0o755, body: "bad"}}), releaseStatus: http.StatusOK, archiveStatus: http.StatusOK},
+		{name: "oversized archive", archive: validArchive, manifest: checksumManifest(assetName, validArchive), releaseStatus: http.StatusOK, archiveStatus: http.StatusOK, maxArchive: 1},
+		{name: "oversized extracted binary", archive: validArchive, manifest: checksumManifest(assetName, validArchive), releaseStatus: http.StatusOK, archiveStatus: http.StatusOK, maxBinary: 1},
 	}
 
 	for _, tt := range tests {
@@ -265,13 +307,20 @@ func TestUpdateLeavesExecutableUntouchedOnFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			_, err := New(Config{
+			updater := New(Config{
 				Client:           server.Client(),
 				LatestReleaseURL: server.URL + "/latest",
 				ExecutablePath:   func() (string, error) { return target, nil },
 				GOOS:             "linux",
 				GOARCH:           "amd64",
-			}).Update(context.Background())
+			})
+			if tt.maxArchive > 0 {
+				updater.maxArchiveSize = tt.maxArchive
+			}
+			if tt.maxBinary > 0 {
+				updater.maxExtractedBinarySize = tt.maxBinary
+			}
+			_, err := updater.Update(context.Background())
 			if err == nil {
 				t.Fatal("Update succeeded, want error")
 			}
