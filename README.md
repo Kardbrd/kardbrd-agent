@@ -82,7 +82,7 @@ full set.
 
 ## CLI output formats
 
-Collection reads such as `kardbrd board list` now default to TSV with headers. Add `--no-headers` for headerless TSV, `--format json` for the lossless indented JSON response, or `--format md` for a Markdown table.
+Collection reads such as `kardbrd board list` now default to TSV with headers. Add `--no-headers` for headerless TSV, `--format json` for the lossless indented JSON response, or `--format md` for a Markdown table. Output formats apply only to client commands; `agent` commands reject `--format`.
 
 ```bash
 kardbrd board list

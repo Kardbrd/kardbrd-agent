@@ -144,7 +144,7 @@ func outputTableMarkdown(w io.Writer, table outputTable) error {
 	headers := make([]string, len(table.columns))
 	separator := make([]string, len(table.columns))
 	for i, column := range table.columns {
-		headers[i] = markdownTableCell(column.header)
+		headers[i] = column.header
 		separator[i] = "---"
 	}
 	if _, err := fmt.Fprintf(w, "| %s |\n| %s |\n", strings.Join(headers, " | "), strings.Join(separator, " | ")); err != nil {
@@ -205,7 +205,11 @@ func tsvTableCell(value string) string {
 	if value == "" {
 		return value
 	}
-	switch value[0] {
+	trimmed := strings.TrimLeft(value, "\t\r\n")
+	if trimmed == "" {
+		return value
+	}
+	switch trimmed[0] {
 	case '=', '+', '-', '@':
 		return "'" + value
 	default:
@@ -228,7 +232,22 @@ func visibleTableControls(value string) string {
 func markdownTableCell(value string) string {
 	value = strings.ReplaceAll(value, "\r\n", "\n")
 	value = strings.ReplaceAll(value, "\r", "\n")
-	value = strings.ReplaceAll(value, "\\", "\\\\")
-	value = strings.ReplaceAll(value, "|", "\\|")
+	value = strings.NewReplacer(
+		"&", "&amp;",
+		"<", "&lt;",
+		">", "&gt;",
+		"#", "\\#",
+		"\\", "\\\\",
+		"|", "\\|",
+		"*", "\\*",
+		"_", "\\_",
+		"[", "\\[",
+		"]", "\\]",
+		"`", "\\`",
+		"~", "\\~",
+		":", "\\:",
+		".", "\\.",
+		"@", "\\@",
+	).Replace(value)
 	return strings.ReplaceAll(value, "\n", "<br>")
 }

@@ -922,50 +922,6 @@ func jsonCommand(use string, short string, args cobra.PositionalArgs, root *root
 	}
 }
 
-func extractMembersSection(markdown string) string {
-	return extractMarkdownSection(markdown, "## Members", "No members section found.")
-}
-
-func extractMarkdownSection(markdown, heading, emptyMessage string) string {
-	lines := strings.Split(markdown, "\n")
-	var out []string
-	inSection := false
-	for _, line := range lines {
-		if strings.HasPrefix(line, heading) {
-			inSection = true
-			out = append(out, line)
-			continue
-		}
-		if inSection && strings.HasPrefix(line, "## ") {
-			break
-		}
-		if inSection {
-			out = append(out, line)
-		}
-	}
-	if len(out) == 0 {
-		return emptyMessage
-	}
-	return strings.TrimSpace(strings.Join(out, "\n")) + "\n"
-}
-
-func formatLabelsMarkdown(labels []api.Label) string {
-	var out strings.Builder
-	out.WriteString("## Labels\n\n")
-	if len(labels) == 0 {
-		out.WriteString("_No labels defined._\n")
-		return out.String()
-	}
-	for _, label := range labels {
-		name := label.Name
-		if name == "" {
-			name = label.ID
-		}
-		fmt.Fprintf(&out, "- %s (`%s`)\n", name, label.ID)
-	}
-	return out.String()
-}
-
 func expandPublishedText(value string) string {
 	return strings.ReplaceAll(value, `\n`, "\n")
 }

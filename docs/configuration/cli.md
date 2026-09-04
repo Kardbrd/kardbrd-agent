@@ -65,7 +65,7 @@ TSV uses tab-delimited CSV encoding, so tabs, quotes, and newlines inside values
 
 Use `--format json` for the existing lossless, indented JSON response shape. Use `--format md` for a Markdown table using the same columns as TSV. Repeated values such as `match_locations` are compact JSON inside a table cell.
 
-Detail commands continue to default to JSON; `board get` and `card get` also support `--format md`. Mutations and delete confirmations support JSON only, while `md` is always Markdown. Passing a known but unsupported format fails instead of being ignored.
+Detail commands continue to default to JSON; `board get` and `card get` also support `--format md`. Mutations and delete confirmations support JSON only, while `md` is always Markdown. Passing a known but unsupported format fails instead of being ignored. Output formats apply only to client commands: `agent` commands do not support `--format`, and reject it when supplied.
 
 ```bash
 kardbrd board list

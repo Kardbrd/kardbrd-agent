@@ -135,5 +135,27 @@ func TestTableOutputSanitizesTerminalControlsAndTSVFormulas(t *testing.T) {
 	if err := outputTableMarkdown(&output, table); err != nil {
 		t.Fatal(err)
 	}
-	assertEqual(t, "| name |\n| --- |\n| \\\\u001b[31mred |\n", output.String())
+	assertEqual(t, "| name |\n| --- |\n| \\\\u001b\\[31mred |\n", output.String())
+}
+
+func TestTSVTableCellProtectsFormulasAfterLeadingRecordControls(t *testing.T) {
+	for _, value := range []string{
+		"\t=SUM(A1:A2)",
+		"\r+1",
+		"\n-1",
+		"\t\r\n@cmd",
+	} {
+		if got, want := tsvTableCell(value), "'"+value; got != want {
+			t.Errorf("tsvTableCell(%q) = %q, want %q", value, got, want)
+		}
+	}
+	assertEqual(t, "\t\r\n", tsvTableCell("\t\r\n"))
+}
+
+func TestMarkdownTableCellEscapesAPISuppliedMarkup(t *testing.T) {
+	got := markdownTableCell("<script>alert('x')</script> *bold* _em_ [link](https://example.com) `code` ~strike~ &")
+	want := "&lt;script&gt;alert('x')&lt;/script&gt; \\*bold\\* \\_em\\_ \\[link\\](https\\://example\\.com) \\`code\\` \\~strike\\~ &amp;"
+	assertEqual(t, want, got)
+	assertEqual(t, "https\\://example\\.com", markdownTableCell("https://example.com"))
+	assertEqual(t, "www\\.example\\.com user\\@example\\.com \\#123", markdownTableCell("www.example.com user@example.com #123"))
 }
