@@ -145,7 +145,7 @@ docker run --rm \
   kardbrd
 ```
 
-The Docker image builds the Go binary and does not install Python or uv for normal runtime.
+The Docker image includes Go, the official GitHub CLI, Codex, and `pre-commit` for agent delivery work. Python support is included only for `pre-commit`; `uv` is not installed.
 
 ## Development
 

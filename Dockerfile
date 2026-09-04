@@ -9,15 +9,22 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/kardbrd
 FROM golang:1.24-bookworm AS agent
 
 ARG TARGETARCH
-ARG GH_VERSION=2.67.0
+ARG GH_VERSION=2.98.0
+ARG GH_AMD64_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
+ARG GH_ARM64_SHA256=cf689084f3a3618f7eae4a2420d335d74626d65f5e594b9828d125d69f800d86
 ARG PRE_COMMIT_VERSION=4.1.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git openssh-client curl bash nodejs npm python3-pip \
-    && case "$TARGETARCH" in amd64|arm64) ;; *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; esac \
+    && case "$TARGETARCH" in \
+        amd64) gh_sha256="$GH_AMD64_SHA256" ;; \
+        arm64) gh_sha256="$GH_ARM64_SHA256" ;; \
+        *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
     && curl --fail --location --silent --show-error \
         "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" \
         -o /tmp/gh.tar.gz \
+    && echo "${gh_sha256}  /tmp/gh.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/gh.tar.gz -C /tmp \
     && install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh" /usr/local/bin/gh \
     && python3 -m pip install --no-cache-dir --break-system-packages "pre-commit==${PRE_COMMIT_VERSION}" \

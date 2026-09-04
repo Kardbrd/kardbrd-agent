@@ -1,6 +1,6 @@
 # Docker Deployment
 
-The repository Dockerfile builds the Go `kardbrd` binary and runs `kardbrd agent start`. The normal runtime image does not install Python or uv.
+The repository Dockerfile builds the Go `kardbrd` binary and runs `kardbrd agent start`. The runtime image includes Go, the official GitHub CLI, Codex, and `pre-commit`; Python support is included only for `pre-commit`, and `uv` remains absent.
 
 ## Build
 
@@ -55,7 +55,7 @@ services:
 
 ## Executor Images
 
-The provided Dockerfile installs Claude CLI. For Goose, Codex, or Pi, add the relevant CLI install step to your image and set:
+The provided Dockerfile installs Claude CLI, Codex, Go, the official GitHub CLI, and `pre-commit`. For Goose or Pi, add the relevant CLI install step to your image and set:
 
 ```bash
 KARDBRD_AGENT_EXECUTOR=goose
