@@ -10,11 +10,12 @@ import (
 )
 
 func TestAgentStartReportsMissingNewEnvNames(t *testing.T) {
+	isolateAgentStartEnvironment(t)
 	t.Setenv("KARDBRD_TOKEN", "")
 	t.Setenv("KARDBRD_AGENT_BOARD_ID", "")
 	t.Setenv("KARDBRD_AGENT_NAME", "")
 
-	stdout, stderr, err := executeRoot("agent", "start")
+	stdout, stderr, err := executeRoot("agent", "start", "--cwd", t.TempDir())
 	if err == nil {
 		t.Fatal("expected missing config error")
 	}
@@ -25,12 +26,13 @@ func TestAgentStartReportsMissingNewEnvNames(t *testing.T) {
 }
 
 func TestAgentStartReportsLegacyEnvRenames(t *testing.T) {
+	isolateAgentStartEnvironment(t)
 	t.Setenv("KARDBRD_TOKEN", "tok")
 	t.Setenv("KARDBRD_ID", "board")
 	t.Setenv("KARDBRD_AGENT", "bot")
 	t.Setenv("AGENT_CWD", "/repo")
 
-	stdout, stderr, err := executeRoot("agent", "start")
+	stdout, stderr, err := executeRoot("agent", "start", "--cwd", t.TempDir())
 	if err == nil {
 		t.Fatal("expected legacy env error")
 	}
@@ -38,6 +40,35 @@ func TestAgentStartReportsLegacyEnvRenames(t *testing.T) {
 	assertCLIContains(t, output, "KARDBRD_ID was renamed to KARDBRD_AGENT_BOARD_ID")
 	assertCLIContains(t, output, "KARDBRD_AGENT was renamed to KARDBRD_AGENT_NAME")
 	assertCLIContains(t, output, "AGENT_CWD was renamed to KARDBRD_AGENT_CWD")
+}
+
+func isolateAgentStartEnvironment(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{
+		"KARDBRD_API_URL",
+		"KARDBRD_TOKEN",
+		"KARDBRD_AGENT_BOARD_ID",
+		"KARDBRD_AGENT_CWD",
+		"KARDBRD_AGENT_NAME",
+		"KARDBRD_AGENT_TIMEOUT",
+		"KARDBRD_AGENT_MAX_CONCURRENT",
+		"KARDBRD_AGENT_WORKTREES_DIR",
+		"KARDBRD_AGENT_SETUP_CMD",
+		"KARDBRD_AGENT_RULES_FILE",
+		"KARDBRD_AGENT_EXECUTOR",
+		"KARDBRD_ID",
+		"KARDBRD_AGENT",
+		"KARDBRD_URL",
+		"AGENT_CWD",
+		"AGENT_TIMEOUT",
+		"AGENT_MAX_CONCURRENT",
+		"AGENT_WORKTREES_DIR",
+		"AGENT_SETUP_CMD",
+		"AGENT_RULES_FILE",
+		"AGENT_EXECUTOR",
+	} {
+		t.Setenv(name, "")
+	}
 }
 
 func TestAgentValidateReportsValidRulesFile(t *testing.T) {

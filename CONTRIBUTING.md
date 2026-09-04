@@ -5,9 +5,9 @@
 ```bash
 git clone https://github.com/kardbrd/kardbrd-agent.git
 cd kardbrd-agent
-uv sync --dev
-uv run pytest              # run tests
-uv run pre-commit run --all-files  # lint and format
+go test ./...
+go vet ./...
+pre-commit run --all-files
 ```
 
 ## Development workflow
@@ -15,9 +15,10 @@ uv run pre-commit run --all-files  # lint and format
 1. Create a branch for your change
 2. Write code following the [code conventions](https://kardbrd.github.io/kardbrd-agent/contributing/conventions/)
 3. Add tests for new functionality
-4. Ensure all tests pass: `uv run pytest`
-5. Ensure linting passes: `uv run pre-commit run --all-files`
-6. Submit a pull request
+4. Ensure all tests pass: `go test ./...`
+5. Ensure static analysis passes: `go vet ./...`
+6. Ensure linting passes: `pre-commit run --all-files`
+7. Submit a pull request
 
 ## Documentation
 

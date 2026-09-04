@@ -24,10 +24,11 @@ Create a pull request from the current card branch to main.
 Before creating the PR, verify:
 
 1. **Branch is not main** — you must be on a card branch
-2. **Tests pass** — run `uv run pytest` and read FULL output
-3. **Lint passes** — run `uv run pre-commit run --all-files` and read FULL output
-4. **Commits exist** — `git log main..HEAD` shows at least one commit
-5. **No uncommitted changes** — `git status` shows clean working tree. If there are uncommitted
+2. **Tests pass** — run `go test ./...` and read FULL output
+3. **Static analysis passes** — run `go vet ./...` and read FULL output
+4. **Lint passes** — run `pre-commit run --all-files` and read FULL output
+5. **Commits exist** — `git log main..HEAD` shows at least one commit
+6. **No uncommitted changes** — `git status` shows clean working tree. If there are uncommitted
    changes, commit them first with a descriptive message.
 
 **If any prerequisite fails:** Stop. Post a comment explaining what failed. Do NOT create the PR.
@@ -59,8 +60,9 @@ Before creating the PR, verify:
 - [file-by-file or area-by-area breakdown]
 
 ## Test plan
-- [x] All tests pass (`uv run pytest`)
-- [x] Lint passes (`uv run pre-commit run --all-files`)
+- [x] All tests pass (`go test ./...`)
+- [x] Static analysis passes (`go vet ./...`)
+- [x] Lint passes (`pre-commit run --all-files`)
 - [specific test scenarios if applicable]
 
 ## Card

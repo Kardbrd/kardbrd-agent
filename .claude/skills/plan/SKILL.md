@@ -37,7 +37,7 @@ Create a detailed, unambiguous implementation plan from exploration findings. Th
 - NO undefined references like "similar to Task N" — each task is self-contained
 - Every task includes: what file, what function/class, what specifically changes, what the test looks like
 - Include actual code snippets for non-obvious changes
-- Include exact test commands: `uv run pytest` for tests, `uv run pre-commit run --all-files` for lint
+- Include exact verification commands: `go test ./...`, `go vet ./...`, and `pre-commit run --all-files`
 
 ## Process
 

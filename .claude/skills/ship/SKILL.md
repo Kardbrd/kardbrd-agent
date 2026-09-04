@@ -27,8 +27,9 @@ Before merging, verify ALL of the following:
 3. **CI checks pass** — `gh pr checks` shows all checks passing. If checks are still running, wait
    and re-check (do NOT merge with pending checks).
 4. **No merge conflicts** — `gh pr view --json mergeable` shows the PR is mergeable
-5. **Tests pass locally** — run `uv run pytest` and read FULL output
-6. **Lint passes locally** — run `uv run pre-commit run --all-files` and read FULL output
+5. **Tests pass locally** — run `go test ./...` and read FULL output
+6. **Static analysis passes locally** — run `go vet ./...` and read FULL output
+7. **Lint passes locally** — run `pre-commit run --all-files` and read FULL output
 
 **If any prerequisite fails:** Stop. Post a comment explaining what failed. Do NOT merge.
 
@@ -36,7 +37,7 @@ Before merging, verify ALL of the following:
 
 1. Find the PR: `gh pr list --head $(git branch --show-current) --json number,url,title,state`
 2. Verify PR status: `gh pr checks <number>`
-3. Run local verification: `uv run pytest` and `uv run pre-commit run --all-files`
+3. Run local verification: `go test ./...`, `go vet ./...`, and `pre-commit run --all-files`
 4. **Squash merge** the PR:
    ```
    gh pr merge <number> --squash --delete-branch

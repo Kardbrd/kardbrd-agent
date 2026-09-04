@@ -38,8 +38,8 @@ Three-stage code review: spec compliance, parallel specialized reviews via subag
 
 **Only proceed here if Stage 1 passed.**
 
-Before launching subagents, run `uv run pytest` and `uv run pre-commit run --all-files` so test/lint
-results are available as context for the subagents.
+Before launching subagents, run `go test ./...`, `go vet ./...`, and
+`pre-commit run --all-files` so verification results are available as context for the subagents.
 
 Determine which review perspectives are **relevant** to the card's changes. Skip perspectives that
 have zero applicability (e.g., skip UX review for a pure backend refactor with no UI impact, skip
@@ -130,7 +130,7 @@ Prompt the subagent to review for:
 - Assertion quality — are assertions specific enough to catch regressions?
 - Test naming — do test names describe the scenario and expected outcome?
 - Negative tests — are failure modes and error paths tested?
-- Async test patterns — proper use of `@pytest.mark.asyncio`, awaited assertions
+- Go concurrency-test patterns — context cancellation, goroutine cleanup, and race-sensitive assertions
 
 ### Subagent Dispatch
 
@@ -207,7 +207,7 @@ Followed by one of:
 - Approving with unresolved Critical or Important issues
 - Skipping Stage 1 and going straight to specialized reviews
 - Review attachment under 2KB (you skimmed)
-- Not running pytest and pre-commit during review
+- Not running go test, go vet, and pre-commit during review
 - Running fewer than 2 review perspectives (at minimum, code quality + one other)
 - Running subagents sequentially instead of in parallel
 - Subagent report missing severity classifications or file:line references
@@ -218,6 +218,6 @@ Followed by one of:
 2. Verify Stage 1 was completed
 3. Verify all relevant specialized reviews were dispatched in parallel
 4. Verify synthesized issue list covers all subagent findings
-5. Verify pytest and pre-commit were run freshly during review
+5. Verify go test, go vet, and pre-commit were run freshly during review
 6. Verify comment with verdict and perspective summary table was posted
 7. Only then claim completion
