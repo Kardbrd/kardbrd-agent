@@ -46,6 +46,9 @@ func newClient(root *rootOptions) (*api.Client, error) {
 }
 
 func runJSON(cmd *cobra.Command, root *rootOptions, call func(context.Context, *api.Client) (json.RawMessage, error)) error {
+	if _, err := resolveFormat(cmd, root, formatJSON, formatJSON); err != nil {
+		return err
+	}
 	client, err := newClient(root)
 	if err != nil {
 		return err
@@ -58,6 +61,9 @@ func runJSON(cmd *cobra.Command, root *rootOptions, call func(context.Context, *
 }
 
 func runMarkdown(cmd *cobra.Command, root *rootOptions, call func(context.Context, *api.Client) (string, error)) error {
+	if _, err := resolveFormat(cmd, root, formatMD, formatMD); err != nil {
+		return err
+	}
 	client, err := newClient(root)
 	if err != nil {
 		return err
@@ -68,6 +74,148 @@ func runMarkdown(cmd *cobra.Command, root *rootOptions, call func(context.Contex
 	}
 	return outputMarkdown(cmd.OutOrStdout(), markdown)
 }
+
+func runCollection(cmd *cobra.Command, root *rootOptions, schema []tableColumn, call func(context.Context, *api.Client) (json.RawMessage, error)) error {
+	format, err := resolveFormat(cmd, root, formatTSV, formatTSV, formatJSON, formatMD)
+	if err != nil {
+		return err
+	}
+	client, err := newClient(root)
+	if err != nil {
+		return err
+	}
+	raw, err := call(cmd.Context(), client)
+	if err != nil {
+		return err
+	}
+	if format == formatJSON {
+		return outputRawJSON(cmd.OutOrStdout(), raw)
+	}
+	table, err := tableFromJSON(raw, schema)
+	if err != nil {
+		return err
+	}
+	if format == formatMD {
+		return outputTableMarkdown(cmd.OutOrStdout(), table)
+	}
+	return outputTableTSV(cmd.OutOrStdout(), table, root.noHeaders)
+}
+
+func collectionCommand(use string, short string, args cobra.PositionalArgs, root *rootOptions, schema []tableColumn, build func(*cobra.Command, []string) func(context.Context, *api.Client) (json.RawMessage, error)) *cobra.Command {
+	return &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  args,
+		RunE: func(cmd *cobra.Command, argv []string) error {
+			return runCollection(cmd, root, schema, build(cmd, argv))
+		},
+	}
+}
+
+func collectionField(raw json.RawMessage, key string) (json.RawMessage, error) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return nil, err
+	}
+	if value, ok := object[key]; ok {
+		return value, nil
+	}
+	return json.RawMessage(`[]`), nil
+}
+
+func tableSchema(fields ...tableColumn) []tableColumn {
+	return fields
+}
+
+func column(header string, paths ...string) tableColumn {
+	column := tableColumn{header: header, paths: make([][]string, len(paths))}
+	for i, path := range paths {
+		column.paths[i] = strings.Split(path, ".")
+	}
+	return column
+}
+
+func optionalColumn(header string, paths ...string) tableColumn {
+	column := column(header, paths...)
+	column.optional = true
+	return column
+}
+
+var (
+	boardsTableSchema = tableSchema(
+		column("id", "id"),
+		column("name", "name"),
+		column("workspace_id", "workspace_id", "workspace.id"),
+		column("workspace_name", "workspace_name", "workspace.name"),
+		column("description", "description"),
+		column("created_at", "created_at"),
+		column("updated_at", "updated_at"),
+	)
+	membersTableSchema = tableSchema(
+		column("id", "id"),
+		column("display_name", "display_name", "name"),
+		column("email", "email"),
+		column("is_bot", "is_bot"),
+	)
+	labelsTableSchema = tableSchema(
+		column("id", "id"),
+		column("name", "name"),
+		column("color", "color"),
+		column("position", "position"),
+	)
+	attachmentsTableSchema = tableSchema(
+		column("id", "id"),
+		column("filename", "filename"),
+		column("file_size", "file_size"),
+		column("file_size_display", "file_size_display"),
+		column("content_type", "content_type"),
+		column("created_at", "created_at"),
+	)
+	linksTableSchema = tableSchema(
+		column("id", "id"),
+		column("display_text", "display_text"),
+		column("url", "url"),
+		column("position", "position"),
+		column("created_by_id", "created_by_id", "created_by.id"),
+		column("created_by_name", "created_by_name", "created_by.name", "created_by.display_name"),
+		column("created_at", "created_at"),
+		column("updated_at", "updated_at"),
+	)
+	boardSearchTableSchema = tableSchema(
+		column("id", "id"),
+		column("title", "title"),
+		column("list_name", "list_name", "list.name"),
+	)
+	searchTableSchema = tableSchema(
+		column("id", "id"),
+		column("title", "title"),
+		column("board_id", "board_id", "board.id"),
+		column("board_name", "board_name", "board.name"),
+		column("workspace_id", "workspace_id", "workspace.id"),
+		column("workspace_name", "workspace_name", "workspace.name"),
+		column("list_name", "list_name", "list.name"),
+		column("is_archived", "is_archived"),
+		column("match_locations", "match_locations"),
+		column("updated_at", "updated_at"),
+	)
+	activityTableSchema = tableSchema(
+		column("id", "id"),
+		column("created_at", "created_at"),
+		column("user_id", "user_id", "user.id"),
+		column("user_name", "user_name", "user.name", "user.display_name"),
+		column("via_agent", "via_agent"),
+		column("action", "action"),
+		column("entity_type", "entity_type"),
+		column("entity_id", "entity_id"),
+		column("entity_name", "entity_name"),
+		column("card_id", "card_id", "card.id"),
+		column("card_title", "card_title", "card.title"),
+		column("board_id", "board_id", "board.id"),
+		optionalColumn("board_name", "board_name", "board.name"),
+		optionalColumn("workspace_id", "workspace_id", "workspace.id"),
+		optionalColumn("workspace_name", "workspace_name", "workspace.name"),
+	)
+)
 
 func newMDCommand(root *rootOptions) *cobra.Command {
 	return &cobra.Command{
@@ -141,42 +289,19 @@ func boardGet(root *rootOptions) *cobra.Command {
 }
 
 func boardList(root *rootOptions) *cobra.Command {
-	return &cobra.Command{
-		Use:   "list",
-		Short: "List all accessible boards",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if root.format == "md" {
-				return runMarkdown(cmd, root, func(ctx context.Context, client *api.Client) (string, error) {
-					return client.ListBoardsMarkdown(ctx)
-				})
-			}
-			return runJSON(cmd, root, func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
-				return client.ListBoards(ctx)
-			})
-		},
-	}
+	return collectionCommand("list", "List all accessible boards", cobra.NoArgs, root, boardsTableSchema, func(_ *cobra.Command, _ []string) func(context.Context, *api.Client) (json.RawMessage, error) {
+		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
+			return client.ListBoards(ctx)
+		}
+	})
 }
 
 func boardLabels(root *rootOptions) *cobra.Command {
-	return &cobra.Command{
-		Use:   "labels BOARD_ID",
-		Short: "Get all labels defined on a board",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if root.format == "md" {
-				return runMarkdown(cmd, root, func(ctx context.Context, client *api.Client) (string, error) {
-					catalog, err := client.GetBoardLabelCatalog(ctx, args[0])
-					if err != nil {
-						return "", err
-					}
-					return formatLabelsMarkdown(catalog.Labels), nil
-				})
-			}
-			return runJSON(cmd, root, func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
-				return client.GetBoardLabels(ctx, args[0])
-			})
-		},
-	}
+	return collectionCommand("labels BOARD_ID", "Get all labels defined on a board", cobra.ExactArgs(1), root, labelsTableSchema, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
+		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
+			return client.GetBoardLabels(ctx, args[0])
+		}
+	})
 }
 
 func boardActivity(root *rootOptions) *cobra.Command {
@@ -188,12 +313,7 @@ func boardActivity(root *rootOptions) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts := api.ActivityOptions{Limit: limit, Since: since}
-			if root.format == "md" {
-				return runMarkdown(cmd, root, func(ctx context.Context, client *api.Client) (string, error) {
-					return client.GetBoardActivityMarkdown(ctx, args[0], opts)
-				})
-			}
-			return runJSON(cmd, root, func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
+			return runCollection(cmd, root, activityTableSchema, func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
 				return client.GetBoardActivity(ctx, args[0], opts)
 			})
 		},
@@ -209,28 +329,12 @@ func boardMembers(root *rootOptions) *cobra.Command {
 		Short: "List all members of a board",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if root.format == "md" {
-				return runMarkdown(cmd, root, func(ctx context.Context, client *api.Client) (string, error) {
-					markdown, err := client.GetBoardMarkdown(ctx, args[0], false)
-					if err != nil {
-						return "", err
-					}
-					return extractMembersSection(markdown), nil
-				})
-			}
-			return runJSON(cmd, root, func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
+			return runCollection(cmd, root, membersTableSchema, func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
 				raw, err := client.GetBoard(ctx, args[0], false)
 				if err != nil {
 					return nil, err
 				}
-				var board map[string]json.RawMessage
-				if err := json.Unmarshal(raw, &board); err != nil {
-					return nil, err
-				}
-				if members, ok := board["members"]; ok {
-					return members, nil
-				}
-				return json.RawMessage(`[]`), nil
+				return collectionField(raw, "members")
 			})
 		},
 	}
@@ -274,7 +378,7 @@ func boardFavorite(root *rootOptions) *cobra.Command {
 
 func boardSearch(root *rootOptions) *cobra.Command {
 	var limit int
-	cmd := jsonCommand("search BOARD_ID QUERY", "Search cards on a board by title", cobra.ExactArgs(2), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
+	cmd := collectionCommand("search BOARD_ID QUERY", "Search cards on a board by title", cobra.ExactArgs(2), root, boardSearchTableSchema, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
 		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
 			return client.BoardCardSearch(ctx, args[0], args[1], limit)
 		}
@@ -459,7 +563,7 @@ func cardUnassign(root *rootOptions) *cobra.Command {
 func cardActivity(root *rootOptions) *cobra.Command {
 	var limit int
 	var since string
-	cmd := jsonCommand("activity CARD_ID", "Get recent activity on a card", cobra.ExactArgs(1), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
+	cmd := collectionCommand("activity CARD_ID", "Get recent activity on a card", cobra.ExactArgs(1), root, activityTableSchema, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
 		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
 			return client.GetCardActivity(ctx, args[0], api.ActivityOptions{Limit: limit, Since: since})
 		}
@@ -494,6 +598,9 @@ func newCommentCommand(root *rootOptions) *cobra.Command {
 			Short: "Delete a comment",
 			Args:  cobra.ExactArgs(2),
 			RunE: func(cmd *cobra.Command, args []string) error {
+				if _, err := resolveFormat(cmd, root, formatJSON, formatJSON); err != nil {
+					return err
+				}
 				client, err := newClient(root)
 				if err != nil {
 					return err
@@ -665,7 +772,7 @@ func attachmentMarkdown(root *rootOptions) *cobra.Command {
 }
 
 func attachmentList(root *rootOptions) *cobra.Command {
-	return jsonCommand("list CARD_ID", "List all attachments on a card", cobra.ExactArgs(1), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
+	return collectionCommand("list CARD_ID", "List all attachments on a card", cobra.ExactArgs(1), root, attachmentsTableSchema, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
 		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
 			return client.ListAttachments(ctx, args[0])
 		}
@@ -684,15 +791,19 @@ func newLinkCommand(root *rootOptions) *cobra.Command {
 	group := &cobra.Command{Use: "link", Short: "Link operations on cards"}
 	group.AddCommand(
 		linkAdd(root),
-		jsonCommand("list CARD_ID", "List all links on a card", cobra.ExactArgs(1), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
-			return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
-				return client.ListCardLinks(ctx, args[0])
-			}
-		}),
+		linkList(root),
 		linkUpdate(root),
 		linkDelete(root),
 	)
 	return group
+}
+
+func linkList(root *rootOptions) *cobra.Command {
+	return collectionCommand("list CARD_ID", "List all links on a card", cobra.ExactArgs(1), root, linksTableSchema, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
+		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
+			return client.ListCardLinks(ctx, args[0])
+		}
+	})
 }
 
 func linkAdd(root *rootOptions) *cobra.Command {
@@ -728,6 +839,9 @@ func linkDelete(root *rootOptions) *cobra.Command {
 		Short: "Delete a link",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if _, err := resolveFormat(cmd, root, formatJSON, formatJSON); err != nil {
+				return err
+			}
 			client, err := newClient(root)
 			if err != nil {
 				return err
@@ -745,7 +859,7 @@ func newSearchCommand(root *rootOptions) *cobra.Command {
 	var workspace string
 	var includeArchived bool
 	var limit, offset int
-	cmd := jsonCommand("search QUERY", "Search cards across all accessible boards", cobra.ExactArgs(1), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
+	cmd := collectionCommand("search QUERY", "Search cards across all accessible boards", cobra.ExactArgs(1), root, searchTableSchema, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
 		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
 			return client.Search(ctx, args[0], api.SearchOptions{Workspace: workspace, IncludeArchived: includeArchived, Limit: limit, Offset: offset})
 		}
@@ -759,7 +873,7 @@ func newSearchCommand(root *rootOptions) *cobra.Command {
 
 func newActivityCommand(root *rootOptions) *cobra.Command {
 	var opts api.ActivityOptions
-	cmd := jsonCommand("activity", "Get cross-board activity feed", cobra.NoArgs, root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
+	cmd := collectionCommand("activity", "Get cross-board activity feed", cobra.NoArgs, root, activityTableSchema, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
 		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
 			return client.GetActivity(ctx, opts)
 		}

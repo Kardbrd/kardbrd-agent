@@ -76,21 +76,171 @@ func TestClientCommandPathParity(t *testing.T) {
 	}
 }
 
-func TestBoardListOutputsIndentedJSON(t *testing.T) {
+func TestCollectionCommandsDefaultToTSV(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		args       []string
+		payload    any
+		wantHeader string
+	}{
+		{
+			name:       "board list",
+			path:       "/api/boards/",
+			args:       []string{"board", "list"},
+			payload:    []map[string]string{{"id": "board1"}},
+			wantHeader: "id\tname\tworkspace_id\tworkspace_name\tdescription\tcreated_at\tupdated_at\n",
+		},
+		{
+			name:       "board members",
+			path:       "/api/boards/board1/",
+			args:       []string{"board", "members", "board1"},
+			payload:    map[string]any{"members": []map[string]any{{"id": "member1"}}},
+			wantHeader: "id\tdisplay_name\temail\tis_bot\n",
+		},
+		{
+			name:       "board labels",
+			path:       "/api/boards/board1/labels/",
+			args:       []string{"board", "labels", "board1"},
+			payload:    []map[string]string{{"id": "label1"}},
+			wantHeader: "id\tname\tcolor\tposition\n",
+		},
+		{
+			name:       "attachment list",
+			path:       "/api/cards/card1/attachments/",
+			args:       []string{"attachment", "list", "card1"},
+			payload:    []map[string]string{{"id": "attachment1"}},
+			wantHeader: "id\tfilename\tfile_size\tfile_size_display\tcontent_type\tcreated_at\n",
+		},
+		{
+			name:       "link list",
+			path:       "/api/cards/card1/links/",
+			args:       []string{"link", "list", "card1"},
+			payload:    []map[string]string{{"id": "link1"}},
+			wantHeader: "id\tdisplay_text\turl\tposition\tcreated_by_id\tcreated_by_name\tcreated_at\tupdated_at\n",
+		},
+		{
+			name:       "board search",
+			path:       "/api/boards/board1/cards/search/",
+			args:       []string{"board", "search", "board1", "query"},
+			payload:    []map[string]string{{"id": "card1"}},
+			wantHeader: "id\ttitle\tlist_name\n",
+		},
+		{
+			name:       "global search",
+			path:       "/api/search/",
+			args:       []string{"search", "query"},
+			payload:    []map[string]string{{"id": "card1"}},
+			wantHeader: "id\ttitle\tboard_id\tboard_name\tworkspace_id\tworkspace_name\tlist_name\tis_archived\tmatch_locations\tupdated_at\n",
+		},
+		{
+			name:       "board activity",
+			path:       "/api/boards/board1/activity/",
+			args:       []string{"board", "activity", "board1"},
+			payload:    []map[string]any{{"id": "activity1", "board_name": "Board"}},
+			wantHeader: "id\tcreated_at\tuser_id\tuser_name\tvia_agent\taction\tentity_type\tentity_id\tentity_name\tcard_id\tcard_title\tboard_id\tboard_name\n",
+		},
+		{
+			name:       "card activity",
+			path:       "/api/cards/card1/activity/",
+			args:       []string{"card", "activity", "card1"},
+			payload:    []map[string]string{{"id": "activity1"}},
+			wantHeader: "id\tcreated_at\tuser_id\tuser_name\tvia_agent\taction\tentity_type\tentity_id\tentity_name\tcard_id\tcard_title\tboard_id\n",
+		},
+		{
+			name:       "global activity",
+			path:       "/api/activity/",
+			args:       []string{"activity"},
+			payload:    []map[string]string{{"id": "activity1"}},
+			wantHeader: "id\tcreated_at\tuser_id\tuser_name\tvia_agent\taction\tentity_type\tentity_id\tentity_name\tcard_id\tcard_title\tboard_id\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tt.path {
+					t.Fatalf("unexpected path %s", r.URL.Path)
+				}
+				writeCLITestJSON(t, w, map[string]any{"data": tt.payload})
+			}))
+			defer server.Close()
+
+			args := append([]string{"--api-url", server.URL, "--token", "tok"}, tt.args...)
+			stdout, stderr, err := executeRoot(args...)
+			if err != nil {
+				t.Fatalf("unexpected error: %v\nstderr: %s", err, stderr)
+			}
+			if !strings.HasPrefix(stdout, tt.wantHeader) {
+				t.Fatalf("expected TSV header %q, got %q", tt.wantHeader, stdout)
+			}
+		})
+	}
+}
+
+func TestCollectionFormatsAndNoHeaders(t *testing.T) {
+	payload := []map[string]string{{"id": "board1", "name": "Board"}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/boards/" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
-		writeCLITestJSON(t, w, map[string]any{"data": []map[string]string{{"id": "board1"}}})
+		writeCLITestJSON(t, w, map[string]any{"data": payload})
 	}))
 	defer server.Close()
 
-	stdout, stderr, err := executeRoot("--api-url", server.URL, "--token", "tok", "board", "list")
+	jsonWant := "[\n  {\n    \"id\": \"board1\",\n    \"name\": \"Board\"\n  }\n]\n"
+	for _, args := range [][]string{
+		{"--format", "json", "--api-url", server.URL, "--token", "tok", "board", "list"},
+		{"--api-url", server.URL, "--token", "tok", "board", "list", "--format", "json"},
+	} {
+		stdout, stderr, err := executeRoot(args...)
+		if err != nil {
+			t.Fatalf("unexpected error: %v\nstderr: %s", err, stderr)
+		}
+		assertEqual(t, jsonWant, stdout)
+	}
+
+	stdout, stderr, err := executeRoot("--api-url", server.URL, "--token", "tok", "board", "list", "--format", "md")
 	if err != nil {
 		t.Fatalf("unexpected error: %v\nstderr: %s", err, stderr)
 	}
-	assertCLIContains(t, stdout, "{\n")
-	assertCLIContains(t, stdout, "  \"id\": \"board1\"")
+	assertCLIContains(t, stdout, "| id | name | workspace_id |")
+
+	stdout, stderr, err = executeRoot("--api-url", server.URL, "--token", "tok", "board", "list", "--no-headers")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr: %s", err, stderr)
+	}
+	assertEqual(t, "board1\tBoard\t\t\t\t\t\n", stdout)
+}
+
+func TestUnknownFormatFailsBeforeRequest(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		writeCLITestJSON(t, w, map[string]any{"data": []any{}})
+	}))
+	defer server.Close()
+
+	_, _, err := executeRoot("--api-url", server.URL, "--token", "tok", "--format", "yaml", "board", "list")
+	if err == nil {
+		t.Fatal("expected format validation error")
+	}
+	assertEqual(t, 0, requests)
+}
+
+func TestMarkdownShortcutRejectsExplicitNonMarkdownFormat(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_, _ = w.Write([]byte("# Card\n"))
+	}))
+	defer server.Close()
+
+	_, _, err := executeRoot("--api-url", server.URL, "--token", "tok", "--format", "json", "md", "card", "card1")
+	if err == nil {
+		t.Fatal("expected unsupported format error")
+	}
+	assertEqual(t, 0, requests)
 }
 
 func TestMDCardOutputsRawMarkdown(t *testing.T) {
@@ -127,6 +277,21 @@ func TestCommentDeleteConfirmation(t *testing.T) {
 	if stdout != "Comment deleted.\n" {
 		t.Fatalf("unexpected output: %q", stdout)
 	}
+}
+
+func TestDeleteConfirmationRejectsUnsupportedFormatBeforeRequest(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		writeCLITestJSON(t, w, map[string]any{"data": map[string]any{"deleted": true}})
+	}))
+	defer server.Close()
+
+	_, _, err := executeRoot("--api-url", server.URL, "--token", "tok", "--format", "md", "comment", "delete", "card1", "comment1")
+	if err == nil {
+		t.Fatal("expected unsupported format error")
+	}
+	assertEqual(t, 0, requests)
 }
 
 func TestCommentAddExpandsEscapedNewlines(t *testing.T) {

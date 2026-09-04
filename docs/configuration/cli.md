@@ -53,10 +53,25 @@ kardbrd search ...
 kardbrd activity ...
 ```
 
-Use `--format json` or `--format md` where supported.
+### Output formats
+
+Row-oriented reads default to TSV with a stable header row. The following commands support `--format tsv`, `--format json`, and `--format md`:
+
+- `board list`, `board members`, `board labels`, `board search`, and `board activity`
+- `attachment list` and `link list`
+- `search`, `card activity`, and `activity`
+
+TSV uses tab-delimited CSV encoding, so tabs, quotes, and newlines inside values remain safe. Use `--no-headers` to suppress the TSV header row. `--no-headers` affects TSV only.
+
+Use `--format json` for the existing lossless, indented JSON response shape. Use `--format md` for a Markdown table using the same columns as TSV. Repeated values such as `match_locations` are compact JSON inside a table cell.
+
+Detail commands continue to default to JSON; `board get` and `card get` also support `--format md`. Mutations and delete confirmations support JSON only, while `md` is always Markdown. Passing a known but unsupported format fails instead of being ignored.
 
 ```bash
 kardbrd board list
+kardbrd --no-headers board list
+kardbrd --format json board list
+kardbrd board search <board-id> "auth"
 kardbrd md card <card-id>
 kardbrd comment add <card-id> "Done. @alice"
 ```
