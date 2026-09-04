@@ -1,20 +1,32 @@
 # Changelog
 
-## Unreleased
-
-### Added
-
-- `kardbrd self-update`, with verified GitHub release archives for Linux and
-  macOS on amd64 and arm64.
-- Documentation website with MkDocs Material (GitHub Pages)
-- Comprehensive docs: getting started, configuration, deployment, architecture, contributing
+## 0.10.0
 
 ### Changed
 
-- Replaced Python agent/client packaging with one Go `kardbrd` binary.
-- `card update --label` and `--label-ids` now reconcile complete label sets
-  through the production add/remove endpoints, with `--clear-labels` for an
-  explicit empty set. `board labels` now reads the board-detail label catalog.
+- Collection, search, and activity commands now default to stable TSV with
+  headers. Use `--no-headers` for headerless TSV, `--format json` for the
+  previous lossless JSON output, or `--format md` for Markdown tables. (#58)
+- The non-root agent image now includes Go, GitHub CLI, and pre-commit, and
+  pins Codex CLI 0.144.5. (#59)
+
+### Added
+
+- Added `kardbrd self-update`, which selects the current platform's GitHub
+  release archive, verifies its SHA-256 checksum, validates its contents, and
+  atomically replaces the installed executable. (#60)
+- Added release archives for Linux and macOS on amd64 and arm64. (#60)
+- Added `kardbrd card update --clear-labels` for removing every label from a
+  card. (#55)
+
+### Fixed
+
+- Fixed `card update --label` and `--label-ids` so they validate,
+  de-duplicate, and reconcile a card's complete label set. (#55)
+- Fixed board labels JSON and Markdown output to use the board's label
+  catalog. (#56)
+- Restored the agent runtime's ability to create pull requests, inspect CI,
+  and push workflow-file changes. (#59)
 
 ## 0.1.0
 
