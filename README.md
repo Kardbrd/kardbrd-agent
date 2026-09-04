@@ -80,6 +80,16 @@ and labels are changed together, server endpoints make the operation
 non-atomic; a reported reconciliation failure is safe to retry with the same
 full set.
 
+## CLI output formats
+
+Collection reads such as `kardbrd board list` now default to TSV with headers. Add `--no-headers` for headerless TSV, `--format json` for the lossless indented JSON response, or `--format md` for a Markdown table. Output formats apply only to client commands; `agent` commands reject `--format`.
+
+```bash
+kardbrd board list
+kardbrd --format json board list
+kardbrd board list --format md
+```
+
 ## Agent Configuration
 
 | Environment variable | Flag | Default |

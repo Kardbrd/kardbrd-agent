@@ -46,6 +46,37 @@ func TestRootHelpDoesNotPrintTokenEnvValue(t *testing.T) {
 	}
 }
 
+func TestRootHelpDescribesContextualOutputFormats(t *testing.T) {
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--help"})
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	assertCLIContains(t, output.String(), "Output format for client commands: tsv, json, or md.")
+	assertCLIContains(t, output.String(), "Row collections default to tsv")
+	assertCLIContains(t, output.String(), "Suppress the TSV header row.")
+}
+
+func TestCollectionHelpDoesNotAdvertiseJSONAsTheDefaultFormat(t *testing.T) {
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"board", "list", "--help"})
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	assertCLIContains(t, output.String(), "Row collections default to tsv")
+	if strings.Contains(output.String(), `(default "json")`) {
+		t.Fatalf("collection help incorrectly advertises JSON as its default:\n%s", output.String())
+	}
+}
+
 func commandNames(commands any) []string {
 	value := reflect.ValueOf(commands)
 	names := make([]string, 0, value.Len())

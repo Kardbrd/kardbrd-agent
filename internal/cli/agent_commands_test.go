@@ -81,6 +81,41 @@ func TestAgentValidateReportsValidRulesFile(t *testing.T) {
 	assertCLIContains(t, stdout, "Valid")
 }
 
+func TestAgentCommandsRejectExplicitFormat(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "rules", "valid.yml")
+	for _, tt := range []struct {
+		name string
+		args []string
+	}{
+		{name: "group", args: []string{"agent", "--format", "json"}},
+		{name: "validate before", args: []string{"--format", "json", "agent", "validate", path}},
+		{name: "validate after", args: []string{"agent", "validate", path, "--format", "md"}},
+		{name: "start", args: []string{"agent", "start", "--format", "tsv"}},
+		{name: "unknown", args: []string{"--format", "yaml", "agent", "validate", path}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, stderr, err := executeRoot(tt.args...)
+			if err == nil {
+				t.Fatal("expected agent command format error")
+			}
+			assertCLIContains(t, stderr, "--format")
+			if tt.name == "unknown" {
+				assertCLIContains(t, stderr, "tsv, json, md")
+			} else {
+				assertCLIContains(t, stderr, "agent")
+			}
+		})
+	}
+}
+
+func TestAgentGroupWithoutFormatPrintsHelp(t *testing.T) {
+	stdout, stderr, err := executeRoot("agent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr: %s", err, stderr)
+	}
+	assertCLIContains(t, stdout, "Agent daemon commands")
+}
+
 func TestAgentValidateReportsInvalidRulesFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.yml")

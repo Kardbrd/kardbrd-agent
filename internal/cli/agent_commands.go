@@ -35,6 +35,15 @@ func NewAgentCommand(root *rootOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "agent",
 		Short: "Agent daemon commands",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := rejectFormat(cmd, root); err != nil {
+				return err
+			}
+			return cmd.Help()
+		},
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			return rejectFormat(cmd, root)
+		},
 	}
 	cmd.AddCommand(newAgentStartCommand(root))
 	cmd.AddCommand(&cobra.Command{
