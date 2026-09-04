@@ -56,6 +56,30 @@ func TestOutputTableTSVIncludesHeaderForEmptyCollection(t *testing.T) {
 	assertEqual(t, "id\tname\n", output.String())
 }
 
+func TestTableFromJSONKeepsTheSchemaForMissingOptionalValues(t *testing.T) {
+	schema := []tableColumn{
+		{header: "id", paths: [][]string{{"id"}}},
+		{header: "board_name", paths: [][]string{{"board_name"}}},
+	}
+	table, err := tableFromJSON([]byte(`[{"id":"activity1"}]`), schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := outputTableTSV(&output, table, false); err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, "id\tboard_name\nactivity1\t\n", output.String())
+}
+
+func TestTableFromJSONRejectsTrailingData(t *testing.T) {
+	_, err := tableFromJSON([]byte(`[] trailing`), nil)
+	if err == nil {
+		t.Fatal("expected trailing JSON data to fail")
+	}
+}
+
 func TestOutputTableMarkdownIncludesEmptyStateAndEscapesCells(t *testing.T) {
 	table := outputTable{
 		columns: []tableColumn{
@@ -82,4 +106,24 @@ func TestTableValueNormalizesNullsAndScalars(t *testing.T) {
 	assertEqual(t, "", tableValue(nil))
 	assertEqual(t, "true", tableValue(true))
 	assertEqual(t, "[\"one\",\"two\"]", tableValue([]any{"one", "two"}))
+	assertEqual(t, `\u001b[31mred`, tableValue("\x1b[31mred"))
+}
+
+func TestTableOutputSanitizesTerminalControlsAndTSVFormulas(t *testing.T) {
+	table := outputTable{
+		columns: []tableColumn{{header: "name", paths: [][]string{{"name"}}}},
+		rows:    []map[string]any{{"name": "=SUM(A1:A2)"}},
+	}
+	var output bytes.Buffer
+	if err := outputTableTSV(&output, table, false); err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, "name\n'=SUM(A1:A2)\n", output.String())
+
+	table.rows = []map[string]any{{"name": "\x1b[31mred"}}
+	output.Reset()
+	if err := outputTableMarkdown(&output, table); err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, "| name |\n| --- |\n| \\\\u001b[31mred |\n", output.String())
 }

@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode"
 )
 
 type tableColumn struct {
-	header   string
-	paths    [][]string
-	optional bool
+	header string
+	paths  [][]string
 }
 
 type outputTable struct {
@@ -39,7 +39,7 @@ func tableFromJSON(raw json.RawMessage, schema []tableColumn) (outputTable, erro
 	if err != nil {
 		return outputTable{}, err
 	}
-	return outputTable{columns: selectedTableColumns(schema, rows), rows: rows}, nil
+	return outputTable{columns: append([]tableColumn(nil), schema...), rows: rows}, nil
 }
 
 func decodeCollection(raw json.RawMessage) ([]map[string]any, error) {
@@ -47,6 +47,13 @@ func decodeCollection(raw json.RawMessage) ([]map[string]any, error) {
 	decoder.UseNumber()
 	var value any
 	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("expected one JSON value")
+		}
 		return nil, err
 	}
 
@@ -76,25 +83,6 @@ func decodeCollection(raw json.RawMessage) ([]map[string]any, error) {
 		rows = append(rows, row)
 	}
 	return rows, nil
-}
-
-func selectedTableColumns(schema []tableColumn, rows []map[string]any) []tableColumn {
-	columns := make([]tableColumn, 0, len(schema))
-	for _, column := range schema {
-		if !column.optional || tableColumnPresent(column, rows) {
-			columns = append(columns, column)
-		}
-	}
-	return columns
-}
-
-func tableColumnPresent(column tableColumn, rows []map[string]any) bool {
-	for _, row := range rows {
-		if _, ok := tableColumnValue(row, column); ok {
-			return true
-		}
-	}
-	return false
 }
 
 func tableColumnValue(row map[string]any, column tableColumn) (any, bool) {
@@ -140,7 +128,11 @@ func outputTableTSV(w io.Writer, table outputTable, noHeaders bool) error {
 		}
 	}
 	for _, row := range table.rows {
-		if err := writer.Write(tableRow(row, table.columns)); err != nil {
+		cells := tableRow(row, table.columns)
+		for i, cell := range cells {
+			cells[i] = tsvTableCell(cell)
+		}
+		if err := writer.Write(cells); err != nil {
 			return err
 		}
 	}
@@ -192,7 +184,7 @@ func tableValue(value any) string {
 	case nil:
 		return ""
 	case string:
-		return typed
+		return visibleTableControls(typed)
 	case bool:
 		if typed {
 			return "true"
@@ -207,6 +199,30 @@ func tableValue(value any) string {
 		}
 		return string(data)
 	}
+}
+
+func tsvTableCell(value string) string {
+	if value == "" {
+		return value
+	}
+	switch value[0] {
+	case '=', '+', '-', '@':
+		return "'" + value
+	default:
+		return value
+	}
+}
+
+func visibleTableControls(value string) string {
+	var out strings.Builder
+	for _, character := range value {
+		if unicode.IsControl(character) && character != '\t' && character != '\n' && character != '\r' {
+			fmt.Fprintf(&out, "\\u%04x", character)
+			continue
+		}
+		out.WriteRune(character)
+	}
+	return out.String()
 }
 
 func markdownTableCell(value string) string {

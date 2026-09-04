@@ -135,12 +135,6 @@ func column(header string, paths ...string) tableColumn {
 	return column
 }
 
-func optionalColumn(header string, paths ...string) tableColumn {
-	column := column(header, paths...)
-	column.optional = true
-	return column
-}
-
 var (
 	boardsTableSchema = tableSchema(
 		column("id", "id"),
@@ -211,9 +205,9 @@ var (
 		column("card_id", "card_id", "card.id"),
 		column("card_title", "card_title", "card.title"),
 		column("board_id", "board_id", "board.id"),
-		optionalColumn("board_name", "board_name", "board.name"),
-		optionalColumn("workspace_id", "workspace_id", "workspace.id"),
-		optionalColumn("workspace_name", "workspace_name", "workspace.name"),
+		column("board_name", "board_name", "board.name"),
+		column("workspace_id", "workspace_id", "workspace.id"),
+		column("workspace_name", "workspace_name", "workspace.name"),
 	)
 )
 

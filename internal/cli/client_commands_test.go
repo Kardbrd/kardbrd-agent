@@ -138,21 +138,21 @@ func TestCollectionCommandsDefaultToTSV(t *testing.T) {
 			path:       "/api/boards/board1/activity/",
 			args:       []string{"board", "activity", "board1"},
 			payload:    []map[string]any{{"id": "activity1", "board_name": "Board"}},
-			wantHeader: "id\tcreated_at\tuser_id\tuser_name\tvia_agent\taction\tentity_type\tentity_id\tentity_name\tcard_id\tcard_title\tboard_id\tboard_name\n",
+			wantHeader: "id\tcreated_at\tuser_id\tuser_name\tvia_agent\taction\tentity_type\tentity_id\tentity_name\tcard_id\tcard_title\tboard_id\tboard_name\tworkspace_id\tworkspace_name\n",
 		},
 		{
 			name:       "card activity",
 			path:       "/api/cards/card1/activity/",
 			args:       []string{"card", "activity", "card1"},
 			payload:    []map[string]string{{"id": "activity1"}},
-			wantHeader: "id\tcreated_at\tuser_id\tuser_name\tvia_agent\taction\tentity_type\tentity_id\tentity_name\tcard_id\tcard_title\tboard_id\n",
+			wantHeader: "id\tcreated_at\tuser_id\tuser_name\tvia_agent\taction\tentity_type\tentity_id\tentity_name\tcard_id\tcard_title\tboard_id\tboard_name\tworkspace_id\tworkspace_name\n",
 		},
 		{
 			name:       "global activity",
 			path:       "/api/activity/",
 			args:       []string{"activity"},
 			payload:    []map[string]string{{"id": "activity1"}},
-			wantHeader: "id\tcreated_at\tuser_id\tuser_name\tvia_agent\taction\tentity_type\tentity_id\tentity_name\tcard_id\tcard_title\tboard_id\n",
+			wantHeader: "id\tcreated_at\tuser_id\tuser_name\tvia_agent\taction\tentity_type\tentity_id\tentity_name\tcard_id\tcard_title\tboard_id\tboard_name\tworkspace_id\tworkspace_name\n",
 		},
 	}
 
