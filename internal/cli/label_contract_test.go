@@ -287,9 +287,17 @@ func TestCardLabelReplacementMixedScalarUpdateReturnsRefreshedCard(t *testing.T)
 	}
 }
 
-func TestBoardLabelsExtractsDetailCatalogInJSONAndMarkdown(t *testing.T) {
+func TestBoardLabelsExtractsDetailCatalogInAllFormats(t *testing.T) {
 	server := newLabelContractServer(t, "A")
 	stdout, stderr, err := server.run("board", "labels", "board1")
+	if err != nil {
+		t.Fatalf("TSV labels error: %v\nstderr: %s", err, stderr)
+	}
+	if stdout != "id\tname\tcolor\tposition\nA\tA\t\t\nB\tB\t\t\nC\tC\t\t\n" {
+		t.Fatalf("TSV labels = %q", stdout)
+	}
+
+	stdout, stderr, err = server.run("--format", "json", "board", "labels", "board1")
 	if err != nil {
 		t.Fatalf("json labels error: %v\nstderr: %s", err, stderr)
 	}
@@ -305,7 +313,7 @@ func TestBoardLabelsExtractsDetailCatalogInJSONAndMarkdown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("markdown labels error: %v\nstderr: %s", err, stderr)
 	}
-	if stdout != "## Labels\n\n- A (`A`)\n- B (`B`)\n- C (`C`)\n" {
+	if stdout != "| id | name | color | position |\n| --- | --- | --- | --- |\n| A | A |  |  |\n| B | B |  |  |\n| C | C |  |  |\n" {
 		t.Fatalf("markdown labels = %q", stdout)
 	}
 }

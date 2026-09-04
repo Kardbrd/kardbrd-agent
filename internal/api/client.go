@@ -264,15 +264,24 @@ func (c *Client) GetBoardMarkdown(ctx context.Context, boardID string, includeAr
 }
 
 func (c *Client) GetBoardLabels(ctx context.Context, boardID string) (json.RawMessage, error) {
-	catalog, err := c.GetBoardLabelCatalog(ctx, boardID)
+	raw, err := c.GetBoard(ctx, boardID, false)
 	if err != nil {
 		return nil, err
 	}
-	labels, err := json.Marshal(catalog.Labels)
-	if err != nil {
-		return nil, fmt.Errorf("encode board label catalog: %w", err)
+	var board struct {
+		ID     string          `json:"id"`
+		Labels json.RawMessage `json:"labels"`
 	}
-	return labels, nil
+	if err := json.Unmarshal(raw, &board); err != nil {
+		return nil, fmt.Errorf("decode board %q label catalog: %w", boardID, err)
+	}
+	if board.ID == "" {
+		return nil, fmt.Errorf("decode board %q label catalog: missing board ID", boardID)
+	}
+	if len(board.Labels) == 0 {
+		return json.RawMessage(`[]`), nil
+	}
+	return board.Labels, nil
 }
 
 func (c *Client) UpdateBoard(ctx context.Context, boardID, name string) (json.RawMessage, error) {

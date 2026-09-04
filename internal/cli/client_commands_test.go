@@ -107,9 +107,9 @@ func TestCollectionCommandsDefaultToTSV(t *testing.T) {
 		},
 		{
 			name:       "board labels",
-			path:       "/api/boards/board1/labels/",
+			path:       "/api/boards/board1/",
 			args:       []string{"board", "labels", "board1"},
-			payload:    []map[string]any{{"id": "label1", "name": "Bug", "color": "#ff0000", "position": 3}},
+			payload:    map[string]any{"id": "board1", "labels": []map[string]any{{"id": "label1", "name": "Bug", "color": "#ff0000", "position": 3}}},
 			collection: []map[string]any{{"id": "label1", "name": "Bug", "color": "#ff0000", "position": 3}},
 			wantTSV:    "id\tname\tcolor\tposition\nlabel1\tBug\t#ff0000\t3\n",
 		},
