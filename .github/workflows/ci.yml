@@ -85,12 +85,20 @@ jobs:
         run: mkdocs build --strict
 
   package-smoke:
-    name: Release package smoke test (${{ matrix.goarch }})
+    name: Release package smoke test (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        goarch: [amd64, arm64]
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
     steps:
       - uses: actions/checkout@v7
 
@@ -102,13 +110,14 @@ jobs:
 
       - name: Build release-shaped archive
         env:
+          GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
           set -euo pipefail
           version="ci-${GITHUB_SHA::12}"
-          archive_dir="kardbrd_${version}_linux_${GOARCH}"
+          archive_dir="kardbrd_${version}_${GOOS}_${GOARCH}"
           mkdir -p "dist/${archive_dir}"
-          CGO_ENABLED=0 GOOS=linux GOARCH="${GOARCH}" go build \
+          CGO_ENABLED=0 GOOS="${GOOS}" GOARCH="${GOARCH}" go build \
             -trimpath \
             -ldflags="-s -w -X github.com/Kardbrd/kardbrd-agent/internal/version.Version=${version}" \
             -o "dist/${archive_dir}/kardbrd" \
@@ -120,7 +129,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: kardbrd-ci-linux-${{ matrix.goarch }}
+          name: kardbrd-ci-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*.tar.gz
           if-no-files-found: error
           retention-days: 7
