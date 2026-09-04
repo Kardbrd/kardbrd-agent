@@ -41,6 +41,16 @@ func TestOutputTableTSVWithoutHeadersStillTerminates(t *testing.T) {
 	assertEqual(t, "board1\n", output.String())
 }
 
+func TestOutputTableTSVWithoutHeadersForEmptyCollectionPrintsOneNewline(t *testing.T) {
+	table := outputTable{columns: []tableColumn{{header: "id", paths: [][]string{{"id"}}}}}
+
+	var output bytes.Buffer
+	if err := outputTableTSV(&output, table, true); err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, "\n", output.String())
+}
+
 func TestOutputTableTSVIncludesHeaderForEmptyCollection(t *testing.T) {
 	table := outputTable{
 		columns: []tableColumn{
