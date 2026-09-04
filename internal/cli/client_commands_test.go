@@ -70,6 +70,7 @@ func TestClientCommandPathParity(t *testing.T) {
 		"list move",
 		"md",
 		"search",
+		"self-update",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("command path mismatch:\nwant: %#v\n got: %#v", want, got)

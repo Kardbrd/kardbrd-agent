@@ -51,6 +51,7 @@ kardbrd list ...
 kardbrd md ...
 kardbrd search ...
 kardbrd activity ...
+kardbrd self-update
 ```
 
 ### Output formats
@@ -74,7 +75,12 @@ kardbrd --format json board list
 kardbrd board search <board-id> "auth"
 kardbrd md card <card-id>
 kardbrd comment add <card-id> "Done. @alice"
+kardbrd self-update
 ```
+
+`self-update` downloads the latest published archive for the current Linux or
+macOS `amd64`/`arm64` platform, verifies its checksum, and atomically replaces
+the running executable.
 
 ### Labels
 

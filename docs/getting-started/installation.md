@@ -21,6 +21,36 @@ mkdir -p ~/.local/bin
 install -m 0755 "kardbrd_${VERSION}_linux_${ARCH}/kardbrd" ~/.local/bin/kardbrd
 ```
 
+## Download macOS binary
+
+Download the release archive for either an Intel Mac (`amd64`) or Apple Silicon
+Mac (`arm64`):
+
+```bash
+VERSION=v0.1.0
+ARCH=arm64  # or: amd64
+curl -LO "https://github.com/Kardbrd/kardbrd-agent/releases/download/${VERSION}/kardbrd_${VERSION}_darwin_${ARCH}.tar.gz"
+curl -LO "https://github.com/Kardbrd/kardbrd-agent/releases/download/${VERSION}/checksums.txt"
+shasum -a 256 -c --ignore-missing checksums.txt
+tar -xzf "kardbrd_${VERSION}_darwin_${ARCH}.tar.gz"
+mkdir -p ~/.local/bin
+install -m 0755 "kardbrd_${VERSION}_darwin_${ARCH}/kardbrd" ~/.local/bin/kardbrd
+```
+
+## Update an existing installation
+
+Run:
+
+```bash
+kardbrd self-update
+```
+
+The command retrieves the latest GitHub release, selects the published archive
+for the current Linux or macOS `amd64`/`arm64` platform, verifies it against
+that release's `checksums.txt`, and atomically replaces the installed
+executable. It leaves the current executable unchanged if release discovery,
+download, checksum validation, archive validation, or replacement fails.
+
 ## Build from source
 
 ```bash

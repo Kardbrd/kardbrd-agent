@@ -23,6 +23,7 @@ func TestRootCommandNames(t *testing.T) {
 		"list",
 		"md",
 		"search",
+		"self-update",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("command names mismatch:\nwant: %#v\n got: %#v", want, got)
