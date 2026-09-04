@@ -9,10 +9,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/kardbrd
 FROM golang:1.24-bookworm AS agent
 
 ARG TARGETARCH
-ARG GH_VERSION=2.98.0
-ARG GH_AMD64_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
-ARG GH_ARM64_SHA256=cf689084f3a3618f7eae4a2420d335d74626d65f5e594b9828d125d69f800d86
-ARG PRE_COMMIT_VERSION=4.1.0
+ARG GH_VERSION=2.100.0
+ARG GH_AMD64_SHA256=e4d4bb4498e8d007abe545b6568926793ace1b6447da598294a610018cb164be
+ARG GH_ARM64_SHA256=ea4e7a581a32ccad6cc7923cb1576ac5859ba4b9a16ab22eb8f8a96e78e2e961
+ARG PRE_COMMIT_VERSION=4.6.2
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git openssh-client curl bash nodejs npm python3-pip \
