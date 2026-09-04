@@ -60,6 +60,7 @@ Equivalent flags:
 | `kardbrd link ...` | Link client commands |
 | `kardbrd search ...` | Search cards |
 | `kardbrd activity ...` | Read activity |
+| `kardbrd self-update` | Install the latest compatible GitHub release |
 
 ## Label updates
 

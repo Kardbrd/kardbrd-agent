@@ -4,6 +4,8 @@
 
 ### Added
 
+- `kardbrd self-update`, with verified GitHub release archives for Linux and
+  macOS on amd64 and arm64.
 - Documentation website with MkDocs Material (GitHub Pages)
 - Comprehensive docs: getting started, configuration, deployment, architecture, contributing
 
