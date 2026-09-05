@@ -34,13 +34,14 @@ type rawRule struct {
 }
 
 type rawSchedule struct {
-	CardID   string `yaml:"card_id"`
-	Name     string `yaml:"name"`
-	Cron     string `yaml:"cron"`
-	Action   string `yaml:"action"`
-	Model    string `yaml:"model"`
-	Assignee string `yaml:"assignee"`
-	List     string `yaml:"list"`
+	CardID        string `yaml:"card_id"`
+	Name          string `yaml:"name"`
+	Cron          string `yaml:"cron"`
+	Action        string `yaml:"action"`
+	Model         string `yaml:"model"`
+	Assignee      string `yaml:"assignee"`
+	List          string `yaml:"list"`
+	PublishResult *bool  `yaml:"publish_result"`
 }
 
 func LoadFile(path string) (Config, error) {
@@ -90,13 +91,14 @@ func LoadFile(path string) (Config, error) {
 	}
 	for _, rawSchedule := range raw.Schedules {
 		cfg.Schedules = append(cfg.Schedules, Schedule{
-			CardID:   rawSchedule.CardID,
-			Name:     rawSchedule.Name,
-			Cron:     rawSchedule.Cron,
-			Action:   rawSchedule.Action,
-			Model:    rawSchedule.Model,
-			Assignee: rawSchedule.Assignee,
-			List:     rawSchedule.List,
+			CardID:        rawSchedule.CardID,
+			Name:          rawSchedule.Name,
+			Cron:          rawSchedule.Cron,
+			Action:        rawSchedule.Action,
+			Model:         rawSchedule.Model,
+			Assignee:      rawSchedule.Assignee,
+			List:          rawSchedule.List,
+			PublishResult: rawSchedule.PublishResult,
 		})
 	}
 	return cfg, nil

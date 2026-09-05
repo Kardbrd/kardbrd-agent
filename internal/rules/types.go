@@ -49,13 +49,14 @@ func (r Rule) ModelID() string {
 }
 
 type Schedule struct {
-	CardID   string
-	Name     string
-	Cron     string
-	Action   string
-	Model    string
-	Assignee string
-	List     string
+	CardID        string
+	Name          string
+	Cron          string
+	Action        string
+	Model         string
+	Assignee      string
+	List          string
+	PublishResult *bool
 }
 
 func (s Schedule) ModelID() string {
@@ -66,6 +67,12 @@ func (s Schedule) ModelID() string {
 		return resolved
 	}
 	return s.Model
+}
+
+// PublishesResult reports whether the daemon should publish a schedule result.
+// A missing value preserves the legacy behavior of publishing the result.
+func (s Schedule) PublishesResult() bool {
+	return s.PublishResult == nil || *s.PublishResult
 }
 
 type Engine struct {
