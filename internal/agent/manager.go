@@ -246,6 +246,8 @@ func (m *Manager) ProcessMention(ctx context.Context, cardID, commentID, content
 	})
 
 	result := m.Executor.Execute(execCtx, executor.Request{
+		CardID:  cardID,
+		BoardID: m.BoardID,
 		Prompt:  promptText,
 		CWD:     worktreePath,
 		OnChunk: m.makeOnChunk(cardID),
@@ -353,6 +355,8 @@ End your comment by mentioning @%s.
 DO NOT do any new work - just publish what you already did.`, cardID, authorName)
 
 	result := m.Executor.Execute(ctx, executor.Request{
+		CardID:          cardID,
+		BoardID:         m.BoardID,
 		Prompt:          resumePrompt,
 		ResumeSessionID: sessionID,
 		CWD:             worktreePath,

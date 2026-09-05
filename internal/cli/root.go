@@ -14,6 +14,7 @@ type rootOptions struct {
 	token       string
 	format      string
 	noHeaders   bool
+	noRetry     bool
 	showVersion bool
 }
 
@@ -45,6 +46,7 @@ func NewRootCommand() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&opts.token, "token", opts.token, "Authentication token. [prefer env: KARDBRD_TOKEN]")
 	cmd.PersistentFlags().StringVarP(&opts.format, "format", "f", opts.format, "Output format for client commands: tsv, json, or md. Row collections default to tsv; other client commands default to json. Agent commands do not support this flag.")
 	cmd.PersistentFlags().BoolVar(&opts.noHeaders, "no-headers", false, "Suppress the TSV header row.")
+	cmd.PersistentFlags().BoolVar(&opts.noRetry, "no-retry", false, "Make each client request one attempt and do not follow redirects (at-most-one attempt, not exactly-once delivery).")
 	cmd.Flags().BoolVar(&opts.showVersion, "version", false, "Show the version and exit.")
 	_ = cmd.RegisterFlagCompletionFunc("format", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
 		return []string{formatTSV, formatJSON, formatMD}, cobra.ShellCompDirectiveDefault

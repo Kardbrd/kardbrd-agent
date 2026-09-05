@@ -169,6 +169,29 @@ func TestAgentStartPrintsSummaryAndRunsRuntime(t *testing.T) {
 	assertEqual(t, false, captured.WorktreesEnabled)
 }
 
+func TestAgentStartPropagatesNoRetryToRuntimeClient(t *testing.T) {
+	dir := t.TempDir()
+	var captured agentRuntime
+	restore := stubAgentRuntime(t, func(ctx context.Context, runtime agentRuntime) error {
+		captured = runtime
+		return nil
+	})
+	defer restore()
+
+	_, stderr, err := executeRoot(
+		"--no-retry",
+		"--token", "tok",
+		"agent", "start",
+		"--board-id", "board1",
+		"--name", "coder",
+		"--cwd", dir,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr: %s", err, stderr)
+	}
+	assertEqual(t, true, captured.NoRetry)
+}
+
 func TestAgentStartRulesFileOverridesExecutor(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "kardbrd.yml")

@@ -25,6 +25,7 @@ type agentRuntime struct {
 	Config           config.AgentConfig
 	Rules            rules.Engine
 	Schedules        []rules.Schedule
+	NoRetry          bool
 	WorktreesEnabled bool
 	GitRoot          string
 }
@@ -121,6 +122,7 @@ func newAgentStartCommand(root *rootOptions) *cobra.Command {
 				Config:           cfg,
 				Rules:            rules.Engine{Rules: rulesCfg.Rules},
 				Schedules:        rulesCfg.Schedules,
+				NoRetry:          root.noRetry,
 				WorktreesEnabled: worktreesEnabled,
 				GitRoot:          gitRoot,
 			})
@@ -219,6 +221,7 @@ func printAgentSummary(cmd *cobra.Command, cfg config.AgentConfig, loadedRules b
 func realRunAgentRuntime(ctx context.Context, runtime agentRuntime) error {
 	cfg := runtime.Config
 	client := api.NewClient(cfg.APIURL, cfg.Token)
+	client.SetNoRetry(runtime.NoRetry)
 	exec, err := newExecutor(cfg)
 	if err != nil {
 		return err

@@ -49,6 +49,7 @@ func (r Rule) ModelID() string {
 }
 
 type Schedule struct {
+	CardID   string
 	Name     string
 	Cron     string
 	Action   string

@@ -82,6 +82,23 @@ kardbrd self-update
 macOS `amd64`/`arm64` platform, verifies its checksum, and atomically replaces
 the running executable.
 
+### One-attempt client mode
+
+Add the global `--no-retry` flag when a write must not be retried by the CLI:
+
+```bash
+kardbrd --no-retry card create --board BOARD_ID --list LIST_ID --title "Control card"
+```
+
+In this mode every client operation, including reads, JSON writes, attachment
+presign/confirm requests, and presigned attachment uploads, makes at most one
+HTTP attempt. Redirects are not followed, so an authenticated mutation is not
+replayed at a redirect target. A timeout, connection loss, or server error
+returns a nonzero result without retrying. This is an **at-most-one attempt**
+mode, not an exactly-once delivery guarantee: the server may have committed a
+write before the client sees a failure, so reconcile state before manually
+retrying.
+
 ### Labels
 
 Discover the labels available to a board from its board-detail response:

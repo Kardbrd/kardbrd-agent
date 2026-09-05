@@ -42,7 +42,9 @@ func newClient(root *rootOptions) (*api.Client, error) {
 	if token == "" {
 		return nil, fmt.Errorf("--token or KARDBRD_TOKEN is required")
 	}
-	return api.NewClient(apiURL, token), nil
+	client := api.NewClient(apiURL, token)
+	client.SetNoRetry(root.noRetry)
+	return client, nil
 }
 
 func runJSON(cmd *cobra.Command, root *rootOptions, call func(context.Context, *api.Client) (json.RawMessage, error)) error {

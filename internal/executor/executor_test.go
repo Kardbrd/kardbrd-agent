@@ -15,7 +15,7 @@ func TestClaudeExecutorCommandEnvAndResume(t *testing.T) {
 	dir := fakeBinary(t, "claude", `#!/bin/sh
 cat >/dev/null
 printf '%s\n' "$@" > "$FAKE_ARGS"
-printf '%s\n' "$KARDBRD_TOKEN|$KARDBRD_API_URL" > "$FAKE_ENV"
+printf '%s\n' "$KARDBRD_TOKEN|$KARDBRD_API_URL|$KARDBRD_CARD_ID|$KARDBRD_BOARD_ID" > "$FAKE_ENV"
 printf '{"type":"result","result":"ok","session_id":"s1"}\n'
 `)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -23,36 +23,44 @@ printf '{"type":"result","result":"ok","session_id":"s1"}\n'
 	envFile := filepath.Join(t.TempDir(), "env")
 	t.Setenv("FAKE_ARGS", argsFile)
 	t.Setenv("FAKE_ENV", envFile)
+	t.Setenv("KARDBRD_CARD_ID", "stale-card")
+	t.Setenv("KARDBRD_BOARD_ID", "stale-board")
 
 	exec := NewClaude(Config{CWD: t.TempDir(), Timeout: testCommandTimeout, APIURL: "https://api.test", Token: "tok"})
-	result := exec.Execute(context.Background(), Request{Prompt: "hello", ResumeSessionID: "resume1"})
+	result := exec.Execute(context.Background(), Request{Prompt: "hello", ResumeSessionID: "resume1", CardID: "card1", BoardID: "board1"})
 	assertEqual(t, true, result.Success)
 
 	args := readFile(t, argsFile)
 	assertContains(t, args, "-p\n-\n")
 	assertContains(t, args, "--output-format=stream-json")
 	assertContains(t, args, "--resume\nresume1")
-	assertEqual(t, "tok|https://api.test\n", readFile(t, envFile))
+	assertEqual(t, "tok|https://api.test|card1|board1\n", readFile(t, envFile))
 }
 
 func TestCodexExecutorCommand(t *testing.T) {
 	dir := fakeBinary(t, "codex", `#!/bin/sh
 cat >/dev/null
 printf '%s\n' "$@" > "$FAKE_ARGS"
+printf '%s\n' "$KARDBRD_CARD_ID|$KARDBRD_BOARD_ID" > "$FAKE_ENV"
 printf '{"type":"item.message","content":"ok"}\n'
 `)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	argsFile := filepath.Join(t.TempDir(), "args")
+	envFile := filepath.Join(t.TempDir(), "env")
 	t.Setenv("FAKE_ARGS", argsFile)
+	t.Setenv("FAKE_ENV", envFile)
+	t.Setenv("KARDBRD_CARD_ID", "stale-card")
+	t.Setenv("KARDBRD_BOARD_ID", "stale-board")
 
 	exec := NewCodex(Config{CWD: t.TempDir(), Timeout: testCommandTimeout})
-	result := exec.Execute(context.Background(), Request{Prompt: "hello", Model: "gpt-5.4"})
+	result := exec.Execute(context.Background(), Request{Prompt: "hello", Model: "gpt-5.4", CardID: "card2", BoardID: "board2"})
 	assertEqual(t, true, result.Success)
 	args := readFile(t, argsFile)
 	assertContains(t, args, "exec\n")
 	assertContains(t, args, "--dangerously-bypass-approvals-and-sandbox")
 	assertContains(t, args, "--json")
 	assertContains(t, args, "--model\ngpt-5.4")
+	assertEqual(t, "card2|board2\n", readFile(t, envFile))
 }
 
 func TestCodexAuthHintMentionsOpenAIAPIKey(t *testing.T) {
@@ -76,14 +84,19 @@ func TestGooseExecutorCommand(t *testing.T) {
 	dir := fakeBinary(t, "goose", `#!/bin/sh
 cat >/dev/null
 printf '%s\n' "$@" > "$FAKE_ARGS"
+printf '%s\n' "$KARDBRD_CARD_ID|$KARDBRD_BOARD_ID" > "$FAKE_ENV"
 printf '{"type":"AgentMessageChunk","content":"ok"}\n'
 `)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	argsFile := filepath.Join(t.TempDir(), "args")
+	envFile := filepath.Join(t.TempDir(), "env")
 	t.Setenv("FAKE_ARGS", argsFile)
+	t.Setenv("FAKE_ENV", envFile)
+	t.Setenv("KARDBRD_CARD_ID", "stale-card")
+	t.Setenv("KARDBRD_BOARD_ID", "stale-board")
 
 	exec := NewGoose(Config{CWD: t.TempDir(), Timeout: testCommandTimeout})
-	result := exec.Execute(context.Background(), Request{Prompt: "hello", ResumeSessionID: "session1"})
+	result := exec.Execute(context.Background(), Request{Prompt: "hello", ResumeSessionID: "session1", CardID: "card3", BoardID: "board3"})
 	if !result.Success {
 		t.Fatalf("goose execute failed: error=%q stderr=%q command=%v", result.Error, result.Stderr, result.Command)
 	}
@@ -92,6 +105,7 @@ printf '{"type":"AgentMessageChunk","content":"ok"}\n'
 	assertContains(t, args, "-t\n-")
 	assertContains(t, args, "--output-format\nstream-json")
 	assertContains(t, args, "-r\n-n\nsession1")
+	assertEqual(t, "card3|board3\n", readFile(t, envFile))
 }
 
 func TestExecutorEmitsChunksBeforeProcessExit(t *testing.T) {
@@ -132,20 +146,26 @@ func TestPiExecutorCommand(t *testing.T) {
 	dir := fakeBinary(t, "pi", `#!/bin/sh
 cat >/dev/null
 printf '%s\n' "$@" > "$FAKE_ARGS"
+printf '%s\n' "$KARDBRD_CARD_ID|$KARDBRD_BOARD_ID" > "$FAKE_ENV"
 printf '{"type":"session","id":"s1"}\n{"type":"message_end","message":"ok"}\n'
 `)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	argsFile := filepath.Join(t.TempDir(), "args")
+	envFile := filepath.Join(t.TempDir(), "env")
 	t.Setenv("FAKE_ARGS", argsFile)
+	t.Setenv("FAKE_ENV", envFile)
+	t.Setenv("KARDBRD_CARD_ID", "stale-card")
+	t.Setenv("KARDBRD_BOARD_ID", "stale-board")
 
 	exec := NewPi(Config{CWD: t.TempDir(), Timeout: testCommandTimeout})
-	result := exec.Execute(context.Background(), Request{Prompt: "hello", ResumeSessionID: "session1"})
+	result := exec.Execute(context.Background(), Request{Prompt: "hello", ResumeSessionID: "session1", CardID: "card4", BoardID: "board4"})
 	assertEqual(t, true, result.Success)
 	args := readFile(t, argsFile)
 	assertContains(t, args, "--mode\njson")
 	assertContains(t, args, "-p\n-")
 	assertContains(t, args, "-a")
 	assertContains(t, args, "--session\nsession1")
+	assertEqual(t, "card4|board4\n", readFile(t, envFile))
 }
 
 func fakeBinary(t *testing.T, name string, script string) string {

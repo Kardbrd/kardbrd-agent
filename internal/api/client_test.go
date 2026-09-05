@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -199,6 +200,78 @@ func TestRequestRetriesServerErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertEqual(t, "yes", result["ok"])
+}
+
+func TestNoRetryMakesCommittedJSONWriteOneAttempt(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		// Reading the body models a server that committed the mutation before
+		// reporting its failure.
+		if _, err := io.ReadAll(r.Body); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"committed but failed"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "tok")
+	client.SetNoRetry(true)
+	_, err := client.RequestRaw(context.Background(), http.MethodPost, "/api/cards/", map[string]string{"title": "one"})
+	if err == nil {
+		t.Fatal("expected committed write failure")
+	}
+	assertEqual(t, 1, attempts)
+}
+
+func TestNoRetryDoesNotFollowJSONRedirect(t *testing.T) {
+	redirectedRequests := 0
+	var redirectedAuthorization string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectedRequests++
+		redirectedAuthorization = r.Header.Get("Authorization")
+		writeJSON(t, w, map[string]any{"data": map[string]string{"unexpected": "redirect"}})
+	}))
+	defer target.Close()
+
+	originalRequests := 0
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originalRequests++
+		w.Header().Set("Location", target.URL+"/redirected")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer origin.Close()
+
+	client := NewClient(origin.URL, "tok")
+	client.SetNoRetry(true)
+	_, err := client.RequestRaw(context.Background(), http.MethodPost, "/api/cards/", map[string]string{"title": "one"})
+	if err == nil {
+		t.Fatal("expected redirect failure")
+	}
+	assertEqual(t, 1, originalRequests)
+	assertEqual(t, 0, redirectedRequests)
+	assertEqual(t, "", redirectedAuthorization)
+}
+
+func TestNoRetryMakesMarkdownReadOneAttempt(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "tok")
+	client.SetNoRetry(true)
+	_, err := client.RequestMarkdown(context.Background(), "/api/cards/card1/")
+	if err == nil {
+		t.Fatal("expected markdown request failure")
+	}
+	assertEqual(t, 1, attempts)
 }
 
 func writeJSON(t *testing.T, w http.ResponseWriter, value any) {

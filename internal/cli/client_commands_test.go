@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -320,6 +321,122 @@ func TestUnknownFormatFailsBeforeRequest(t *testing.T) {
 		t.Fatal("expected format validation error")
 	}
 	assertEqual(t, 0, requests)
+}
+
+func TestNoRetryMakesClientWritesOneAttempt(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		path string
+	}{
+		{
+			name: "card create",
+			args: []string{"card", "create", "--board", "board1", "--list", "list1", "--title", "one"},
+			path: "/api/boards/board1/lists/list1/cards/",
+		},
+		{
+			name: "comment add",
+			args: []string{"comment", "add", "card1", "one"},
+			path: "/api/cards/card1/comments/",
+		},
+		{
+			name: "link add",
+			args: []string{"link", "add", "card1", "https://example.test"},
+			path: "/api/cards/card1/links/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				if r.Method != http.MethodPost || r.URL.Path != tt.path {
+					t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+				}
+				// The request body has been accepted, representing a committed
+				// write whose response is a server error.
+				if _, err := io.ReadAll(r.Body); err != nil {
+					t.Fatal(err)
+				}
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"error":"committed then failed"}`))
+			}))
+			defer server.Close()
+
+			args := append([]string{"--no-retry", "--api-url", server.URL, "--token", "tok"}, tt.args...)
+			_, _, err := executeRoot(args...)
+			if err == nil {
+				t.Fatal("expected nonzero CLI failure")
+			}
+			assertEqual(t, 1, requests)
+		})
+	}
+}
+
+func TestNoRetryMakesAttachmentCommandOneAttempt(t *testing.T) {
+	uploads := 0
+	uploadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		uploads++
+		if r.Method != http.MethodPut {
+			t.Fatalf("method = %s, want PUT", r.Method)
+		}
+		if _, err := io.ReadAll(r.Body); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer uploadServer.Close()
+
+	confirmations := 0
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/cards/card1/attachments/presign/":
+			writeCLITestJSON(t, w, map[string]any{"data": map[string]string{"upload_url": uploadServer.URL, "s3_key": "uploads/report.md"}})
+		case "/api/cards/card1/attachments/confirm/":
+			confirmations++
+			writeCLITestJSON(t, w, map[string]any{"data": map[string]string{"id": "unexpected"}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer apiServer.Close()
+
+	_, _, err := executeRoot("--no-retry", "--api-url", apiServer.URL, "--token", "tok", "attachment", "markdown", "card1", "--filename", "report.md", "--content", "report")
+	if err == nil {
+		t.Fatal("expected nonzero CLI failure")
+	}
+	assertEqual(t, 1, uploads)
+	assertEqual(t, 0, confirmations)
+}
+
+func TestNoRetryDoesNotReplayLostClientWrite(t *testing.T) {
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		if r.Method != http.MethodPost || r.URL.Path != "/api/boards/board1/lists/list1/cards/" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if _, err := io.ReadAll(r.Body); err != nil {
+			t.Fatal(err)
+		}
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("response writer does not support hijacking")
+		}
+		conn, _, err := hijacker.Hijack()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.Close()
+	}))
+	defer server.Close()
+
+	_, _, err := executeRoot("--no-retry", "--api-url", server.URL, "--token", "tok", "card", "create", "--board", "board1", "--list", "list1", "--title", "one")
+	if err == nil {
+		t.Fatal("expected nonzero CLI failure")
+	}
+	assertEqual(t, int32(1), atomic.LoadInt32(&requests))
 }
 
 func TestMarkdownShortcutRejectsExplicitNonMarkdownFormat(t *testing.T) {

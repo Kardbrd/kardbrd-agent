@@ -71,6 +71,25 @@ schedules:
 	assertIssueContains(t, result.Errors, "invalid cron expression")
 }
 
+func TestValidateRulesFileAcceptsScheduleCardID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fixed-card.yml")
+	writeFile(t, path, `
+board_id: board1
+agent: Bot
+schedules:
+  - name: Fixed
+    card_id: card-fixed
+    cron: "0 * * * *"
+    action: summarize
+`)
+
+	result := ValidateFile(path)
+	if !result.IsValid() {
+		t.Fatalf("validation errors = %#v", result.Errors)
+	}
+	assertNoIssueContains(t, result.Warnings, "card_id")
+}
+
 func writeFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(strings.TrimLeft(content, "\n")), 0o600); err != nil {
@@ -86,4 +105,13 @@ func assertIssueContains(t *testing.T, issues []ValidationIssue, text string) {
 		}
 	}
 	t.Fatalf("expected issue containing %q, got %#v", text, issues)
+}
+
+func assertNoIssueContains(t *testing.T, issues []ValidationIssue, text string) {
+	t.Helper()
+	for _, issue := range issues {
+		if strings.Contains(issue.Message, text) {
+			t.Fatalf("did not expect issue containing %q, got %#v", text, issues)
+		}
+	}
 }

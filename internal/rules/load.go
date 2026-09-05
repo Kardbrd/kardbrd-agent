@@ -34,6 +34,7 @@ type rawRule struct {
 }
 
 type rawSchedule struct {
+	CardID   string `yaml:"card_id"`
 	Name     string `yaml:"name"`
 	Cron     string `yaml:"cron"`
 	Action   string `yaml:"action"`
@@ -89,6 +90,7 @@ func LoadFile(path string) (Config, error) {
 	}
 	for _, rawSchedule := range raw.Schedules {
 		cfg.Schedules = append(cfg.Schedules, Schedule{
+			CardID:   rawSchedule.CardID,
 			Name:     rawSchedule.Name,
 			Cron:     rawSchedule.Cron,
 			Action:   rawSchedule.Action,

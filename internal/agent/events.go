@@ -175,6 +175,8 @@ func (m *Manager) ProcessRule(ctx context.Context, cardID string, rule rules.Rul
 		CWD:            worktreePath,
 	})
 	result := m.Executor.Execute(execCtx, executor.Request{
+		CardID:  cardID,
+		BoardID: m.BoardID,
 		Prompt:  promptText,
 		CWD:     worktreePath,
 		Model:   rule.ModelID(),

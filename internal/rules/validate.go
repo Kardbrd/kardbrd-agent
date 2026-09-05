@@ -45,7 +45,7 @@ var knownEvents = set(
 
 var knownTopFields = set("board_id", "agent", "api_url", "executor", "rules", "schedules")
 var knownRuleFields = set("name", "event", "action", "model", "list", "title", "label", "content_contains", "exclude_label", "require_label", "emoji", "require_user", "assignee", "comment_author")
-var knownScheduleFields = set("name", "cron", "action", "model", "assignee", "list")
+var knownScheduleFields = set("name", "card_id", "cron", "action", "model", "assignee", "list")
 
 func ValidateFile(path string) ValidationResult {
 	var result ValidationResult
