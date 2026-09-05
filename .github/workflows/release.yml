@@ -125,9 +125,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          notes_file="docs/releases/${GITHUB_REF_NAME}.md"
+          release_notes=(--generate-notes)
+          if [ -f "${notes_file}" ]; then
+            release_notes=(--notes-file "${notes_file}")
+          fi
           gh release create "${GITHUB_REF_NAME}" \
             dist/*.tar.gz \
             dist/checksums.txt \
             --verify-tag \
-            --generate-notes \
+            "${release_notes[@]}" \
             --title "${GITHUB_REF_NAME}"

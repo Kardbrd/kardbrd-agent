@@ -81,4 +81,6 @@ nav:
       - Testing: contributing/testing.md
       - Code Conventions: contributing/conventions.md
   - Changelog: changelog.md
+  - Releases:
+      - v0.10.0: releases/v0.10.0.md
   - API Reference: api/index.md

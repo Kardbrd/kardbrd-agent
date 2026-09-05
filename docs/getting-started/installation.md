@@ -11,7 +11,7 @@
 Download the release archive for your CPU architecture:
 
 ```bash
-VERSION=v0.1.0
+VERSION=v0.10.0
 ARCH=amd64  # or: arm64
 curl -LO "https://github.com/Kardbrd/kardbrd-agent/releases/download/${VERSION}/kardbrd_${VERSION}_linux_${ARCH}.tar.gz"
 curl -LO "https://github.com/Kardbrd/kardbrd-agent/releases/download/${VERSION}/checksums.txt"
@@ -27,7 +27,7 @@ Download the release archive for either an Intel Mac (`amd64`) or Apple Silicon
 Mac (`arm64`):
 
 ```bash
-VERSION=v0.1.0
+VERSION=v0.10.0
 ARCH=arm64  # or: amd64
 curl -LO "https://github.com/Kardbrd/kardbrd-agent/releases/download/${VERSION}/kardbrd_${VERSION}_darwin_${ARCH}.tar.gz"
 curl -LO "https://github.com/Kardbrd/kardbrd-agent/releases/download/${VERSION}/checksums.txt"
@@ -36,6 +36,20 @@ tar -xzf "kardbrd_${VERSION}_darwin_${ARCH}.tar.gz"
 mkdir -p ~/.local/bin
 install -m 0755 "kardbrd_${VERSION}_darwin_${ARCH}/kardbrd" ~/.local/bin/kardbrd
 ```
+
+### macOS security notice
+
+The v0.10.0 macOS archives are unsigned and not notarized. After verifying the
+checksum above, try the installed binary once:
+
+```bash
+kardbrd --help
+```
+
+If Gatekeeper blocks it, open **System Settings** > **Privacy & Security**,
+select **Open Anyway**, then confirm **Open**. See [Apple's guidance on opening
+an app from an unidentified developer](https://support.apple.com/en-us/102445)
+for the current flow. A managed Mac may prohibit this override.
 
 ## Update an existing installation
 
