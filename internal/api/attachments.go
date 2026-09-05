@@ -42,7 +42,7 @@ func (c *Client) UploadAttachment(ctx context.Context, cardID, filePath string) 
 	if err != nil {
 		return nil, err
 	}
-	if err := uploadToPresignedURL(ctx, presign.UploadURL, content, contentType); err != nil {
+	if err := c.uploadToPresignedURL(ctx, presign.UploadURL, content, contentType); err != nil {
 		return nil, err
 	}
 
@@ -86,15 +86,15 @@ func (c *Client) GetAttachment(ctx context.Context, cardID, attachmentID string)
 	return c.RequestRaw(ctx, "GET", "/api/cards/"+url.PathEscape(cardID)+"/attachments/"+url.PathEscape(attachmentID)+"/", nil)
 }
 
-func uploadToPresignedURL(ctx context.Context, uploadURL string, content []byte, contentType string) error {
+func (c *Client) uploadToPresignedURL(ctx context.Context, uploadURL string, content []byte, contentType string) error {
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < c.maxAttempts(); attempt++ {
 		req, err := http.NewRequestWithContext(ctx, "PUT", uploadURL, bytes.NewReader(content))
 		if err != nil {
 			return err
 		}
 		req.Header.Set("Content-Type", contentType)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := c.uploadHTTPClient().Do(req)
 		if err != nil {
 			lastErr = err
 			continue
@@ -102,7 +102,7 @@ func uploadToPresignedURL(ctx context.Context, uploadURL string, content []byte,
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 		if resp.StatusCode < 500 {
-			if resp.StatusCode >= 400 {
+			if resp.StatusCode >= 400 || (c.noRetry && resp.StatusCode >= 300) {
 				return &APIError{Message: fmt.Sprintf("Upload failed with HTTP %d", resp.StatusCode), StatusCode: resp.StatusCode}
 			}
 			return nil
@@ -110,6 +110,13 @@ func uploadToPresignedURL(ctx context.Context, uploadURL string, content []byte,
 		lastErr = &APIError{Message: fmt.Sprintf("Upload failed with HTTP %d", resp.StatusCode), StatusCode: resp.StatusCode}
 	}
 	return lastErr
+}
+
+func (c *Client) uploadHTTPClient() *http.Client {
+	if c.noRetry {
+		return c.HTTPClient
+	}
+	return http.DefaultClient
 }
 
 func detectContentType(filePath string) string {

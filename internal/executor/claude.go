@@ -19,7 +19,7 @@ func (e Claude) CheckAuth(ctx context.Context) AuthStatus {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return AuthStatus{Authenticated: false, Error: "Claude CLI not found in PATH", AuthHint: "Ensure `claude` is in PATH"}
 	}
-	stdout, stderr, code, err := runCommand(ctx, Config{Timeout: e.timeout()}, "", []string{"claude", "auth", "status"}, "", "claude auth status timed out", nil)
+	stdout, stderr, code, err := runCommand(ctx, Config{Timeout: e.timeout()}, "", []string{"claude", "auth", "status"}, "", "", "", "claude auth status timed out", nil)
 	if err != nil || code == nil || *code != 0 {
 		return AuthStatus{Authenticated: false, Error: strings.TrimSpace(stderr + stdout)}
 	}
@@ -46,7 +46,7 @@ func (e Claude) Execute(ctx context.Context, req Request) Result {
 	if req.ResumeSessionID != "" {
 		cmd = append(cmd, "--resume", req.ResumeSessionID)
 	}
-	stdout, stderr, code, err := runCommand(ctx, e.cfg, e.cwd(req), cmd, req.Prompt, "Claude execution timed out", func(line string) {
+	stdout, stderr, code, err := runCommand(ctx, e.cfg, e.cwd(req), cmd, req.Prompt, req.CardID, req.BoardID, "Claude execution timed out", func(line string) {
 		emitChunkLine(line, "claude", req.OnChunk)
 	})
 	return resultFromRun(parseClaudeOutput, stdout, stderr, code, cmd, err)

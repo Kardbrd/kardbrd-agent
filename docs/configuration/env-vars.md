@@ -23,6 +23,17 @@ All configuration can be set via environment variables. CLI flags take precedenc
 | `KARDBRD_AGENT_SETUP_CMD` | `--setup-cmd` | — | Run in each worktree (e.g., `npm install`) |
 | `KARDBRD_AGENT_RULES_FILE` | `--rules` | `<cwd>/kardbrd.yml` | Path to rules file |
 
+## Executor card context
+
+For every card invocation, the agent supplies these authoritative values to
+the executor subprocess. They override stale inherited values and should be
+read by scripts rather than set in persistent agent configuration.
+
+| Variable | Description |
+|----------|-------------|
+| `KARDBRD_CARD_ID` | Selected source card ID |
+| `KARDBRD_BOARD_ID` | Configured source board ID |
+
 ## LLM provider keys
 
 | Variable | Required for | Description |

@@ -16,6 +16,7 @@ type Client struct {
 	BaseURL    string
 	Token      string
 	HTTPClient *http.Client
+	noRetry    bool
 }
 
 type APIError struct {
@@ -108,6 +109,30 @@ func NewClient(baseURL, token string) *Client {
 	}
 }
 
+// SetNoRetry configures the client to make at most one transport attempt for
+// each logical request. It also leaves redirect responses untouched so an
+// authenticated request cannot be replayed at a redirect target.
+func (c *Client) SetNoRetry(noRetry bool) {
+	c.noRetry = noRetry
+	if c.HTTPClient == nil {
+		c.HTTPClient = &http.Client{Timeout: 30 * time.Second}
+	}
+	if noRetry {
+		c.HTTPClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+		return
+	}
+	c.HTTPClient.CheckRedirect = nil
+}
+
+func (c *Client) maxAttempts() int {
+	if c.noRetry {
+		return 1
+	}
+	return 3
+}
+
 func (c *Client) Request(ctx context.Context, method, path string, body any, out any) error {
 	raw, err := c.RequestRaw(ctx, method, path, body)
 	if err != nil {
@@ -130,7 +155,7 @@ func (c *Client) RequestRaw(ctx context.Context, method, path string, body any) 
 	}
 
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < c.maxAttempts(); attempt++ {
 		raw, err := c.doJSON(ctx, method, path, rawBody)
 		if err == nil {
 			return raw, nil
@@ -145,7 +170,7 @@ func (c *Client) RequestRaw(ctx context.Context, method, path string, body any) 
 
 func (c *Client) RequestMarkdown(ctx context.Context, path string) (string, error) {
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < c.maxAttempts(); attempt++ {
 		text, err := c.doMarkdown(ctx, path)
 		if err == nil {
 			return text, nil
@@ -180,7 +205,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body []byte) (
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= 400 || (c.noRetry && resp.StatusCode >= 300) {
 		return nil, parseAPIError(resp.StatusCode, data)
 	}
 	if len(data) == 0 {
@@ -214,7 +239,7 @@ func (c *Client) doMarkdown(ctx context.Context, path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= 400 || (c.noRetry && resp.StatusCode >= 300) {
 		return "", parseAPIError(resp.StatusCode, data)
 	}
 	return string(data), nil

@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-func runCommand(ctx context.Context, cfg Config, cwd string, args []string, promptText string, timeoutError string, onStdoutLine func(string)) (stdout string, stderr string, code *int, err error) {
+func runCommand(ctx context.Context, cfg Config, cwd string, args []string, promptText, cardID, boardID, timeoutError string, onStdoutLine func(string)) (stdout string, stderr string, code *int, err error) {
 	commandCtx, cancel := context.WithTimeout(ctx, durationOrDefault(cfg.Timeout))
 	defer cancel()
 
@@ -21,10 +21,7 @@ func runCommand(ctx context.Context, cfg Config, cwd string, args []string, prom
 		cmd.Dir = cwd
 	}
 	cmd.Stdin = strings.NewReader(promptText)
-	cmd.Env = os.Environ()
-	if cfg.Token != "" && cfg.APIURL != "" {
-		cmd.Env = append(cmd.Env, "KARDBRD_TOKEN="+cfg.Token, "KARDBRD_API_URL="+cfg.APIURL)
-	}
+	cmd.Env = executorEnvironment(os.Environ(), cfg, cardID, boardID)
 
 	var stdoutBuf bytes.Buffer
 	var stderrBuf bytes.Buffer
@@ -68,6 +65,21 @@ func runCommand(ctx context.Context, cfg Config, cwd string, args []string, prom
 		code = &exitCode
 	}
 	return stdoutBuf.String(), stderrBuf.String(), code, err
+}
+
+func executorEnvironment(parent []string, cfg Config, cardID, boardID string) []string {
+	env := make([]string, 0, len(parent)+4)
+	for _, entry := range parent {
+		name, _, _ := strings.Cut(entry, "=")
+		if name == "KARDBRD_CARD_ID" || name == "KARDBRD_BOARD_ID" {
+			continue
+		}
+		env = append(env, entry)
+	}
+	if cfg.Token != "" && cfg.APIURL != "" {
+		env = append(env, "KARDBRD_TOKEN="+cfg.Token, "KARDBRD_API_URL="+cfg.APIURL)
+	}
+	return append(env, "KARDBRD_CARD_ID="+cardID, "KARDBRD_BOARD_ID="+boardID)
 }
 
 func durationOrDefault(value time.Duration) time.Duration {

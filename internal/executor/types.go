@@ -15,6 +15,8 @@ type Config struct {
 }
 
 type Request struct {
+	CardID          string
+	BoardID         string
 	Prompt          string
 	ResumeSessionID string
 	CWD             string

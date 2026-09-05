@@ -3,6 +3,8 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log"
 	"strings"
 	"sync"
 
@@ -20,15 +22,16 @@ type Client interface {
 type Processor func(ctx context.Context, cardID string, schedule rules.Schedule) error
 
 type Manager struct {
-	Schedules []rules.Schedule
-	BoardID   string
-	Client    Client
-	Processor Processor
-	parser    cron.Parser
-	cron      *cron.Cron
-	entries   []cron.EntryID
-	ctx       context.Context
-	mu        sync.Mutex
+	Schedules   []rules.Schedule
+	BoardID     string
+	Client      Client
+	Processor   Processor
+	ReportError func(error)
+	parser      cron.Parser
+	cron        *cron.Cron
+	entries     []cron.EntryID
+	ctx         context.Context
+	mu          sync.Mutex
 }
 
 func NewManager(schedules []rules.Schedule, boardID string, client Client, processor Processor) *Manager {
@@ -37,7 +40,10 @@ func NewManager(schedules []rules.Schedule, boardID string, client Client, proce
 		BoardID:   boardID,
 		Client:    client,
 		Processor: processor,
-		parser:    standardParser(),
+		ReportError: func(err error) {
+			log.Printf("kardbrd scheduler: %v", err)
+		},
+		parser: standardParser(),
 	}
 }
 
@@ -95,7 +101,7 @@ func (m *Manager) installSchedulesLocked(ctx context.Context) error {
 		schedule := schedule
 		entryID, err := m.cron.AddFunc(schedule.Cron, func() {
 			if ctx.Err() == nil {
-				_ = m.Trigger(ctx, schedule)
+				m.runSchedule(ctx, schedule)
 			}
 		})
 		if err != nil {
@@ -104,6 +110,12 @@ func (m *Manager) installSchedulesLocked(ctx context.Context) error {
 		m.entries = append(m.entries, entryID)
 	}
 	return nil
+}
+
+func (m *Manager) runSchedule(ctx context.Context, schedule rules.Schedule) {
+	if err := m.Trigger(ctx, schedule); err != nil && m.ReportError != nil {
+		m.ReportError(fmt.Errorf("schedule %q failed: %w", schedule.Name, err))
+	}
 }
 
 func (m *Manager) Trigger(ctx context.Context, schedule rules.Schedule) error {
@@ -121,6 +133,9 @@ func (m *Manager) EnsureCard(ctx context.Context, schedule rules.Schedule) (stri
 	board, err := m.loadBoard(ctx)
 	if err != nil {
 		return "", err
+	}
+	if schedule.CardID != "" {
+		return m.fixedScheduleCard(board, schedule)
 	}
 	for _, list := range board.Lists {
 		for _, card := range list.Cards {
@@ -156,6 +171,27 @@ func (m *Manager) EnsureCard(ctx context.Context, schedule rules.Schedule) (stri
 	return cardID, nil
 }
 
+func (m *Manager) fixedScheduleCard(board boardData, schedule rules.Schedule) (string, error) {
+	if board.ID != m.BoardID {
+		return "", fmt.Errorf("schedule %q fixed card %q is not on configured board %q", schedule.Name, schedule.CardID, m.BoardID)
+	}
+	for _, list := range board.Lists {
+		for _, card := range list.Cards {
+			if card.ID != schedule.CardID {
+				continue
+			}
+			if card.IsArchived {
+				return "", fmt.Errorf("schedule %q fixed card %q is archived", schedule.Name, schedule.CardID)
+			}
+			if card.Board.ID != "" && card.Board.ID != m.BoardID {
+				return "", fmt.Errorf("schedule %q fixed card %q is not on configured board %q", schedule.Name, schedule.CardID, m.BoardID)
+			}
+			return card.ID, nil
+		}
+	}
+	return "", fmt.Errorf("schedule %q fixed card %q was not found on configured board %q", schedule.Name, schedule.CardID, m.BoardID)
+}
+
 func (m *Manager) loadBoard(ctx context.Context) (boardData, error) {
 	raw, err := m.Client.GetBoard(ctx, m.BoardID, true)
 	if err != nil {
@@ -169,6 +205,7 @@ func (m *Manager) loadBoard(ctx context.Context) (boardData, error) {
 }
 
 type boardData struct {
+	ID    string      `json:"id"`
 	Lists []boardList `json:"lists"`
 }
 
@@ -179,8 +216,12 @@ type boardList struct {
 }
 
 type boardCard struct {
-	ID    string `json:"id"`
-	Title string `json:"title"`
+	ID         string `json:"id"`
+	Title      string `json:"title"`
+	IsArchived bool   `json:"is_archived"`
+	Board      struct {
+		ID string `json:"id"`
+	} `json:"board"`
 }
 
 func cardIDFromRaw(raw json.RawMessage) string {

@@ -127,9 +127,12 @@
 # Each schedule has a `name` that doubles as the card title — the
 # scheduler finds an existing card with that name (case-insensitive)
 # or creates a new one. The action then runs in that card's context.
+# Set `card_id` to bind a schedule to one active card exactly; fixed
+# schedules never look up by title or create a fallback card.
 #
 #   schedules:
 #     - name: Daily Summary          # card title (find or create)
+#       card_id: XVxBO30E             # optional fixed active card ID
 #       cron: "0 0 * * *"            # standard cron expression
 #       model: haiku                 # optional: haiku | sonnet | opus
 #       list: Ideas                  # optional: target list for new cards
@@ -139,6 +142,8 @@
 #
 # Schedule fields:
 #   name:      Required. The card title. Used to find or create the card.
+#   card_id:   Optional. Exact active card on this board. Disables title lookup
+#              and fallback card creation.
 #   cron:      Required. Standard cron expression (5 fields: min hour dom mon dow).
 #   action:    Required. Prompt or skill command to run.
 #   model:     Optional. haiku | sonnet | opus.
@@ -147,9 +152,8 @@
 #              Existing cards keep their current assignee.
 #
 # Notes:
-# - Schedules use `croniter` for cron parsing.
-# - The ScheduleManager runs as a third asyncio.gather() task alongside
-#   WebSocket and status ping.
+# - Schedules use standard five-field cron parsing.
+# - The ScheduleManager runs alongside the WebSocket listener and status ping.
 # - If the agent was offline when a cron was due, the missed run is
 #   NOT executed on startup.
 # - Schedules reuse the same executor pipeline as rules (semaphore,

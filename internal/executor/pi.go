@@ -36,7 +36,7 @@ func (e Pi) Execute(ctx context.Context, req Request) Result {
 	if req.ResumeSessionID != "" {
 		cmd = []string{"pi", "--mode", "json", "-p", "-", "-a", "--session", req.ResumeSessionID}
 	}
-	stdout, stderr, code, err := runCommand(ctx, e.cfg, e.cwd(req), cmd, req.Prompt, "Pi execution timed out", func(line string) {
+	stdout, stderr, code, err := runCommand(ctx, e.cfg, e.cwd(req), cmd, req.Prompt, req.CardID, req.BoardID, "Pi execution timed out", func(line string) {
 		emitChunkLine(line, "pi", req.OnChunk)
 	})
 	return resultFromRun(parsePiOutput, stdout, stderr, code, cmd, err)

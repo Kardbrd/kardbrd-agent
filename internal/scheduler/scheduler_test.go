@@ -78,6 +78,86 @@ func TestTriggerEnsuresCardAndRunsProcessor(t *testing.T) {
 	assertEqual(t, "new-card", processedCard)
 }
 
+func TestEnsureScheduleCardUsesFixedIDDespiteRenamedDuplicateTitles(t *testing.T) {
+	client := &fakeScheduleClient{board: rawScheduleJSON(t, map[string]any{
+		"id": "board1",
+		"lists": []any{map[string]any{
+			"id": "todo",
+			"cards": []any{
+				map[string]any{"id": "duplicate", "title": "CBA watcher"},
+				map[string]any{"id": "fixed", "title": "Renamed control card", "board": map[string]string{"id": "board1"}},
+			},
+		}},
+	})}
+	manager := NewManager(nil, "board1", client, nil)
+
+	cardID, err := manager.EnsureCard(context.Background(), rules.Schedule{Name: "CBA watcher", CardID: "fixed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, "fixed", cardID)
+	assertEqual(t, 0, client.createCalls)
+}
+
+func TestEnsureScheduleCardRejectsInvalidFixedIDWithoutCreatingFallback(t *testing.T) {
+	tests := []struct {
+		name  string
+		board any
+	}{
+		{
+			name:  "archived",
+			board: map[string]any{"id": "board1", "lists": []any{map[string]any{"id": "todo", "cards": []any{map[string]any{"id": "fixed", "is_archived": true}}}}},
+		},
+		{
+			name:  "missing",
+			board: map[string]any{"id": "board1", "lists": []any{map[string]any{"id": "todo", "cards": []any{}}}},
+		},
+		{
+			name:  "missing board identity",
+			board: map[string]any{"lists": []any{map[string]any{"id": "todo", "cards": []any{map[string]any{"id": "fixed"}}}}},
+		},
+		{
+			name:  "foreign board",
+			board: map[string]any{"id": "board1", "lists": []any{map[string]any{"id": "todo", "cards": []any{map[string]any{"id": "fixed", "board": map[string]string{"id": "other-board"}}}}}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &fakeScheduleClient{board: rawScheduleJSON(t, tt.board)}
+			manager := NewManager(nil, "board1", client, nil)
+
+			_, err := manager.EnsureCard(context.Background(), rules.Schedule{Name: "CBA watcher", CardID: "fixed"})
+			if err == nil {
+				t.Fatal("expected fixed-card validation error")
+			}
+			assertEqual(t, 0, client.createCalls)
+		})
+	}
+}
+
+func TestFixedScheduleFailureIsReportedAndDoesNotRunProcessor(t *testing.T) {
+	client := &fakeScheduleClient{board: rawScheduleJSON(t, map[string]any{
+		"id":    "board1",
+		"lists": []any{map[string]any{"id": "todo", "cards": []any{}}},
+	})}
+	processed := false
+	reports := []string{}
+	manager := NewManager(nil, "board1", client, func(context.Context, string, rules.Schedule) error {
+		processed = true
+		return nil
+	})
+	manager.ReportError = func(err error) { reports = append(reports, err.Error()) }
+
+	manager.runSchedule(context.Background(), rules.Schedule{Name: "CBA watcher", CardID: "missing"})
+
+	assertEqual(t, false, processed)
+	assertEqual(t, 1, len(reports))
+	if reports[0] == "" {
+		t.Fatal("expected bounded schedule failure diagnostic")
+	}
+}
+
 func TestUpdateSchedulesReplacesConfiguredSchedules(t *testing.T) {
 	manager := NewManager([]rules.Schedule{
 		{Name: "Old", Cron: "0 8 * * *", Action: "old"},
@@ -95,6 +175,7 @@ func TestUpdateSchedulesReplacesConfiguredSchedules(t *testing.T) {
 
 type fakeScheduleClient struct {
 	board         json.RawMessage
+	createCalls   int
 	createdListID string
 	createdTitle  string
 	assigneeID    string
@@ -105,6 +186,7 @@ func (c *fakeScheduleClient) GetBoard(ctx context.Context, boardID string, inclu
 }
 
 func (c *fakeScheduleClient) CreateCard(ctx context.Context, boardID, listID, title, description string) (json.RawMessage, error) {
+	c.createCalls++
 	c.createdListID = listID
 	c.createdTitle = title
 	return mustScheduleJSON(map[string]any{"id": "new-card"}), nil

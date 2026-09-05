@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -24,6 +25,28 @@ func TestLoadRulesFile(t *testing.T) {
 	assertEqual(t, 1, len(cfg.Schedules))
 	assertEqual(t, "Daily Summary", cfg.Schedules[0].Name)
 	assertEqual(t, "claude-haiku-4-5-20251001", cfg.Schedules[0].ModelID())
+}
+
+func TestLoadScheduleCardID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fixed-card.yml")
+	if err := os.WriteFile(path, []byte(`
+board_id: board1
+agent: BotName
+schedules:
+  - name: Renamed watcher
+    card_id: card-fixed
+    cron: "0 * * * *"
+    action: inspect
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, 1, len(cfg.Schedules))
+	assertEqual(t, "card-fixed", cfg.Schedules[0].CardID)
 }
 
 func assertEqual[T comparable](t *testing.T, want T, got T) {

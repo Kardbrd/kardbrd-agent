@@ -10,6 +10,7 @@ import (
 	"github.com/Kardbrd/kardbrd-agent/internal/api"
 	"github.com/Kardbrd/kardbrd-agent/internal/executor"
 	"github.com/Kardbrd/kardbrd-agent/internal/prompt"
+	"github.com/Kardbrd/kardbrd-agent/internal/rules"
 )
 
 func TestNewManagerDefaults(t *testing.T) {
@@ -87,11 +88,24 @@ func TestHandleBoardEventProcessesMention(t *testing.T) {
 	assertEqual(t, "card1", worktrees.createdCard)
 	assertEqual(t, "/plan this", exec.lastPromptRequest.Command)
 	assertEqual(t, "/tmp/card-card1", exec.lastExecuteRequest.CWD)
+	assertEqual(t, "card1", exec.lastExecuteRequest.CardID)
+	assertEqual(t, "board1", exec.lastExecuteRequest.BoardID)
 	assertEqual(t, 1, exec.executeCount)
 	assertEqual(t, "card1", client.comments[0].cardID)
 	assertContains(t, client.comments[0].content, "Done")
 	assertContains(t, client.comments[0].content, "@Paul")
 	assertEqual(t, 0, len(manager.Active))
+}
+
+func TestProcessSchedulePassesSelectedCardIdentity(t *testing.T) {
+	manager := newTestManager(t)
+	exec := manager.Executor.(*fakeExecutor)
+
+	if err := manager.ProcessSchedule(context.Background(), "scheduled-card", rules.Schedule{Name: "CBA watcher", Action: "inspect"}); err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, "scheduled-card", exec.lastExecuteRequest.CardID)
+	assertEqual(t, "board1", exec.lastExecuteRequest.BoardID)
 }
 
 func TestHandleBoardEventSkipsDuplicateActiveCard(t *testing.T) {
