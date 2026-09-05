@@ -64,29 +64,15 @@ func Build(req Request) string {
 		preamble.WriteString(knowledge)
 	}
 
-	responseInstructions := fmt.Sprintf(`
-## IMPORTANT: How to Respond
+	responseInstructions := `
+## Progress Updates and Final Response
 
-When you complete this task, you MUST post your response as a comment on the card.
-Use the kardbrd CLI via the Bash tool:
-`+"```"+`
-kardbrd comment add %s "Your response here"
-`+"```"+`
+You may post progress updates to the card while you work. Comments, attachments,
+links, reactions, and other card updates are allowed during the run; they do not
+finish the task and are never a substitute for the final response.
 
-For multi-line or markdown responses, use a heredoc:
-`+"```"+`
-kardbrd comment add %s "$(cat <<'EOF'
-Your markdown response here.
-
-@%s
-EOF
-)"
-`+"```"+`
-
-End your comment by mentioning the requester: @%s
-
-DO NOT just output text - you must use the kardbrd CLI to post your response.
-`, req.CardID, req.CardID, req.AuthorName, req.AuthorName)
+Return your final response normally when the task is complete. Do not use ` + "`kardbrd comment add`" + ` to publish the completion response. The agent manager will publish it once as the terminal summary and mention the requester. This instruction overrides any earlier generic instruction to post a comment when finished.
+`
 
 	labelInstructions := ""
 	cliInstructions := ""

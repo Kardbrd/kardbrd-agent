@@ -249,6 +249,35 @@ func assertCLIContains(t *testing.T, output string, want string) {
 	}
 }
 
+func clearAgentEnv(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{
+		"KARDBRD_API_URL",
+		"KARDBRD_TOKEN",
+		"KARDBRD_AGENT_BOARD_ID",
+		"KARDBRD_AGENT_NAME",
+		"KARDBRD_AGENT_CWD",
+		"KARDBRD_AGENT_TIMEOUT",
+		"KARDBRD_AGENT_MAX_CONCURRENT",
+		"KARDBRD_AGENT_WORKTREES_DIR",
+		"KARDBRD_AGENT_SETUP_CMD",
+		"KARDBRD_AGENT_RULES_FILE",
+		"KARDBRD_AGENT_EXECUTOR",
+		"KARDBRD_ID",
+		"KARDBRD_AGENT",
+		"KARDBRD_URL",
+		"AGENT_CWD",
+		"AGENT_TIMEOUT",
+		"AGENT_MAX_CONCURRENT",
+		"AGENT_WORKTREES_DIR",
+		"AGENT_SETUP_CMD",
+		"AGENT_RULES_FILE",
+		"AGENT_EXECUTOR",
+	} {
+		t.Setenv(name, "")
+	}
+}
+
 func assertEqual[T comparable](t *testing.T, want T, got T) {
 	t.Helper()
 	if got != want {

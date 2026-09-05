@@ -145,6 +145,10 @@ func (c *Client) Request(ctx context.Context, method, path string, body any, out
 }
 
 func (c *Client) RequestRaw(ctx context.Context, method, path string, body any) (json.RawMessage, error) {
+	return c.requestRaw(ctx, method, path, body, 3)
+}
+
+func (c *Client) requestRaw(ctx context.Context, method, path string, body any, attempts int) (json.RawMessage, error) {
 	var rawBody []byte
 	var err error
 	if body != nil {
@@ -154,8 +158,11 @@ func (c *Client) RequestRaw(ctx context.Context, method, path string, body any) 
 		}
 	}
 
+	if attempts > c.maxAttempts() {
+		attempts = c.maxAttempts()
+	}
 	var lastErr error
-	for attempt := 0; attempt < c.maxAttempts(); attempt++ {
+	for attempt := 0; attempt < attempts; attempt++ {
 		raw, err := c.doJSON(ctx, method, path, rawBody)
 		if err == nil {
 			return raw, nil
@@ -433,6 +440,11 @@ func (c *Client) MoveCardToBoard(ctx context.Context, cardID, boardID string) (j
 
 func (c *Client) AddComment(ctx context.Context, cardID, content string) (json.RawMessage, error) {
 	return c.RequestRaw(ctx, "POST", "/api/cards/"+url.PathEscape(cardID)+"/comments/", map[string]any{"content": content})
+}
+
+// AddCommentOnce avoids retrying a non-idempotent comment creation request.
+func (c *Client) AddCommentOnce(ctx context.Context, cardID, content string) (json.RawMessage, error) {
+	return c.requestRaw(ctx, "POST", "/api/cards/"+url.PathEscape(cardID)+"/comments/", map[string]any{"content": content}, 1)
 }
 
 func (c *Client) GetComment(ctx context.Context, cardID, commentID string) (json.RawMessage, error) {

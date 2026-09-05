@@ -6,7 +6,6 @@ import (
 	"errors"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/Kardbrd/kardbrd-agent/internal/api"
 	"github.com/Kardbrd/kardbrd-agent/internal/executor"
@@ -61,14 +60,25 @@ func (m *Manager) HandleCardMoved(ctx context.Context, message map[string]any) e
 		return nil
 	}
 	m.mu.Lock()
-	if session := m.Active[cardID]; session != nil && session.Process != nil && session.Process.Process != nil {
+	session := m.Active[cardID]
+	if session != nil && session.Process != nil && session.Process.Process != nil {
 		_ = session.Process.Process.Kill()
 	}
-	if session := m.Active[cardID]; session != nil && session.Cancel != nil {
+	if session != nil && session.Cancel != nil {
 		session.Cancel()
 	}
+	var stream api.StreamConn
+	if session != nil {
+		stream = session.Stream
+		session.Stream = nil
+		session.Streaming = false
+	}
 	delete(m.Active, cardID)
+	delete(m.pending, cardID)
 	m.mu.Unlock()
+	if stream != nil {
+		_ = stream.Close()
+	}
 	if m.Worktree != nil {
 		return m.Worktree.Remove(cardID, false)
 	}
@@ -92,8 +102,15 @@ func (m *Manager) HandleStopReaction(ctx context.Context, cardID string, comment
 	if session.Cancel != nil {
 		session.Cancel()
 	}
+	stream := session.Stream
+	session.Stream = nil
+	session.Streaming = false
 	delete(m.Active, cardID)
+	delete(m.pending, cardID)
 	m.mu.Unlock()
+	if stream != nil {
+		_ = stream.Close()
+	}
 
 	_, _ = m.Client.AddComment(ctx, cardID, "**Agent stopped** 🛑\n\nThe active session was terminated.")
 	return nil
@@ -134,12 +151,20 @@ func (m *Manager) processRule(ctx context.Context, cardID string, rule rules.Rul
 	}
 	defer m.release()
 
+	execCtx, cancel := context.WithCancel(ctx)
+	session := &ActiveSession{CardID: cardID, Cancel: cancel}
 	m.mu.Lock()
 	if _, exists := m.Active[cardID]; exists {
 		m.mu.Unlock()
+		cancel()
 		return nil
 	}
+	m.Active[cardID] = session
 	m.mu.Unlock()
+	defer func() {
+		cancel()
+		m.finishActiveSession(session)
+	}()
 
 	auth := m.Executor.CheckAuth(ctx)
 	if !auth.Authenticated {
@@ -158,16 +183,7 @@ func (m *Manager) processRule(ctx context.Context, cardID string, rule rules.Rul
 		}
 		worktreePath = path
 	}
-	execCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	m.mu.Lock()
-	m.Active[cardID] = &ActiveSession{CardID: cardID, WorktreePath: worktreePath, Cancel: cancel}
-	m.mu.Unlock()
-	defer func() {
-		m.mu.Lock()
-		delete(m.Active, cardID)
-		m.mu.Unlock()
-	}()
+	session.WorktreePath = worktreePath
 
 	cardMarkdown, err := m.Client.GetCardMarkdown(ctx, cardID)
 	if err != nil {
@@ -197,13 +213,7 @@ func (m *Manager) processRule(ctx context.Context, cardID string, rule rules.Rul
 		if !publishResult {
 			return nil
 		}
-		if !m.hasRecentBotComment(ctx, cardID, 60*time.Second) {
-			if result.SessionID != "" {
-				return m.resumeToPublish(ctx, cardID, "", result.SessionID, "automation", worktreePath)
-			}
-			m.postFallbackComment(ctx, cardID, result, "automation", "")
-		}
-		return nil
+		return m.completeSuccessfulResult(execCtx, cardID, "", result, "automation", worktreePath)
 	}
 	if !publishResult {
 		return errors.New("executor failed")
@@ -240,7 +250,7 @@ func (m *Manager) HandleStreamRequested(ctx context.Context, cardID string, stre
 
 	m.mu.Lock()
 	session = m.Active[cardID]
-	if session == nil {
+	if session == nil || session.Stream != nil {
 		m.mu.Unlock()
 		_ = stream.Close()
 		return nil
