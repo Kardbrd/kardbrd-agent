@@ -45,7 +45,7 @@ var knownEvents = set(
 
 var knownTopFields = set("board_id", "agent", "api_url", "executor", "rules", "schedules")
 var knownRuleFields = set("name", "event", "action", "model", "list", "title", "label", "content_contains", "exclude_label", "require_label", "emoji", "require_user", "assignee", "comment_author")
-var knownScheduleFields = set("name", "card_id", "cron", "action", "model", "assignee", "list")
+var knownScheduleFields = set("name", "card_id", "cron", "action", "model", "assignee", "list", "publish_result")
 
 func ValidateFile(path string) ValidationResult {
 	var result ValidationResult
@@ -158,6 +158,9 @@ func validateSchedulesNode(result *ValidationResult, node *yaml.Node) {
 			result.addRuleError(i, name, "Schedule missing required field 'cron'")
 		} else if !validCron(cron) {
 			result.addRuleError(i, name, "invalid cron expression '"+cron+"'")
+		}
+		if publishResult, ok := fields["publish_result"]; ok && publishResult.Tag != "!!bool" {
+			result.addRuleError(i, name, "publish_result must be a boolean")
 		}
 	}
 }

@@ -49,6 +49,31 @@ schedules:
 	assertEqual(t, "card-fixed", cfg.Schedules[0].CardID)
 }
 
+func TestLoadSchedulePublishResultDefaultsToTrueAndAcceptsFalse(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "publish-result.yml")
+	if err := os.WriteFile(path, []byte(`
+board_id: board1
+agent: BotName
+schedules:
+  - name: Legacy schedule
+    cron: "0 * * * *"
+    action: inspect
+  - name: Script-owned schedule
+    cron: "15 * * * *"
+    action: inspect
+    publish_result: false
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, true, cfg.Schedules[0].PublishesResult())
+	assertEqual(t, false, cfg.Schedules[1].PublishesResult())
+}
+
 func assertEqual[T comparable](t *testing.T, want T, got T) {
 	t.Helper()
 	if got != want {

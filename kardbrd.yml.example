@@ -137,6 +137,7 @@
 #       model: haiku                 # optional: haiku | sonnet | opus
 #       list: Ideas                  # optional: target list for new cards
 #       assignee: E21K9jmv           # optional: user ID to assign new cards
+#       publish_result: true         # optional: daemon fallback publication (default)
 #       action: |
 #         Read the activity on the board for the previous day...
 #
@@ -150,6 +151,9 @@
 #   list:      Optional. Target list for newly created cards.
 #   assignee:  Optional. User ID to assign when creating a new card.
 #              Existing cards keep their current assignee.
+#   publish_result: Optional. Defaults to true, preserving daemon result
+#              publication. Set false only when the action journals and owns
+#              its one-attempt final result publication and recovery.
 #
 # Notes:
 # - Schedules use standard five-field cron parsing.
@@ -158,6 +162,9 @@
 #   NOT executed on startup.
 # - Schedules reuse the same executor pipeline as rules (semaphore,
 #   worktree, per-card deduplication).
+# - With publish_result: false, the daemon does not check for recent comments,
+#   resume a session, or post a fallback/generic error comment. Executor and
+#   authentication failures still fail the scheduled firing and are logged.
 #   assignee:          Matches the card's assignee user ID. Must be a
 #                      YAML list of user ID strings (not comma-separated).
 #                      Case-sensitive (IDs are exact). Fetches card from API.

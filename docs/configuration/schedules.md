@@ -20,6 +20,7 @@ schedules:
     model: haiku                 # optional: opus | sonnet | haiku
     list: Reports                # optional: target list for new cards
     assignee: E21K9jmv           # optional: user ID to assign new cards
+    publish_result: true         # optional: daemon posts its fallback result (default)
 ```
 
 ## Fields
@@ -33,6 +34,7 @@ schedules:
 | `model` | No | Model override: `opus`, `sonnet`, `haiku` |
 | `list` | No | Target list for newly created cards |
 | `assignee` | No | User ID to assign newly created cards |
+| `publish_result` | No | Set `false` when the action script owns its final result publication; defaults to `true` |
 
 ## How it works
 
@@ -51,6 +53,13 @@ The `ScheduleManager` runs as a background task alongside the WebSocket listener
     Use `card_id` for an unattended control card whose title might change or
     have duplicates. A failed fixed-card firing is reported once to the agent
     log; it does not create a board comment or durable catch-up job.
+
+!!! note "Script-owned publication"
+    `publish_result: false` disables the daemon's recent-comment check,
+    resume-to-publish attempt, fallback result comment, and generic error
+    comment for that schedule. The action script then owns one-attempt result
+    publication and recovery. Executor and authentication failures still fail
+    the scheduled firing and are reported to the agent log.
 
 ## Cron syntax
 
@@ -125,10 +134,11 @@ schedules:
 schedules:
   - name: CBA Sentry watch       # display name only; title may change
     card_id: XVxBO30E            # exact active card on this board
+    publish_result: false        # watcher journals and publishes its own result
     cron: "*/15 * * * *"
     model: haiku
     action: |
-      Run the watcher checks and publish the bounded result on this card.
+      Run the watcher checks and journal/publish the bounded result on this card.
 ```
 
 ## Validation

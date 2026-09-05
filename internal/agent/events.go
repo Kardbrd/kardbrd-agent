@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -124,6 +125,10 @@ func (m *Manager) CheckRules(ctx context.Context, eventType string, message map[
 }
 
 func (m *Manager) ProcessRule(ctx context.Context, cardID string, rule rules.Rule, message map[string]any) error {
+	return m.processRule(ctx, cardID, rule, message, true)
+}
+
+func (m *Manager) processRule(ctx context.Context, cardID string, rule rules.Rule, message map[string]any, publishResult bool) error {
 	if err := m.acquire(ctx); err != nil {
 		return err
 	}
@@ -138,6 +143,9 @@ func (m *Manager) ProcessRule(ctx context.Context, cardID string, rule rules.Rul
 
 	auth := m.Executor.CheckAuth(ctx)
 	if !auth.Authenticated {
+		if !publishResult {
+			return errors.New("executor authentication failed")
+		}
 		_, _ = m.Client.AddComment(ctx, cardID, "**Automation Error** ("+rule.Name+")\n\nAgent not authenticated: `"+auth.Error+"`")
 		return nil
 	}
@@ -186,6 +194,9 @@ func (m *Manager) ProcessRule(ctx context.Context, cardID string, rule rules.Rul
 		return nil
 	}
 	if result.Success {
+		if !publishResult {
+			return nil
+		}
 		if !m.hasRecentBotComment(ctx, cardID, 60*time.Second) {
 			if result.SessionID != "" {
 				return m.resumeToPublish(ctx, cardID, "", result.SessionID, "automation", worktreePath)
@@ -194,16 +205,19 @@ func (m *Manager) ProcessRule(ctx context.Context, cardID string, rule rules.Rul
 		}
 		return nil
 	}
+	if !publishResult {
+		return errors.New("executor failed")
+	}
 	_, _ = m.Client.AddComment(ctx, cardID, buildErrorComment(result, "Automation Error ("+rule.Name+")"))
 	return nil
 }
 
 func (m *Manager) ProcessSchedule(ctx context.Context, cardID string, schedule rules.Schedule) error {
-	return m.ProcessRule(ctx, cardID, rules.Rule{
+	return m.processRule(ctx, cardID, rules.Rule{
 		Name:   "schedule:" + schedule.Name,
 		Action: schedule.Action,
 		Model:  schedule.Model,
-	}, map[string]any{"card_id": cardID})
+	}, map[string]any{"card_id": cardID}, schedule.PublishesResult())
 }
 
 func (m *Manager) HandleStreamRequested(ctx context.Context, cardID string, streamURL string) error {

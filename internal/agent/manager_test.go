@@ -108,6 +108,74 @@ func TestProcessSchedulePassesSelectedCardIdentity(t *testing.T) {
 	assertEqual(t, "board1", exec.lastExecuteRequest.BoardID)
 }
 
+func TestProcessScheduleSuppressesDaemonPublicationWhenDisabled(t *testing.T) {
+	manager := newTestManager(t)
+	client := manager.Client.(*fakeBoardClient)
+	exec := manager.Executor.(*fakeExecutor)
+	exec.result = executor.Result{Success: true, ResultText: "script-owned result", SessionID: "session1"}
+
+	if err := manager.ProcessSchedule(context.Background(), "scheduled-card", rules.Schedule{
+		Name:          "CBA watcher",
+		Action:        "inspect",
+		PublishResult: boolPtr(false),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	assertEqual(t, 1, exec.executeCount)
+	assertEqual(t, 0, client.getCardCalls)
+	assertEqual(t, 0, len(client.comments))
+}
+
+func TestProcessScheduleReturnsExecutorFailureWithoutDaemonCommentWhenPublicationDisabled(t *testing.T) {
+	manager := newTestManager(t)
+	client := manager.Client.(*fakeBoardClient)
+	manager.Executor.(*fakeExecutor).result = executor.Result{Success: false, Error: "provider failure: tok_secret"}
+
+	err := manager.ProcessSchedule(context.Background(), "scheduled-card", rules.Schedule{
+		Name:          "CBA watcher",
+		Action:        "inspect",
+		PublishResult: boolPtr(false),
+	})
+	if err == nil {
+		t.Fatal("expected executor failure")
+	}
+	assertContains(t, err.Error(), "executor failed")
+	assertNotContains(t, err.Error(), "tok_secret")
+	assertEqual(t, 0, len(client.comments))
+}
+
+func TestProcessScheduleReturnsAuthenticationFailureWithoutDaemonCommentWhenPublicationDisabled(t *testing.T) {
+	manager := newTestManager(t)
+	client := manager.Client.(*fakeBoardClient)
+	manager.Executor = &fakeExecutor{auth: executor.AuthStatus{Authenticated: false, Error: "login required: tok_secret"}}
+
+	err := manager.ProcessSchedule(context.Background(), "scheduled-card", rules.Schedule{
+		Name:          "CBA watcher",
+		Action:        "inspect",
+		PublishResult: boolPtr(false),
+	})
+	if err == nil {
+		t.Fatal("expected authentication failure")
+	}
+	assertContains(t, err.Error(), "executor authentication failed")
+	assertNotContains(t, err.Error(), "tok_secret")
+	assertEqual(t, 0, len(client.comments))
+}
+
+func TestProcessSchedulePublishesByDefault(t *testing.T) {
+	manager := newTestManager(t)
+	client := manager.Client.(*fakeBoardClient)
+
+	if err := manager.ProcessSchedule(context.Background(), "scheduled-card", rules.Schedule{Name: "Legacy schedule", Action: "inspect"}); err != nil {
+		t.Fatal(err)
+	}
+
+	assertEqual(t, 1, client.getCardCalls)
+	assertEqual(t, 1, len(client.comments))
+	assertContains(t, client.comments[0].content, "Done")
+}
+
 func TestHandleBoardEventSkipsDuplicateActiveCard(t *testing.T) {
 	manager := newTestManager(t)
 	manager.Active["card1"] = &ActiveSession{CardID: "card1", WorktreePath: "/tmp/card-card1"}
@@ -233,6 +301,7 @@ type fakeBoardClient struct {
 	comment            json.RawMessage
 	markdown           string
 	getBoardCalled     bool
+	getCardCalls       int
 	comments           []commentCall
 	reactions          []reactionCall
 	updatedCardID      string
@@ -260,6 +329,7 @@ func (c *fakeBoardClient) GetBoard(ctx context.Context, boardID string, includeA
 }
 
 func (c *fakeBoardClient) GetCard(ctx context.Context, cardID string) (json.RawMessage, error) {
+	c.getCardCalls++
 	return c.card, nil
 }
 
@@ -412,4 +482,15 @@ func assertContains(t *testing.T, got string, want string) {
 	if !strings.Contains(got, want) {
 		t.Fatalf("expected %q to contain %q", got, want)
 	}
+}
+
+func assertNotContains(t *testing.T, got string, want string) {
+	t.Helper()
+	if strings.Contains(got, want) {
+		t.Fatalf("expected %q not to contain %q", got, want)
+	}
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }

@@ -90,6 +90,44 @@ schedules:
 	assertNoIssueContains(t, result.Warnings, "card_id")
 }
 
+func TestValidateRulesFileAcceptsSchedulePublishResult(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "script-owned.yml")
+	writeFile(t, path, `
+board_id: board1
+agent: Bot
+schedules:
+  - name: Script-owned watcher
+    cron: "0 * * * *"
+    action: inspect
+    publish_result: false
+`)
+
+	result := ValidateFile(path)
+	if !result.IsValid() {
+		t.Fatalf("validation errors = %#v", result.Errors)
+	}
+	assertNoIssueContains(t, result.Warnings, "publish_result")
+}
+
+func TestValidateRulesFileRejectsNonBooleanSchedulePublishResult(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "invalid-publish-result.yml")
+	writeFile(t, path, `
+board_id: board1
+agent: Bot
+schedules:
+  - name: Script-owned watcher
+    cron: "0 * * * *"
+    action: inspect
+    publish_result: sometimes
+`)
+
+	result := ValidateFile(path)
+	if result.IsValid() {
+		t.Fatal("expected invalid result")
+	}
+	assertIssueContains(t, result.Errors, "publish_result must be a boolean")
+}
+
 func writeFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(strings.TrimLeft(content, "\n")), 0o600); err != nil {
