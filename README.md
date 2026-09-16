@@ -81,6 +81,41 @@ and labels are changed together, server endpoints make the operation
 non-atomic; a reported reconciliation failure is safe to retry with the same
 full set.
 
+## Card metadata
+
+Cards support arbitrary JSON metadata without a fixed set of keys or value types.
+The root is an object; values may be strings, numbers, booleans, null, arrays or
+nested objects. These commands work independently of `kardbrd agent`:
+
+```bash
+kardbrd card metadata get CARD_ID
+kardbrd card metadata get CARD_ID ops.status
+kardbrd card metadata set CARD_ID ops.status '"waiting_external"'
+kardbrd card metadata set CARD_ID attempts 2
+kardbrd card metadata set CARD_ID result null
+kardbrd card metadata remove CARD_ID result
+kardbrd card metadata update CARD_ID --set '{"ops.status":"ready","attempts":3}' --remove old_key --if-revision 7
+kardbrd card metadata update CARD_ID --set-file metadata.json
+```
+
+Keys are literal: `ops.status` is one key, not a nested path. Setting a nested
+object replaces that key's complete value. Other keys are preserved. Use
+`--set-file -` to read an object from stdin; repeat `--remove` for multiple keys.
+Null is stored as a value and never implicitly deletes a key. Results are JSON.
+
+Reads return `metadata` and `metadata_revision`. Writes require the revision on
+which the change is based. Without `--if-revision`, the CLI fetches it once before
+writing. For coordinated work, pass the revision from the read that informed
+your decision. A conflict fails with `METADATA_CONFLICT` (HTTP 409); the CLI does
+not fetch a new revision and blindly retry. Inspect the current state before
+deciding whether to try again, especially after an interrupted response.
+
+The server changes keys, advances the revision, and records activity in one
+transaction. Every successful write advances the revision, including setting an
+existing value or removing an absent key. Metadata also appears in card detail,
+board JSON and card Markdown responses. This requires the Django metadata API
+and migration; an older server returns an error rather than accepting the write.
+
 ## CLI output formats
 
 Collection reads such as `kardbrd board list` now default to TSV with headers. Add `--no-headers` for headerless TSV, `--format json` for the lossless indented JSON response, or `--format md` for a Markdown table. Output formats apply only to client commands; `agent` commands reject `--format`.

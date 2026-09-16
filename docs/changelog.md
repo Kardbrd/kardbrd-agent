@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.11.0
+
+### Added
+
+- Added `kardbrd card metadata get`, `set`, `remove`, and `update` for
+  revision-checked card metadata with arbitrary JSON values and literal keys.
+  Deploy the Django metadata endpoint and additive migration before using this
+  CLI release; older servers reject these calls.
+
 ## 0.10.0
 
 ### Changed
