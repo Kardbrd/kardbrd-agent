@@ -49,22 +49,38 @@ func TestMetadataValuesAndExplicitRevision(t *testing.T) {
 	}
 }
 
-func TestMetadataAcceptsMaximumInt64Revision(t *testing.T) {
+func TestMetadataAcceptsLastWritableRevision(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]json.RawMessage
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
-		assertEqual(t, "9223372036854775807", string(body["expected_revision"]))
+		assertEqual(t, "9223372036854775806", string(body["expected_revision"]))
 		_, _ = w.Write([]byte(`{"data":{"metadata_revision":9223372036854775807}}`))
 	}))
 	defer server.Close()
 	t.Setenv("KARDBRD_TOKEN", "test-token")
 
-	_, _, err := executeRoot("--api-url", server.URL, "card", "metadata", "set", "card1", "owner", `"A"`, "--if-revision", "9223372036854775807")
+	_, _, err := executeRoot("--api-url", server.URL, "card", "metadata", "set", "card1", "owner", `"A"`, "--if-revision", "9223372036854775806")
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestMetadataExhaustedRevisionDoesNotPost(t *testing.T) {
+	gets := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertEqual(t, "GET", r.Method)
+		gets++
+		_, _ = w.Write([]byte(`{"data":{"id":"card1","metadata":{},"metadata_revision":9223372036854775807}}`))
+	}))
+	defer server.Close()
+	t.Setenv("KARDBRD_TOKEN", "test-token")
+	_, _, err := executeRoot("--api-url", server.URL, "card", "metadata", "set", "card1", "owner", `"A"`)
+	if err == nil || !strings.Contains(err.Error(), "cannot advance") {
+		t.Fatalf("error = %v", err)
+	}
+	assertEqual(t, 1, gets)
 }
 
 func TestMetadataFetchesRevisionOnceAndDoesNotRetryConflict(t *testing.T) {
@@ -198,6 +214,7 @@ func TestInvalidMetadataArgumentsDoNotMakeRequests(t *testing.T) {
 	for _, args := range [][]string{
 		{"set", "card1", "x", "unquoted"}, {"set", "card1", "x", "NaN"},
 		{"set", "card1", "x", "true", "--if-revision", "-1"},
+		{"set", "card1", "x", "true", "--if-revision", "9223372036854775807"},
 		{"update", "card1", "--set", "[]"}, {"update", "card1", "--set", "null"},
 		{"update", "card1", "--set", "{}"}, {"update", "card1", "--set", "{}", "--set-file", "-"},
 		{"update", "card1", "--set", `{"x":1}`, "--remove", "x"},

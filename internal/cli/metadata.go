@@ -145,8 +145,8 @@ func writeMetadata(cmd *cobra.Command, root *rootOptions, cardID string, patch a
 	if _, err := resolveFormat(cmd, root, formatJSON, formatJSON); err != nil {
 		return err
 	}
-	if patch.ExpectedRevision < 0 {
-		return fmt.Errorf("--if-revision must be non-negative")
+	if patch.ExpectedRevision < 0 || patch.ExpectedRevision == 1<<63-1 {
+		return fmt.Errorf("--if-revision must be non-negative and below 9223372036854775807")
 	}
 	client, err := newClient(root)
 	if err != nil {
@@ -156,6 +156,9 @@ func writeMetadata(cmd *cobra.Command, root *rootOptions, cardID string, patch a
 		state, err := client.GetCardMetadata(cmd.Context(), cardID)
 		if err != nil {
 			return err
+		}
+		if state.MetadataRevision == 1<<63-1 {
+			return fmt.Errorf("metadata revision has reached 9223372036854775807 and cannot advance")
 		}
 		patch.ExpectedRevision = state.MetadataRevision
 	}
