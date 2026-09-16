@@ -386,6 +386,7 @@ func boardSearch(root *rootOptions) *cobra.Command {
 func newCardCommand(root *rootOptions) *cobra.Command {
 	group := &cobra.Command{Use: "card", Short: "Card operations"}
 	group.AddCommand(cardGet(root), cardCreate(root), cardUpdate(root), cardMove(root), cardArchive(root), cardUnarchive(root), cardAssign(root), cardUnassign(root), cardActivity(root), cardMoveToBoard(root))
+	group.AddCommand(newMetadataCommand(root))
 	return group
 }
 
