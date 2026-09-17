@@ -2,7 +2,7 @@
 
 [![Docs](https://github.com/Kardbrd/kardbrd-agent/actions/workflows/docs.yml/badge.svg)](https://kardbrd.github.io/kardbrd-agent/)
 
-Single Go binary for Kardbrd board automation and CLI access. `kardbrd agent ...` runs the agent daemon; every other `kardbrd ...` command is the Kardbrd client CLI.
+Single Go binary for Kardbrd board automation and CLI access. `kardbrd agent ...` runs the coding-agent daemon, while opt-in `kardbrd worker ...` runs a separate durable personal-operations worker. Every other command is the Kardbrd client CLI.
 
 ## Prerequisites
 
@@ -52,6 +52,7 @@ Equivalent flags:
 | --- | --- |
 | `kardbrd agent start` | Start the agent daemon |
 | `kardbrd agent validate [kardbrd.yml]` | Validate rules |
+| `kardbrd worker ...` | Run explicitly delegated durable personal work from a selected board |
 | `kardbrd board ...` | Board client commands |
 | `kardbrd card ...` | Card client commands |
 | `kardbrd comment ...` | Comment client commands |
@@ -61,6 +62,15 @@ Equivalent flags:
 | `kardbrd search ...` | Search cards |
 | `kardbrd activity ...` | Read activity |
 | `kardbrd self-update` | Install the latest compatible GitHub release |
+
+## Personal worker
+
+The worker is disabled unless explicitly invoked. It uses versioned `ops` card
+metadata, server revision-CAS claims, bounded trusted subprocess adapters, and
+durable receipts. It has no Gmail, Calendar, browser, or built-in notification
+connector and does not change the coding-agent lifecycle. See the
+[personal worker guide](docs/configuration/personal-worker.md) for safe fixture
+setup, operator activation, and rollback.
 
 ## Label updates
 
