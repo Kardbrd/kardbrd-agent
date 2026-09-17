@@ -35,6 +35,7 @@ type workerFlags struct {
 	observerLimit   int
 	observerMax     int
 	observerTimeout time.Duration
+	observerListID  string
 	registryCardID  string
 }
 
@@ -79,6 +80,7 @@ func addWorkerFlags(cmd *cobra.Command, flags *workerFlags) {
 	cmd.PersistentFlags().IntVar(&flags.observerLimit, "observer-output-limit", 64*1024, "Maximum observer stdout or stderr bytes")
 	cmd.PersistentFlags().IntVar(&flags.observerMax, "observer-max-events", 100, "Maximum source events accepted from one observer pass")
 	cmd.PersistentFlags().DurationVar(&flags.observerTimeout, "observer-timeout", 2*time.Minute, "Maximum observer duration")
+	cmd.PersistentFlags().StringVar(&flags.observerListID, "observer-list-id", "", "List for suggestions created by a scheduled observer")
 	cmd.PersistentFlags().StringVar(&flags.registryCardID, "suggestion-registry-card", "", "Paused operator-selected card that durably reserves suggestion source IDs")
 }
 
@@ -105,6 +107,9 @@ func workerRunOnce(root *rootOptions, flags *workerFlags) *cobra.Command {
 		Use:   "run-once",
 		Short: "Claim and process one board-wide pass of due delegated work",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if flags.observer != "" || len(flags.observerArgs) != 0 || flags.observerListID != "" {
+				return errors.New("--observer configuration is only used with worker serve or ingest")
+			}
 			service, err := newWorkerService(cmd.Context(), root, flags, true)
 			if err != nil {
 				return err
@@ -126,6 +131,15 @@ func workerServe(root *rootOptions, flags *workerFlags) *cobra.Command {
 			service, err := newWorkerService(cmd.Context(), root, flags, true)
 			if err != nil {
 				return err
+			}
+			if flags.observer != "" {
+				if flags.registryCardID == "" || flags.observerListID == "" || flags.observerLimit <= 0 || flags.observerTimeout <= 0 || flags.observerMax <= 0 {
+					return errors.New("scheduled observer requires --suggestion-registry-card, --observer-list-id, and positive observer limits")
+				}
+				service.Config.Observer = worker.SubprocessObserver{Argv: append([]string{flags.observer}, flags.observerArgs...), OutputLimit: flags.observerLimit, MaxEvents: flags.observerMax}
+				service.Config.ObserverRegistryCardID = flags.registryCardID
+				service.Config.ObserverListID = flags.observerListID
+				service.Config.ObserverTimeout = flags.observerTimeout
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()

@@ -25,7 +25,15 @@ func (s Service) Enroll(ctx context.Context, cardID string, enrollment Enrollmen
 		return err
 	}
 	if snapshot.HasRecord {
-		return errors.New("card already contains worker metadata; refuse to replace its delegation")
+		if snapshot.ParseErr != nil || snapshot.Record.State != StateSuggested || snapshot.Record.Delegation.Delegated || snapshot.Record.SuggestionRegistry {
+			return errors.New("card already contains worker metadata; refuse to replace its delegation")
+		}
+		// A suggestion can only become executable through this explicit
+		// operator command. Retain its source provenance unless the operator
+		// intentionally supplied replacement source references.
+		if len(enrollment.Sources) == 0 {
+			enrollment.Sources = snapshot.Record.Sources
+		}
 	}
 	record, err := newDelegatedRecord(enrollment.Goal, enrollment.CompletionCriteria, enrollment.Authorization, enrollment.Sources, enrollment.Action)
 	if err != nil {
@@ -57,7 +65,9 @@ func (s Service) Wake(ctx context.Context, cardID, eventID string) (bool, error)
 	if snapshot.Record.State == StateWaitingEvent && snapshot.Record.EventID != eventID {
 		return false, fmt.Errorf("event ID %q does not match this card's awaited event", eventID)
 	}
-	snapshot.Record.AddEventReceipt(eventID)
+	if err := snapshot.Record.AddEventReceipt(eventID); err != nil {
+		return false, err
+	}
 	snapshot.Record.State = StateReady
 	snapshot.Record.WakeAt = nil
 	snapshot.Record.EventID = ""
@@ -85,9 +95,13 @@ func (s Service) Decide(ctx context.Context, cardID, decisionID string, value js
 	if snapshot.Record.State != StateWaitingUser || snapshot.Record.Decision == nil {
 		return false, fmt.Errorf("card is %s, not waiting for a user decision", snapshot.Record.State)
 	}
-	snapshot.Record.Decision.ID = decisionID
+	if snapshot.Record.Decision.ID != decisionID {
+		return false, fmt.Errorf("decision ID %q does not match this card's pending question", decisionID)
+	}
 	snapshot.Record.Decision.Value = append(json.RawMessage(nil), value...)
-	snapshot.Record.AddDecisionReceipt(decisionID)
+	if err := snapshot.Record.AddDecisionReceipt(decisionID); err != nil {
+		return false, err
+	}
 	snapshot.Record.State = StateReady
 	_, err = s.Store.Put(ctx, snapshot, snapshot.Record)
 	return err == nil, err

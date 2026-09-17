@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,11 +19,16 @@ func TestCLIWorkerRunnerHelper(t *testing.T) {
 	if mode != "fixture" && !strings.HasPrefix(mode, "http://") && !strings.HasPrefix(mode, "https://") {
 		return
 	}
-	_, _ = os.Stdin.Read(make([]byte, 1))
+	var packet struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.NewDecoder(os.Stdin).Decode(&packet); err != nil || packet.RunID == "" {
+		os.Exit(2)
+	}
 	if strings.HasPrefix(mode, "http://") || strings.HasPrefix(mode, "https://") {
 		_, _ = http.Post(mode, "application/json", nil)
 	}
-	fmt.Fprint(os.Stdout, `{"status":"completed","summary":"compiled fixture complete","receipt_id":"fixture-receipt"}`)
+	_ = json.NewEncoder(os.Stdout).Encode(map[string]string{"run_id": packet.RunID, "status": "completed", "summary": "compiled fixture complete", "receipt_id": "fixture-receipt"})
 	os.Exit(0)
 }
 
@@ -214,5 +218,12 @@ func TestWorkerReadOnlyCheckAndExecutionValidation(t *testing.T) {
 	}
 	if _, _, err := executeRoot("worker", "run-once", "--board-id", "board", "--worker-id", "worker"); err == nil || !strings.Contains(err.Error(), "--runner") {
 		t.Fatalf("missing runner error = %v", err)
+	}
+}
+
+func TestWorkerRunOnceRejectsUnusedObserverConfiguration(t *testing.T) {
+	t.Setenv("KARDBRD_TOKEN", "tok")
+	if _, _, err := executeRoot("worker", "run-once", "--board-id", "board", "--worker-id", "worker", "--runner", "/trusted/runner", "--observer", "/trusted/observer"); err == nil || !strings.Contains(err.Error(), "only used with worker serve or ingest") {
+		t.Fatalf("unused observer error = %v", err)
 	}
 }

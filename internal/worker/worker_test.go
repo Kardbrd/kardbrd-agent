@@ -28,6 +28,25 @@ type countedRunner struct {
 	released chan struct{}
 }
 
+type countedObserver struct {
+	mu     sync.Mutex
+	calls  int
+	events []Suggestion
+}
+
+func (o *countedObserver) Observe(context.Context) ([]Suggestion, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.calls++
+	return append([]Suggestion(nil), o.events...), nil
+}
+
+func (o *countedObserver) Calls() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.calls
+}
+
 type blockingRunner struct {
 	started chan struct{}
 }
@@ -45,10 +64,10 @@ func (t manualLeaseTicker) Stop()               {}
 
 type blockingNotifier struct{ started chan struct{} }
 
-func (n blockingNotifier) Deliver(ctx context.Context, _ NoticePacket) (string, error) {
+func (n blockingNotifier) Deliver(ctx context.Context, _ NoticePacket) (NoticeReceipt, error) {
 	close(n.started)
 	<-ctx.Done()
-	return "", ctx.Err()
+	return NoticeReceipt{}, ctx.Err()
 }
 
 type countedNotifier struct {
@@ -57,14 +76,20 @@ type countedNotifier struct {
 	receipt string
 }
 
-func (n *countedNotifier) Deliver(_ context.Context, packet NoticePacket) (string, error) {
+func (n *countedNotifier) Deliver(_ context.Context, packet NoticePacket) (NoticeReceipt, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.calls++
 	if packet.NoticeID == "" || packet.RunID == "" {
-		return "", fmt.Errorf("missing stable notice identity")
+		return NoticeReceipt{}, fmt.Errorf("missing stable notice identity")
 	}
-	return n.receipt, nil
+	return NoticeReceipt{NoticeID: packet.NoticeID, ReceiptID: n.receipt}, nil
+}
+
+type wrongNoticeNotifier struct{}
+
+func (wrongNoticeNotifier) Deliver(_ context.Context, _ NoticePacket) (NoticeReceipt, error) {
+	return NoticeReceipt{NoticeID: "another-notice", ReceiptID: "receipt-1"}, nil
 }
 
 func (n *countedNotifier) Calls() int {
@@ -80,6 +105,11 @@ func (r *countedRunner) Run(_ context.Context, packet Packet) (AdapterResult, er
 	released := r.released
 	result := r.result
 	r.mu.Unlock()
+	// Counted runners model a conforming adapter. Individual tests that need
+	// malformed output use SubprocessRunner and its synthetic executable.
+	if result.RunID == "" {
+		result.RunID = packet.RunID
+	}
 	if before != nil {
 		before(packet)
 	}
@@ -96,20 +126,26 @@ func (r *countedRunner) Calls() int {
 }
 
 type metadataServer struct {
-	t                    *testing.T
-	mu                   sync.Mutex
-	boardID              string
-	cards                map[string]cardView
-	metadata             map[string]map[string]json.RawMessage
-	revisions            map[string]int64
-	comments             int
-	commentFail          bool
-	created              int
-	metadataConflicts    int
-	conflictAfterComment int
-	markdownMutation     func()
-	createAmbiguous      bool
-	server               *httptest.Server
+	t                     *testing.T
+	mu                    sync.Mutex
+	boardID               string
+	cards                 map[string]cardView
+	metadata              map[string]map[string]json.RawMessage
+	revisions             map[string]int64
+	comments              int
+	commentFail           bool
+	commentNoID           bool
+	created               int
+	metadataConflicts     int
+	conflictAfterComment  int
+	dropCompletedResponse bool
+	markdownMutation      func()
+	markdownStarted       chan struct{}
+	markdownRelease       <-chan struct{}
+	renewalStarted        chan struct{}
+	renewalRelease        <-chan struct{}
+	createAmbiguous       bool
+	server                *httptest.Server
 }
 
 func newMetadataServer(t *testing.T) *metadataServer {
@@ -195,6 +231,21 @@ func (f *metadataServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(parts) == 3 && r.Method == http.MethodGet {
 			if r.Header.Get("Accept") == "text/markdown" {
+				if f.markdownStarted != nil {
+					select {
+					case f.markdownStarted <- struct{}{}:
+					default:
+					}
+				}
+				if f.markdownRelease != nil {
+					release := f.markdownRelease
+					f.mu.Unlock()
+					select {
+					case <-release:
+					case <-r.Context().Done():
+					}
+					f.mu.Lock()
+				}
 				if f.markdownMutation != nil {
 					f.markdownMutation()
 					f.markdownMutation = nil
@@ -208,6 +259,19 @@ func (f *metadataServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(parts) == 4 && parts[3] == "metadata" {
 			if r.Method == http.MethodGet {
+				if f.renewalStarted != nil && f.renewalRelease != nil {
+					select {
+					case f.renewalStarted <- struct{}{}:
+					default:
+					}
+					release := f.renewalRelease
+					f.mu.Unlock()
+					select {
+					case <-release:
+					case <-r.Context().Done():
+					}
+					f.mu.Lock()
+				}
 				write(http.StatusOK, map[string]any{"data": map[string]any{"id": cardID, "metadata": f.metadata[cardID], "metadata_revision": f.revisions[cardID]}})
 				return
 			}
@@ -244,6 +308,19 @@ func (f *metadataServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 					delete(f.metadata[cardID], key)
 				}
 				f.revisions[cardID]++
+				if f.dropCompletedResponse {
+					record, err := ParseRecord(f.metadata[cardID][MetadataKey])
+					if err != nil {
+						f.t.Error(err)
+						write(http.StatusInternalServerError, map[string]string{"error": "invalid committed record"})
+						return
+					}
+					if record.State == StateCompleted {
+						f.dropCompletedResponse = false
+						write(http.StatusServiceUnavailable, map[string]string{"error": "response lost after commit"})
+						return
+					}
+				}
 				write(http.StatusOK, map[string]any{"data": map[string]any{"id": cardID, "metadata": f.metadata[cardID], "metadata_revision": f.revisions[cardID]}})
 				return
 			}
@@ -252,6 +329,10 @@ func (f *metadataServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			f.comments++
 			if f.commentFail {
 				write(http.StatusInternalServerError, map[string]string{"error": "ambiguous comment"})
+				return
+			}
+			if f.commentNoID {
+				write(http.StatusOK, map[string]any{"data": map[string]string{}})
 				return
 			}
 			write(http.StatusOK, map[string]any{"data": map[string]string{"id": fmt.Sprintf("comment-%d", f.comments)}})
@@ -288,7 +369,7 @@ func testRecord(state State) Record {
 		record.WakeAt = &at
 	}
 	if state == StateWaitingUser {
-		record.Decision = &Decision{Prompt: "approve?"}
+		record.Decision = &Decision{ID: "decision-1", Prompt: "approve?"}
 	}
 	return record
 }
@@ -504,6 +585,72 @@ func TestLeaseOwnershipLossCancelsRunnerAndPreventsStaleResult(t *testing.T) {
 	}
 }
 
+func TestLateRunStopsAtCommittedLeaseWhenRenewalBlocks(t *testing.T) {
+	fake := newMetadataServer(t)
+	fake.add("card-1", testRecord(StateReady))
+	markdownStarted := make(chan struct{}, 1)
+	markdownRelease := make(chan struct{})
+	fake.markdownStarted = markdownStarted
+	fake.markdownRelease = markdownRelease
+	runner := blockingRunner{started: make(chan struct{})}
+	service := testService(fake, runner, time.Now().UTC())
+	service.Clock = realClock{}
+	service.Config.LeaseDuration = 900 * time.Millisecond
+	service.Config.RunTimeout = 3 * time.Second
+	done := make(chan error, 1)
+	go func() {
+		_, err := service.RunOnce(context.Background())
+		done <- err
+	}()
+	select {
+	case <-markdownStarted:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not request card context")
+	}
+	expires := fake.record("card-1").Run.LeaseExpires
+	if delay := time.Until(expires.Add(-200 * time.Millisecond)); delay > 0 {
+		timer := time.NewTimer(delay)
+		<-timer.C
+	}
+	close(markdownRelease)
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("late runner did not start")
+	}
+	renewalStarted := make(chan struct{}, 1)
+	renewalRelease := make(chan struct{})
+	fake.mu.Lock()
+	fake.renewalStarted = renewalStarted
+	fake.renewalRelease = renewalRelease
+	fake.mu.Unlock()
+	select {
+	case <-renewalStarted:
+	case <-time.After(time.Second):
+		close(renewalRelease)
+		t.Fatal("worker did not start a renewal before lease expiry")
+	}
+	deadline := time.NewTimer(maxDuration(time.Until(expires.Add(150*time.Millisecond)), time.Millisecond))
+	defer deadline.Stop()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-deadline.C:
+		close(renewalRelease)
+		t.Fatal("runner continued beyond its committed lease while renewal was blocked")
+	}
+	close(renewalRelease)
+}
+
+func maxDuration(left, floor time.Duration) time.Duration {
+	if left < floor {
+		return floor
+	}
+	return left
+}
+
 func TestAuthorizationFenceChangeCancelsRunner(t *testing.T) {
 	fake := newMetadataServer(t)
 	now := time.Date(2030, 1, 2, 0, 0, 0, 0, time.UTC)
@@ -610,7 +757,7 @@ func TestNoticeReceiptAndAmbiguousCommentAreNeverRetried(t *testing.T) {
 			t.Fatal(err)
 		}
 		record := fake.record("card-1")
-		if record.Journal == nil || record.Journal.State != "posted" || record.Notice == nil || record.Notice.State != "delivered" || record.Notice.ReceiptID != "notice-receipt-1" {
+		if record.Journal == nil || record.Journal.State != "posted" || record.Journal.CommentID != "comment-1" || record.Notice == nil || record.Notice.State != "delivered" || record.Notice.ReceiptID != "notice-receipt-1" {
 			t.Fatalf("receipt record = %#v", record)
 		}
 		if notifier.Calls() != 1 {
@@ -635,6 +782,17 @@ func TestNoticeReceiptAndAmbiguousCommentAreNeverRetried(t *testing.T) {
 		defer fake.mu.Unlock()
 		if fake.comments != 1 {
 			t.Fatalf("ambiguous comment retried %d times", fake.comments)
+		}
+	})
+	t.Run("comment without receipt ID remains uncertain", func(t *testing.T) {
+		fake := newMetadataServer(t)
+		fake.commentNoID = true
+		fake.add("card-1", testRecord(StateReady))
+		if _, err := testService(fake, &countedRunner{result: AdapterResult{Status: ResultCompleted, Summary: "done"}}, now).RunOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := fake.record("card-1").Journal; got.State == "posted" || got.CommentID != "" {
+			t.Fatalf("fabricated comment receipt: %#v", got)
 		}
 	})
 	t.Run("receipt metadata conflict is safely persisted without resend", func(t *testing.T) {
@@ -665,6 +823,47 @@ func TestNoticeReceiptAndAmbiguousCommentAreNeverRetried(t *testing.T) {
 		<-notifier.started
 		if got := fake.record("card-1").Notice.State; got != "unknown" {
 			t.Fatalf("notice after timeout = %s", got)
+		}
+	})
+	t.Run("notifier receipt must identify the same notice", func(t *testing.T) {
+		fake := newMetadataServer(t)
+		fake.add("card-1", testRecord(StateReady))
+		service := testService(fake, &countedRunner{result: AdapterResult{Status: ResultCompleted, Summary: "done"}}, now)
+		service.Config.Notifier = wrongNoticeNotifier{}
+		if _, err := service.RunOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := fake.record("card-1").Notice; got.State == "delivered" {
+			t.Fatalf("accepted receipt for another notice: %#v", got)
+		}
+	})
+	t.Run("unresolved notice survives a later step", func(t *testing.T) {
+		fake := newMetadataServer(t)
+		fake.add("card-1", testRecord(StateReady))
+		blocking := blockingNotifier{started: make(chan struct{})}
+		first := testService(fake, &countedRunner{result: AdapterResult{Status: ResultWaitingEvent, EventID: "event-1"}}, now)
+		first.Config.Notifier = blocking
+		first.Config.NoticeTimeout = 10 * time.Millisecond
+		if _, err := first.RunOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		<-blocking.started
+		original := fake.record("card-1").Notice.ID
+		if got := fake.record("card-1").Notice.State; got != "unknown" {
+			t.Fatalf("first notice state = %s", got)
+		}
+		if changed, err := first.Wake(context.Background(), "card-1", "event-1"); err != nil || !changed {
+			t.Fatalf("wake = %v, %v", changed, err)
+		}
+		if _, err := testService(fake, &countedRunner{result: AdapterResult{Status: ResultCompleted}}, now).RunOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, notice := range fake.record("card-1").UnresolvedNotices {
+			found = found || (notice.ID == original && notice.State == "unknown")
+		}
+		if !found {
+			t.Fatalf("later step erased unresolved notice %q: %#v", original, fake.record("card-1"))
 		}
 	})
 }
@@ -732,6 +931,34 @@ func TestQuietNoopAndWaitingUserIsolation(t *testing.T) {
 	}
 }
 
+func TestScheduledPassRunsConfiguredObserverWithoutDelegatingSuggestion(t *testing.T) {
+	fake := newMetadataServer(t)
+	now := time.Date(2030, 1, 2, 0, 0, 0, 0, time.UTC)
+	fake.add("registry", newSuggestionRegistryRecord())
+	runner := &countedRunner{result: AdapterResult{Status: ResultCompleted}}
+	observer := &countedObserver{events: []Suggestion{{SourceID: "source-1", Title: "proposal", Proposal: "fixture"}}}
+	service := testService(fake, runner, now)
+	service.Config.Observer = observer
+	service.Config.ObserverRegistryCardID = "registry"
+	service.Config.ObserverListID = "list-1"
+	service.Config.ObserverTimeout = time.Minute
+	if err := service.runScheduledPass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if observer.Calls() != 1 || runner.Calls() != 0 {
+		t.Fatalf("observer/runner calls = %d/%d", observer.Calls(), runner.Calls())
+	}
+	fake.mu.Lock()
+	created := fake.created
+	fake.mu.Unlock()
+	if created != 1 {
+		t.Fatalf("observer created %d suggestions", created)
+	}
+	if got := fake.record("suggestion-1"); got.State != StateSuggested || got.Delegation.Delegated {
+		t.Fatalf("observer proposal was delegated: %#v", got)
+	}
+}
+
 func TestDecisionReceiptRemainsDeduplicatedAcrossAnotherWait(t *testing.T) {
 	fake := newMetadataServer(t)
 	now := time.Date(2030, 1, 2, 0, 0, 0, 0, time.UTC)
@@ -749,6 +976,115 @@ func TestDecisionReceiptRemainsDeduplicatedAcrossAnotherWait(t *testing.T) {
 	}
 	if changed, err := service.Decide(context.Background(), "user-card", "decision-1", json.RawMessage(`true`)); err != nil || changed {
 		t.Fatalf("replayed decision unblocked a new wait: %v, %v", changed, err)
+	}
+}
+
+func TestDecisionMustMatchItsCurrentQuestion(t *testing.T) {
+	fake := newMetadataServer(t)
+	now := time.Date(2030, 1, 2, 0, 0, 0, 0, time.UTC)
+	fake.add("user-card", testRecord(StateWaitingUser))
+	service := testService(fake, &countedRunner{}, now)
+	if changed, err := service.Decide(context.Background(), "user-card", "unrelated-question", json.RawMessage(`true`)); err == nil || changed {
+		t.Fatalf("unrelated decision = %v, %v", changed, err)
+	}
+	if got := fake.record("user-card"); got.State != StateWaitingUser || got.Decision.ID != "decision-1" {
+		t.Fatalf("unrelated decision changed record: %#v", got)
+	}
+}
+
+func TestWaitingUserQuestionsGetDistinctStableIDs(t *testing.T) {
+	fake := newMetadataServer(t)
+	now := time.Date(2030, 1, 2, 0, 0, 0, 0, time.UTC)
+	fake.add("user-card", testRecord(StateReady))
+	service := testService(fake, &countedRunner{result: AdapterResult{Status: ResultWaitingUser, DecisionPrompt: "confirm?"}}, now)
+	if _, err := service.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first := fake.record("user-card").Decision.ID
+	if first == "" {
+		t.Fatal("first waiting question has no stable ID")
+	}
+	if changed, err := service.Decide(context.Background(), "user-card", first, json.RawMessage(`true`)); err != nil || !changed {
+		t.Fatalf("first decision = %v, %v", changed, err)
+	}
+	if _, err := service.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	second := fake.record("user-card").Decision.ID
+	if second == "" || second == first {
+		t.Fatalf("question IDs = %q, %q", first, second)
+	}
+	if changed, err := service.Decide(context.Background(), "user-card", first, json.RawMessage(`true`)); err != nil || changed {
+		t.Fatalf("old decision replay = %v, %v", changed, err)
+	}
+	if got := fake.record("user-card").State; got != StateWaitingUser {
+		t.Fatalf("old decision resumed new question: %s", got)
+	}
+}
+
+func TestEventReceiptCapacityNeverEvictsOldEvidence(t *testing.T) {
+	fake := newMetadataServer(t)
+	now := time.Date(2030, 1, 2, 0, 0, 0, 0, time.UTC)
+	record := testRecord(StateWaitingEvent)
+	record.EventID = "new-event"
+	record.EventReceipts = []string{"old-event"}
+	for i := 1; i < maxReceiptIDs; i++ {
+		record.EventReceipts = append(record.EventReceipts, fmt.Sprintf("event-%d", i))
+	}
+	fake.add("event-card", record)
+	service := testService(fake, &countedRunner{}, now)
+	if changed, err := service.Wake(context.Background(), "event-card", "new-event"); err == nil || changed {
+		t.Fatalf("receipt capacity = %v, %v", changed, err)
+	}
+	if got := fake.record("event-card"); !got.HasEventReceipt("old-event") || got.State != StateWaitingEvent {
+		t.Fatalf("receipt capacity evicted evidence or woke work: %#v", got)
+	}
+}
+
+func TestEnrollExplicitlyPromotesSuggestedRecord(t *testing.T) {
+	fake := newMetadataServer(t)
+	now := time.Date(2030, 1, 2, 0, 0, 0, 0, time.UTC)
+	suggested := testRecord(StateReady)
+	suggested.State = StateSuggested
+	suggested.Delegation = Delegation{}
+	fake.add("suggestion-card", suggested)
+	service := testService(fake, &countedRunner{}, now)
+	if err := service.Enroll(context.Background(), "suggestion-card", Enrollment{Goal: "explicit goal", CompletionCriteria: "receipt", Authorization: json.RawMessage(`{"scope":"fixture"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	got := fake.record("suggestion-card")
+	if got.State != StateReady || !got.Delegation.Delegated || got.Goal != "explicit goal" {
+		t.Fatalf("suggestion was not explicitly promoted: %#v", got)
+	}
+}
+
+func TestPreparedJournalRecoversAfterCommittedWriteResponseIsLost(t *testing.T) {
+	fake := newMetadataServer(t)
+	now := time.Date(2030, 1, 2, 0, 0, 0, 0, time.UTC)
+	fake.add("card-1", testRecord(StateReady))
+	fake.dropCompletedResponse = true
+	runner := &countedRunner{result: AdapterResult{Status: ResultCompleted, Summary: "done"}}
+	service := testService(fake, runner, now)
+	if _, err := service.RunOnce(context.Background()); err == nil {
+		t.Fatal("lost response after a committed outcome must surface uncertainty")
+	}
+	if got := fake.record("card-1"); got.State != StateCompleted || got.Journal == nil || got.Journal.State != "prepared" {
+		t.Fatalf("committed outbox state = %#v", got)
+	}
+	if _, err := service.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if runner.Calls() != 1 {
+		t.Fatalf("prepared journal recovery reran adapter %d times", runner.Calls())
+	}
+	fake.mu.Lock()
+	comments := fake.comments
+	fake.mu.Unlock()
+	if comments != 1 {
+		t.Fatalf("prepared journal recovery comments = %d", comments)
+	}
+	if got := fake.record("card-1").Journal; got.State != "posted" || got.CommentID != "comment-1" {
+		t.Fatalf("recovered journal = %#v", got)
 	}
 }
 

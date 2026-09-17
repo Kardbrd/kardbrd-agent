@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -26,11 +28,24 @@ func TestWorkerAdapterHelper(t *testing.T) {
 	switch mode {
 	case "complete":
 		var packet Packet
-		if err := json.Unmarshal(input, &packet); err != nil || packet.Goal != "goal $HOME ; no shell" || os.Getenv("KARDBRD_TOKEN") != "" || os.Getenv("KARDBRD_API_URL") != "" || os.Getenv("OPENAI_API_KEY") != "" || os.Getenv("AWS_SECRET_ACCESS_KEY") != "" {
+		if err := json.Unmarshal(input, &packet); err != nil || packet.Goal != "goal $HOME ; no shell" || os.Getenv("KARDBRD_TOKEN") != "" || os.Getenv("KARDBRD_API_URL") != "" || os.Getenv("OPENAI_API_KEY") != "" || os.Getenv("AWS_SECRET_ACCESS_KEY") != "" || os.Getenv("GH_TOKEN") != "" {
 			fmt.Fprint(os.Stdout, `{"status":"bad"}`)
 			os.Exit(0)
 		}
-		fmt.Fprint(os.Stdout, `{"status":"completed","summary":"fixture complete","receipt_id":"r-1"}`)
+		_ = json.NewEncoder(os.Stdout).Encode(AdapterResult{RunID: packet.RunID, Status: ResultCompleted, Summary: "fixture complete", ReceiptID: "r-1"})
+	case "missing-run-id":
+		fmt.Fprint(os.Stdout, `{"status":"completed","receipt_id":"r-1"}`)
+	case "wrong-run-id":
+		fmt.Fprint(os.Stdout, `{"run_id":"other-run","status":"completed","receipt_id":"r-1"}`)
+	case "notice-match", "notice-wrong-id":
+		var packet NoticePacket
+		if err := json.Unmarshal(input, &packet); err != nil {
+			os.Exit(2)
+		}
+		if mode == "notice-wrong-id" {
+			packet.NoticeID = "another-notice"
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(NoticeReceipt{NoticeID: packet.NoticeID, ReceiptID: "notice-receipt-1"})
 	case "bad":
 		fmt.Fprint(os.Stdout, "not-json")
 	case "large":
@@ -69,6 +84,23 @@ func TestWorkerAdapterHelper(t *testing.T) {
 		fmt.Fprint(ready, child.Process.Pid)
 		_ = ready.Close()
 		fmt.Fprint(os.Stdout, `{"status":"completed"}`)
+	case "child-failure":
+		child := exec.Command("sleep", "30")
+		devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		if err != nil {
+			os.Exit(2)
+		}
+		child.Stdout, child.Stderr = devNull, devNull
+		if err := child.Start(); err != nil {
+			os.Exit(2)
+		}
+		ready, err := net.Dial("unix", os.Getenv("WORKER_READY_SOCKET"))
+		if err != nil {
+			os.Exit(3)
+		}
+		fmt.Fprint(ready, child.Process.Pid)
+		_ = ready.Close()
+		os.Exit(7)
 	case "observer-many":
 		fmt.Fprint(os.Stdout, `{"events":[{"source_id":"one","title":"one","proposal":"one"},{"source_id":"two","title":"two","proposal":"two"}]}`)
 	default:
@@ -86,6 +118,7 @@ func TestSubprocessRunnerPacketArtifactsAndSanitizedEnvironment(t *testing.T) {
 	t.Setenv("KARDBRD_API_URL", "https://must-not-reach-runner")
 	t.Setenv("OPENAI_API_KEY", "must-not-reach-runner")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "must-not-reach-runner")
+	t.Setenv("GH_TOKEN", "must-not-reach-runner")
 	t.Setenv("GO_WANT_WORKER_ADAPTER", "1")
 	root := t.TempDir()
 	runner := SubprocessRunner{Argv: helperArgv("complete"), ArtifactDir: root, OutputLimit: 4096, Env: []string{"GO_WANT_WORKER_ADAPTER=1", "OPENAI_API_KEY=also-must-not-reach-runner"}}
@@ -116,6 +149,8 @@ func TestSubprocessRunnerRejectsMalformedAndOversizedOutput(t *testing.T) {
 		{name: "malformed", mode: "bad", want: ErrAdapterInvalid},
 		{name: "oversized", mode: "large", want: ErrOutputTooLarge},
 		{name: "unknown field", mode: "unknown-field", want: ErrAdapterInvalid},
+		{name: "missing run ID", mode: "missing-run-id", want: ErrAdapterInvalid},
+		{name: "wrong run ID", mode: "wrong-run-id", want: ErrAdapterInvalid},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			runner := SubprocessRunner{Argv: helperArgv(tc.mode), ArtifactDir: t.TempDir(), OutputLimit: 256, Env: []string{"GO_WANT_WORKER_ADAPTER=1"}}
@@ -124,6 +159,17 @@ func TestSubprocessRunnerRejectsMalformedAndOversizedOutput(t *testing.T) {
 				t.Fatalf("error = %v, want %v", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestSubprocessRunnerStopsOutputOverflowBeforeRunDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	runner := SubprocessRunner{Argv: []string{"python3", "-c", "import sys,time; sys.stdout.write('x'*2048); sys.stdout.flush(); time.sleep(30)"}, ArtifactDir: t.TempDir(), OutputLimit: 1024}
+	started := time.Now()
+	_, err := runner.Run(ctx, Packet{RunID: "overflow-run"})
+	if !errors.Is(err, ErrOutputTooLarge) || time.Since(started) > time.Second {
+		t.Fatalf("overflow must stop before the run deadline: elapsed=%s, err=%v", time.Since(started), err)
 	}
 }
 
@@ -140,6 +186,32 @@ func TestSubprocessObserverRejectsTooManyEvents(t *testing.T) {
 	_, err := (SubprocessObserver{Argv: helperArgv("observer-many"), OutputLimit: 4096, MaxEvents: 1, Env: []string{"GO_WANT_WORKER_ADAPTER=1"}}).Observe(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "limit is 1") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestSubprocessNotifierRequiresMatchingNoticeID(t *testing.T) {
+	t.Setenv("GO_WANT_WORKER_ADAPTER", "1")
+	packet := NoticePacket{Version: SchemaVersion, NoticeID: "current-notice", CardID: "card-1", RunID: "run-1", Message: "fixture"}
+	for _, tc := range []struct {
+		name    string
+		mode    string
+		wantErr bool
+	}{
+		{name: "matching", mode: "notice-match"},
+		{name: "mismatched", mode: "notice-wrong-id", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			receipt, err := (SubprocessNotifier{Argv: helperArgv(tc.mode), OutputLimit: 4096, Env: []string{"GO_WANT_WORKER_ADAPTER=1"}}).Deliver(context.Background(), packet)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("mismatched notice receipt was accepted")
+				}
+				return
+			}
+			if err != nil || receipt.NoticeID != packet.NoticeID || receipt.ReceiptID != "notice-receipt-1" {
+				t.Fatalf("receipt = %#v, err = %v", receipt, err)
+			}
+		})
 	}
 }
 
@@ -254,6 +326,72 @@ func TestBoundedCommandReapsSuccessfulAdapterChild(t *testing.T) {
 	}
 	if !waitProcessGoneOrZombie(pid) {
 		t.Fatalf("child process %d survived successful adapter cleanup", pid)
+	}
+}
+
+func TestBoundedCommandReapsFailedAdapterChild(t *testing.T) {
+	t.Setenv("GO_WANT_WORKER_ADAPTER", "1")
+	socketPath := filepath.Join(t.TempDir(), "worker-ready.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	acceptCh := make(chan net.Conn, 1)
+	go func() {
+		connection, _ := listener.Accept()
+		acceptCh <- connection
+	}()
+	resultCh := make(chan error, 1)
+	go func() {
+		_, _, err := runBoundedCommand(context.Background(), helperArgv("child-failure"), nil, 4096, []string{"GO_WANT_WORKER_ADAPTER=1", "WORKER_READY_SOCKET=" + socketPath})
+		resultCh <- err
+	}()
+	var ready net.Conn
+	select {
+	case ready = <-acceptCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("failed parent did not announce its child")
+	}
+	announced, err := io.ReadAll(ready)
+	_ = ready.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-resultCh; err == nil {
+		t.Fatal("failed adapter returned no error")
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(announced)))
+	if err != nil || pid <= 0 {
+		t.Fatalf("child PID %q: %v", announced, err)
+	}
+	if !waitProcessGoneOrZombie(pid) {
+		t.Fatalf("child process %d survived failed adapter cleanup", pid)
+	}
+}
+
+func TestBoundedCommandReleasesDescriptors(t *testing.T) {
+	runtime.GC()
+	previousGC := debug.SetGCPercent(-1)
+	defer func() {
+		debug.SetGCPercent(previousGC)
+		runtime.GC()
+	}()
+	before, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Skip("Linux descriptor inventory required")
+	}
+	for range 50 {
+		if _, _, err := runBoundedCommand(context.Background(), []string{"/bin/true"}, nil, 4096, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	after, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) > len(before)+2 {
+		t.Fatalf("50 completed adapters leaked descriptors: before=%d after=%d", len(before), len(after))
 	}
 }
 

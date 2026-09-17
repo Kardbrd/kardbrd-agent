@@ -82,14 +82,24 @@ kardbrd worker serve --board-id PERSONAL_BOARD --worker-id agents-local-fixture 
 # never delete metadata to force a rerun.
 ```
 
+An observer is optional in `serve`, but when configured it runs on that same board-wide pass after due delegated work. It needs its own trusted argv, a pre-initialized registry, and an explicit destination list. `run-once` rejects observer configuration rather than silently ignoring it.
+
+```bash
+kardbrd worker serve --board-id PERSONAL_BOARD --worker-id agents-local-fixture \
+  --runner /trusted/host/bridge --artifact-dir /var/tmp/kardbrd-worker-artifacts \
+  --observer /trusted/read-only-observer \
+  --suggestion-registry-card SUGGESTION_REGISTRY_CARD \
+  --observer-list-id SUGGESTIONS_LIST --observer-timeout 2m
+```
+
 ## Runner bridge contract
 
 The runner command and argv are trusted operator configuration. Card title, card Markdown, email-like text, proposals, and source references are JSON data sent through stdin; no shell interpolation selects a command. Each invocation gets an isolated `0700` artifact directory named by run ID. Packet/result files and bounded stdout/stderr are `0600` and should be retained only under the operator's retention policy.
 
-The runner receives a JSON packet with exact goal, completion criteria, authorization, latest card context, run ID, sources, decision/action receipts, and allowed result values. The packet is rejected before artifact write or process start if it exceeds `--packet-limit`; stdout and stderr are independently bounded by `--output-limit`. It must write exactly one strict JSON object to stdout:
+The runner receives a JSON packet with exact goal, completion criteria, authorization, latest card context, run ID, sources, decision/action receipts, and allowed result values. The packet is rejected before artifact write or process start if it exceeds `--packet-limit`; stdout and stderr are independently bounded by `--output-limit`. It must write exactly one strict JSON object to stdout, including the exact `run_id` received in its packet:
 
 ```json
-{"status":"completed","summary":"Human-readable result","receipt_id":"stable-receipt"}
+{"run_id":"packet-run-id","status":"completed","summary":"Human-readable result","receipt_id":"stable-receipt"}
 ```
 
 The only statuses are `completed`, `scheduled` (requires a future `wake_at`), `waiting_event` (requires `event_id`), `waiting_user` (requires `decision_prompt`), and `needs_review`. An action-bearing packet also requires `action_status`: `not_started`, `performed` with a matching pre-enrolled action receipt, or `uncertain` with `needs_review`. Authorization, delegation, runner command, and action intent are not output fields.
@@ -105,11 +115,14 @@ Pass `--runner-arg=scheduled`, `waiting_event`, `waiting_user`, or `needs_review
 kardbrd worker wake SYNTHETIC_CARD --board-id PERSONAL_BOARD --event-id fixture-event-1
 kardbrd worker wake SYNTHETIC_CARD --board-id PERSONAL_BOARD --event-id fixture-event-1
 
-# Record a user decision, then only that card becomes ready. Repeating the
-# same decision ID is a no-op.
+# Read the current `ops.decision.id`, then record a decision for exactly that
+# question. Repeating the same (already consumed) ID is a no-op; an ID for a
+# different/older question is rejected and cannot unblock a new wait.
 kardbrd worker decide SYNTHETIC_CARD --board-id PERSONAL_BOARD \
-  --decision-id fixture-decision-1 --value '{"approved":true}'
+  --decision-id CURRENT_OPS_DECISION_ID --value '{"approved":true}'
 ```
+
+Event and decision receipt histories retain at most 64 stable IDs each. At capacity, a new receipt is rejected without changing state or evicting older deduplication evidence; reconcile or enroll a new bounded task rather than treating an old event as new work.
 
 ## Read-only suggestion ingestion
 
@@ -125,11 +138,11 @@ kardbrd worker ingest --board-id PERSONAL_BOARD --list-id SUGGESTIONS_LIST \
   --observer /tmp/kardbrd-fixture-observer --observer-timeout 2m
 ```
 
-This command does not invoke `--runner`, cannot self-approve a proposal, and provides no built-in Gmail connection. Preserve the existing host Gmail/Calendar watcher until a separately reviewed cutover.
+This command does not invoke `--runner`, cannot self-approve a proposal, and provides no built-in Gmail connection. To make a suggestion executable, an operator must explicitly run `worker enroll` on that specific `suggested` card with the new goal, criteria, and authorization; the proposal's source references are retained unless replacement `--source` values are supplied. Preserve the existing host Gmail/Calendar watcher until a separately reviewed cutover.
 
 ## Notices, reconciliation, and rollback
 
-Meaningful results first receive a stable journal/notice ID in metadata. The worker posts one card comment with a one-attempt request. A comment is not notification delivery. With `--notice-command`, repeated `--notice-arg`, and a bounded `--notice-timeout`, a trusted notification adapter receives a `NoticePacket` and must return `{"receipt_id":"stable-id"}`; only then is notice state `delivered`. Without an adapter it is `not_configured`; on an ambiguous comment/notification response it is `unknown` and is not automatically retried. Receipt CAS conflicts are re-read and revalidated against the same terminal run once; if receipt persistence remains uncertain, the pass visibly fails without resending the comment or notice.
+Meaningful results first receive a stable journal/notice ID in metadata. The worker posts one card comment with a one-attempt request. A comment is not notification delivery. A committed outcome whose metadata response was lost remains `journal.state=prepared`; the next pass may safely claim and send that never-started journal item. Before any comment or notification request it durably changes that item to `sending`; a restart from `sending` or `unknown` is held for reconciliation and is never blindly replayed. A successful comment response without its actual ID is also `unknown`, never a fabricated receipt. With `--notice-command`, repeated `--notice-arg`, and a bounded `--notice-timeout`, a trusted notification adapter receives a `NoticePacket` and must echo that `notice_id` with its receipt as `{"notice_id":"packet-notice-id","receipt_id":"stable-id"}`; only then is notice state `delivered`. Without an adapter it is `not_configured`; on an ambiguous comment/notification response it is `unknown` and is not automatically retried. When a later task step replaces a current unresolved journal or notice, the prior evidence is retained in `unresolved_journals` or `unresolved_notices` for reconciliation. Receipt CAS conflicts are re-read and revalidated against the same terminal run once; if receipt persistence remains uncertain, the pass visibly fails without resending the comment or notice.
 
 To inspect an uncertainty, use `kardbrd card metadata get CARD_ID ops` and its card activity/comment history. Confirm external action receipts before a human explicitly resolves it. Do not alter a `running` claim from another owner.
 
@@ -151,8 +164,8 @@ Rollback is operational, not destructive: stop `worker serve`, retain per-run ar
 | 1. isolated commands/configuration | `internal/cli/worker.go`, `TestWorkerRunOnceCompiledCLIHTTPAndSubprocess` |
 | 2. versioned metadata/due filtering | `internal/worker/types.go`, `TestParseRecordRejectsUnknownVersionAndSuggestionPromotion` |
 | 3. CAS claims/reconciliation | `internal/worker/service.go`, cross-process barrier E2E, `TestExpiredCompletionCannotCommit`, `TestAuthorizationFenceChangeCancelsRunner` |
-| 4. bounded subprocess contract | `internal/worker/subprocess.go`, packet/strict-output/environment tests, cancellation and successful-child cleanup tests |
-| 5. wakeups/decisions/action receipts | `internal/worker/operations.go`, future-wake/action-receipt tests, decision-history dedup test |
-| 6. suggestions-only boundary | `SubprocessObserver`, fixture observer, CAS registry concurrent/ambiguous-ingestion tests |
-| 7. journal/notice receipts/quiet passes | `service.go`, conflict-safe receipt and bounded-notifier tests, `TestQuietNoopAndWaitingUserIsolation` |
+| 4. bounded subprocess contract | `internal/worker/subprocess.go`, packet/strict-output/environment tests including missing/mismatched `run_id`, cancellation and successful-child cleanup tests |
+| 5. wakeups/decisions/action receipts | `internal/worker/operations.go`, future-wake/action-receipt tests, stable current-question IDs, replay rejection, and non-evicting receipt-capacity tests |
+| 6. suggestions-only boundary | `SubprocessObserver`, fixture observer, CAS registry concurrent/ambiguous-ingestion tests, explicit suggestion enrollment, and scheduled-observer pass test |
+| 7. journal/notice receipts/quiet passes | `service.go`, committed-write/lost-response prepared-journal recovery, conflict-safe receipt and bounded-notifier tests, `TestQuietNoopAndWaitingUserIsolation` |
 | 8. operations/activation/docs | this page, fixtures, `go test -race ./...`, vet, pre-commit, strict MkDocs |

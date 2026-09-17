@@ -21,6 +21,8 @@ const (
 	maxStableIDSize = 512
 )
 
+var ErrReceiptCapacity = errors.New("worker receipt history reached its durable capacity")
+
 // State is a durable lifecycle state. Only ready and due scheduled records
 // can be claimed. In particular, a stale running record is reconciled rather
 // than treated as ready work.
@@ -110,6 +112,14 @@ type Notice struct {
 	ReceiptID string `json:"receipt_id,omitempty"`
 }
 
+func (j Journal) needsReconciliation() bool {
+	return j.State == "prepared" || j.State == "sending" || j.State == "unknown"
+}
+
+func (n Notice) needsReconciliation() bool {
+	return n.State == "prepared" || n.State == "sending" || n.State == "unknown"
+}
+
 // SuggestionClaim is an idempotency reservation stored on an explicitly
 // configured registry card. It is deliberately separate from a suggestion
 // card: a create response can be ambiguous, in which case the reservation is
@@ -122,20 +132,25 @@ type SuggestionClaim struct {
 // Record is the versioned metadata value at MetadataKey. It intentionally
 // contains no provider connection or secret fields.
 type Record struct {
-	Version            int                        `json:"version"`
-	Goal               string                     `json:"goal"`
-	CompletionCriteria string                     `json:"completion_criteria"`
-	Delegation         Delegation                 `json:"delegation"`
-	State              State                      `json:"state"`
-	WakeAt             *time.Time                 `json:"wake_at,omitempty"`
-	Sources            []SourceRef                `json:"sources,omitempty"`
-	Action             *ActionIntent              `json:"action,omitempty"`
-	Run                *Run                       `json:"run,omitempty"`
-	Outcome            *Outcome                   `json:"outcome,omitempty"`
-	Decision           *Decision                  `json:"decision,omitempty"`
-	EventID            string                     `json:"event_id,omitempty"`
-	Journal            *Journal                   `json:"journal,omitempty"`
-	Notice             *Notice                    `json:"notice,omitempty"`
+	Version            int           `json:"version"`
+	Goal               string        `json:"goal"`
+	CompletionCriteria string        `json:"completion_criteria"`
+	Delegation         Delegation    `json:"delegation"`
+	State              State         `json:"state"`
+	WakeAt             *time.Time    `json:"wake_at,omitempty"`
+	Sources            []SourceRef   `json:"sources,omitempty"`
+	Action             *ActionIntent `json:"action,omitempty"`
+	Run                *Run          `json:"run,omitempty"`
+	Outcome            *Outcome      `json:"outcome,omitempty"`
+	Decision           *Decision     `json:"decision,omitempty"`
+	EventID            string        `json:"event_id,omitempty"`
+	Journal            *Journal      `json:"journal,omitempty"`
+	Notice             *Notice       `json:"notice,omitempty"`
+	// Unresolved outbox entries are retained when a later task step creates a
+	// new current journal/notice. They are evidence for operator reconciliation
+	// and are never replayed automatically.
+	UnresolvedJournals []Journal                  `json:"unresolved_journals,omitempty"`
+	UnresolvedNotices  []Notice                   `json:"unresolved_notices,omitempty"`
 	EventReceipts      []string                   `json:"event_receipts,omitempty"`
 	DecisionReceipts   []string                   `json:"decision_receipts,omitempty"`
 	SuggestionRegistry bool                       `json:"suggestion_registry,omitempty"`
@@ -179,6 +194,9 @@ func (r Record) Validate() error {
 			return errors.New("worker receipt ID is invalid")
 		}
 	}
+	if len(r.EventReceipts) > maxReceiptIDs || len(r.DecisionReceipts) > maxReceiptIDs {
+		return fmt.Errorf("%w (%d IDs per kind)", ErrReceiptCapacity, maxReceiptIDs)
+	}
 	if r.SuggestionRegistry {
 		if r.Delegation.Delegated || r.State != StatePaused || r.Action != nil {
 			return errors.New("suggestion registry must be a non-delegated paused record without an action")
@@ -219,8 +237,8 @@ func (r Record) Validate() error {
 	if r.State == StateRunning && (r.Run == nil || r.Run.ID == "" || r.Run.OwnerToken == "" || r.Run.Fence == "" || r.Run.LeaseExpires.IsZero()) {
 		return errors.New("running work requires a live run claim")
 	}
-	if r.State == StateWaitingUser && (r.Decision == nil || strings.TrimSpace(r.Decision.Prompt) == "") {
-		return errors.New("waiting_user work requires a decision prompt")
+	if r.State == StateWaitingUser && (r.Decision == nil || strings.TrimSpace(r.Decision.ID) == "" || strings.TrimSpace(r.Decision.Prompt) == "") {
+		return errors.New("waiting_user work requires a stable decision ID and prompt")
 	}
 	if r.State == StateWaitingEvent && r.Decision != nil {
 		return errors.New("waiting_event work cannot contain a user decision")
@@ -263,14 +281,15 @@ func (r Record) HasEventReceipt(id string) bool {
 	return false
 }
 
-func (r *Record) AddEventReceipt(id string) {
+func (r *Record) AddEventReceipt(id string) error {
 	if r.HasEventReceipt(id) {
-		return
+		return nil
+	}
+	if len(r.EventReceipts) >= maxReceiptIDs {
+		return ErrReceiptCapacity
 	}
 	r.EventReceipts = append(r.EventReceipts, id)
-	if len(r.EventReceipts) > maxReceiptIDs {
-		r.EventReceipts = append([]string(nil), r.EventReceipts[len(r.EventReceipts)-maxReceiptIDs:]...)
-	}
+	return nil
 }
 
 func (r Record) HasDecisionReceipt(id string) bool {
@@ -282,14 +301,42 @@ func (r Record) HasDecisionReceipt(id string) bool {
 	return false
 }
 
-func (r *Record) AddDecisionReceipt(id string) {
+func (r *Record) AddDecisionReceipt(id string) error {
 	if r.HasDecisionReceipt(id) {
-		return
+		return nil
+	}
+	if len(r.DecisionReceipts) >= maxReceiptIDs {
+		return ErrReceiptCapacity
 	}
 	r.DecisionReceipts = append(r.DecisionReceipts, id)
-	if len(r.DecisionReceipts) > maxReceiptIDs {
-		r.DecisionReceipts = append([]string(nil), r.DecisionReceipts[len(r.DecisionReceipts)-maxReceiptIDs:]...)
+	return nil
+}
+
+func (r *Record) RetainUnresolvedOutbox() {
+	if r.Journal != nil && r.Journal.needsReconciliation() && !hasJournal(r.UnresolvedJournals, r.Journal.ID) {
+		r.UnresolvedJournals = append(r.UnresolvedJournals, *r.Journal)
 	}
+	if r.Notice != nil && r.Notice.needsReconciliation() && !hasNotice(r.UnresolvedNotices, r.Notice.ID) {
+		r.UnresolvedNotices = append(r.UnresolvedNotices, *r.Notice)
+	}
+}
+
+func hasJournal(journals []Journal, id string) bool {
+	for _, journal := range journals {
+		if journal.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func hasNotice(notices []Notice, id string) bool {
+	for _, notice := range notices {
+		if notice.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func jsonObject(raw json.RawMessage) bool {

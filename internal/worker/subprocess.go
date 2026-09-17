@@ -49,6 +49,7 @@ const (
 )
 
 type AdapterResult struct {
+	RunID          string         `json:"run_id"`
 	Status         ResultStatus   `json:"status"`
 	Summary        string         `json:"summary,omitempty"`
 	WakeAt         *time.Time     `json:"wake_at,omitempty"`
@@ -61,6 +62,9 @@ type AdapterResult struct {
 }
 
 func (r AdapterResult) Validate(action *ActionIntent, now time.Time) error {
+	if strings.TrimSpace(r.RunID) == "" || len(r.RunID) > maxStableIDSize {
+		return fmt.Errorf("%w: result requires a bounded run_id", ErrAdapterInvalid)
+	}
 	switch r.Status {
 	case ResultCompleted, ResultScheduled, ResultWaitingEvent, ResultWaitingUser, ResultNeedsReview:
 	default:
@@ -160,6 +164,9 @@ func (r SubprocessRunner) Run(ctx context.Context, packet Packet) (AdapterResult
 	if err := result.Validate(packet.Action, time.Now().UTC()); err != nil {
 		return result, err
 	}
+	if result.RunID != packet.RunID {
+		return result, fmt.Errorf("%w: result run_id %q does not match packet run_id", ErrAdapterInvalid, result.RunID)
+	}
 	encoded, _ := json.Marshal(result)
 	_ = writeArtifact(dir, "result.json", encoded)
 	return result, nil
@@ -192,7 +199,12 @@ type NoticePacket struct {
 }
 
 type Notifier interface {
-	Deliver(context.Context, NoticePacket) (string, error)
+	Deliver(context.Context, NoticePacket) (NoticeReceipt, error)
+}
+
+type NoticeReceipt struct {
+	NoticeID  string `json:"notice_id"`
+	ReceiptID string `json:"receipt_id"`
 }
 
 type SubprocessNotifier struct {
@@ -201,25 +213,26 @@ type SubprocessNotifier struct {
 	Env         []string
 }
 
-func (n SubprocessNotifier) Deliver(ctx context.Context, packet NoticePacket) (string, error) {
+func (n SubprocessNotifier) Deliver(ctx context.Context, packet NoticePacket) (NoticeReceipt, error) {
 	if len(n.Argv) == 0 {
-		return "", errors.New("notification argv is required")
+		return NoticeReceipt{}, errors.New("notification argv is required")
 	}
 	input, err := json.Marshal(packet)
 	if err != nil {
-		return "", err
+		return NoticeReceipt{}, err
 	}
 	stdout, _, err := runBoundedCommand(ctx, n.Argv, input, n.OutputLimit, n.Env)
 	if err != nil {
-		return "", err
+		return NoticeReceipt{}, err
 	}
-	var reply struct {
-		ReceiptID string `json:"receipt_id"`
+	var receipt NoticeReceipt
+	if err := json.Unmarshal(stdout, &receipt); err != nil || strings.TrimSpace(receipt.NoticeID) == "" || strings.TrimSpace(receipt.ReceiptID) == "" {
+		return NoticeReceipt{}, fmt.Errorf("notification adapter returned no stable notice receipt")
 	}
-	if err := json.Unmarshal(stdout, &reply); err != nil || strings.TrimSpace(reply.ReceiptID) == "" {
-		return "", fmt.Errorf("notification adapter returned no stable receipt")
+	if receipt.NoticeID != packet.NoticeID {
+		return NoticeReceipt{}, fmt.Errorf("notification adapter receipt belongs to another notice")
 	}
-	return reply.ReceiptID, nil
+	return receipt, nil
 }
 
 type Observer interface {

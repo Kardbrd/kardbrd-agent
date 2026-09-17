@@ -28,6 +28,12 @@ type Config struct {
 	NoticeTimeout time.Duration
 	Runner        Runner
 	Notifier      Notifier
+	// Observer is optional and is run only by Serve's shared board-wide pass.
+	// Its proposals remain non-delegated and are never passed to Runner.
+	Observer               Observer
+	ObserverRegistryCardID string
+	ObserverListID         string
+	ObserverTimeout        time.Duration
 }
 
 func (c Config) ValidateBase() error {
@@ -74,6 +80,16 @@ func (c Config) ValidateExecution() error {
 	}
 	if c.Runner == nil {
 		return errors.New("worker runner configuration is required")
+	}
+	return nil
+}
+
+func (c Config) ValidateScheduledObserver() error {
+	if c.Observer == nil {
+		return nil
+	}
+	if strings.TrimSpace(c.ObserverRegistryCardID) == "" || strings.TrimSpace(c.ObserverListID) == "" || c.ObserverTimeout <= 0 {
+		return errors.New("configured observer requires registry card, list ID, and positive timeout")
 	}
 	return nil
 }
@@ -214,6 +230,16 @@ dispatch:
 		mu.Lock()
 		report.Recognized++
 		mu.Unlock()
+		if outcomeNeedsRecovery(snapshot.Record) {
+			if err := s.recoverOutcome(ctx, snapshot); err != nil {
+				mu.Lock()
+				if passErr == nil {
+					passErr = err
+				}
+				mu.Unlock()
+			}
+			continue
+		}
 		if snapshot.Record.State == StateRunning && snapshot.Record.Run != nil && !snapshot.Record.Run.LeaseExpires.After(now) {
 			if err := s.reconcileExpired(ctx, snapshot); err == nil {
 				mu.Lock()
@@ -249,13 +275,23 @@ dispatch:
 	return report, passErr
 }
 
+func outcomeNeedsRecovery(record Record) bool {
+	if record.Outcome == nil || record.Journal == nil {
+		return false
+	}
+	return record.Journal.State == "prepared" || (record.Journal.State == "posted" && record.Notice != nil && record.Notice.State == "prepared")
+}
+
 func (s Service) Serve(ctx context.Context) error {
 	if err := s.Config.ValidateExecution(); err != nil {
 		return err
 	}
+	if err := s.Config.ValidateScheduledObserver(); err != nil {
+		return err
+	}
 	// The first pass avoids a restart leaving already-due work idle until the
 	// next ticker. Every later pass is still a single board-wide schedule.
-	if _, err := s.RunOnce(ctx); err != nil && ctx.Err() == nil {
+	if err := s.runScheduledPass(ctx); err != nil && ctx.Err() == nil {
 		return err
 	}
 	ticker := time.NewTicker(s.Config.PollInterval)
@@ -265,11 +301,31 @@ func (s Service) Serve(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			if _, err := s.RunOnce(ctx); err != nil && ctx.Err() == nil {
+			if err := s.runScheduledPass(ctx); err != nil && ctx.Err() == nil {
 				return err
 			}
 		}
 	}
+}
+
+func (s Service) runScheduledPass(ctx context.Context) error {
+	if err := s.Config.ValidateScheduledObserver(); err != nil {
+		return err
+	}
+	if _, err := s.RunOnce(ctx); err != nil {
+		return err
+	}
+	if s.Config.Observer == nil {
+		return nil
+	}
+	observerCtx, cancel := context.WithTimeout(ctx, s.Config.ObserverTimeout)
+	defer cancel()
+	events, err := s.Config.Observer.Observe(observerCtx)
+	if err != nil {
+		return err
+	}
+	_, err = s.IngestSuggestions(observerCtx, s.Config.ObserverRegistryCardID, s.Config.ObserverListID, events)
+	return err
 }
 
 func (s Service) tryClaim(ctx context.Context, cardID string) (Snapshot, bool, error) {
@@ -358,8 +414,20 @@ func (s Service) processDue(ctx context.Context, stale Snapshot) (bool, bool, er
 }
 
 func (s Service) runWithLease(ctx context.Context, cardID string, claim *Run, packet Packet) (AdapterResult, error) {
-	runCtx, cancel := context.WithTimeout(ctx, s.Config.RunTimeout)
-	defer cancel()
+	timeoutCtx, cancelTimeout := context.WithTimeout(ctx, s.Config.RunTimeout)
+	defer cancelTimeout()
+	leaseDeadline := claim.LeaseExpires
+	remainingLease := leaseDeadline.Sub(s.clock().Now())
+	if remainingLease <= 0 {
+		return AdapterResult{}, ErrLostOwnership
+	}
+	// A runner is never allowed to outlive the lease that was actually
+	// committed. The timer cancels it independently of a blocked renewal HTTP
+	// request; a successful renewal installs a new lease guard below.
+	runCtx, cancelRun := context.WithCancel(timeoutCtx)
+	defer cancelRun()
+	leaseTimer := time.AfterFunc(remainingLease, cancelRun)
+	defer func() { leaseTimer.Stop() }()
 	resultCh := make(chan struct {
 		result AdapterResult
 		err    error
@@ -371,26 +439,66 @@ func (s Service) runWithLease(ctx context.Context, cardID string, claim *Run, pa
 			err    error
 		}{result, err}
 	}()
-	interval := s.Config.LeaseDuration / 3
-	if interval <= 0 {
-		interval = time.Millisecond
-	}
-	ticker := s.leaseTicker(interval)
-	defer ticker.Stop()
+	ticker := s.leaseTicker(leaseRenewInterval(s.Config.LeaseDuration, remainingLease))
+	defer func() { ticker.Stop() }()
 	for {
 		select {
 		case finished := <-resultCh:
 			return finished.result, finished.err
 		case <-runCtx.Done():
-			return AdapterResult{}, runCtx.Err()
+			// Waiting for a context-aware runner here guarantees a lost/expired
+			// lease also stops its process group before this method returns.
+			<-resultCh
+			if timeoutCtx.Err() != nil {
+				return AdapterResult{}, timeoutCtx.Err()
+			}
+			return AdapterResult{}, ErrLostOwnership
 		case <-ticker.C():
-			if err := s.renew(ctx, cardID, claim); err != nil {
-				cancel()
+			actualRemaining := leaseDeadline.Sub(s.clock().Now())
+			if actualRemaining <= 0 {
+				cancelRun()
 				<-resultCh
+				return AdapterResult{}, ErrLostOwnership
+			}
+			renewCtx, renewCancel := context.WithTimeout(timeoutCtx, actualRemaining)
+			err := s.renew(renewCtx, cardID, claim)
+			renewCancel()
+			if err != nil {
+				cancelRun()
+				<-resultCh
+				if !leaseDeadline.After(s.clock().Now()) || runCtx.Err() != nil && timeoutCtx.Err() == nil {
+					return AdapterResult{}, ErrLostOwnership
+				}
 				return AdapterResult{}, err
 			}
+			if !leaseDeadline.After(s.clock().Now()) || runCtx.Err() != nil {
+				cancelRun()
+				<-resultCh
+				return AdapterResult{}, ErrLostOwnership
+			}
+			if !leaseTimer.Stop() {
+				cancelRun()
+				<-resultCh
+				return AdapterResult{}, ErrLostOwnership
+			}
+			leaseDeadline = s.clock().Now().Add(s.Config.LeaseDuration)
+			remainingLease = s.Config.LeaseDuration
+			leaseTimer = time.AfterFunc(remainingLease, cancelRun)
+			ticker.Stop()
+			ticker = s.leaseTicker(leaseRenewInterval(s.Config.LeaseDuration, remainingLease))
 		}
 	}
+}
+
+func leaseRenewInterval(leaseDuration, remainingLease time.Duration) time.Duration {
+	interval := leaseDuration / 3
+	if halfRemaining := remainingLease / 2; halfRemaining > 0 && halfRemaining < interval {
+		interval = halfRemaining
+	}
+	if interval <= 0 {
+		return time.Nanosecond
+	}
+	return interval
 }
 
 func (s Service) renew(ctx context.Context, cardID string, claim *Run) error {
@@ -432,6 +540,9 @@ func (s Service) finishResult(ctx context.Context, cardID string, claim *Run, re
 	if !ownsLive(snapshot.Record, claim, s.clock().Now()) {
 		return ErrLostOwnership
 	}
+	if result.RunID != claim.ID {
+		return s.finishReview(ctx, cardID, claim, fmt.Sprintf("adapter result run_id %q does not match active run", result.RunID))
+	}
 	if err := result.Validate(snapshot.Record.Action, s.clock().Now()); err != nil {
 		return s.finishReview(ctx, cardID, claim, err.Error())
 	}
@@ -453,7 +564,7 @@ func (s Service) finishResult(ctx context.Context, cardID string, claim *Run, re
 		record.State, record.Decision = StateWaitingEvent, nil
 		record.EventID = result.EventID
 	case ResultWaitingUser:
-		record.State, record.Decision = StateWaitingUser, &Decision{Prompt: result.DecisionPrompt}
+		record.State, record.Decision = StateWaitingUser, &Decision{ID: "decision-" + claim.ID, Prompt: result.DecisionPrompt}
 		record.EventID = ""
 	case ResultNeedsReview:
 		record.State = StateNeedsReview
@@ -492,6 +603,7 @@ func (s Service) reconcileExpired(ctx context.Context, snapshot Snapshot) error 
 }
 
 func (s Service) commitOutcome(ctx context.Context, snapshot Snapshot, record Record, runID string) error {
+	record.RetainUnresolvedOutbox()
 	record.Journal = &Journal{ID: "journal-" + runID, State: "prepared"}
 	record.Notice = &Notice{ID: "notice-" + runID, State: "prepared"}
 	written, err := s.Store.Put(ctx, snapshot, record)
@@ -501,7 +613,37 @@ func (s Service) commitOutcome(ctx context.Context, snapshot Snapshot, record Re
 	return s.publishOutcome(ctx, written, runID)
 }
 
+// recoverOutcome drains only outbox stages known not to have sent an effect.
+// A journal/notice marked sending or unknown may already have reached its
+// target, so it is deliberately left for operator reconciliation rather than
+// being replayed on a later worker pass.
+func (s Service) recoverOutcome(ctx context.Context, stale Snapshot) error {
+	live, err := s.Store.Live(ctx, s.Config.BoardID, stale.Card.ID)
+	if err != nil {
+		return err
+	}
+	if !live.HasRecord || live.ParseErr != nil || live.Record.Outcome == nil || live.Record.Journal == nil {
+		return nil
+	}
+	switch live.Record.Journal.State {
+	case "prepared":
+		return s.publishOutcome(ctx, live, live.Record.Outcome.RunID)
+	case "posted":
+		return s.publishNotice(ctx, live.Card.ID, live.Record.Outcome.RunID, journalMessage(live.Record))
+	default:
+		return nil
+	}
+}
+
 func (s Service) publishOutcome(ctx context.Context, snapshot Snapshot, runID string) error {
+	claimed, ok, err := s.claimJournal(ctx, snapshot, runID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return s.publishNotice(ctx, snapshot.Card.ID, runID, journalMessage(snapshot.Record))
+	}
+	snapshot = claimed
 	message := journalMessage(snapshot.Record)
 	commentRaw, err := s.Store.Client.AddCommentOnce(ctx, snapshot.Card.ID, message)
 	if err != nil {
@@ -515,27 +657,69 @@ func (s Service) publishOutcome(ctx context.Context, snapshot Snapshot, runID st
 	}
 	_ = json.Unmarshal(commentRaw, &comment)
 	if comment.ID == "" {
-		comment.ID = "posted-without-receipt"
+		if markErr := s.markJournal(ctx, snapshot.Card.ID, runID, "unknown", "", "unknown", ""); markErr != nil {
+			return fmt.Errorf("comment response had no receipt and uncertainty could not be recorded: %w", markErr)
+		}
+		return nil
 	}
 	if err := s.markJournal(ctx, snapshot.Card.ID, runID, "posted", comment.ID, "prepared", ""); err != nil {
 		return fmt.Errorf("comment was posted but its durable receipt could not be recorded: %w", err)
 	}
+	return s.publishNotice(ctx, snapshot.Card.ID, runID, message)
+}
+
+// claimJournal fences the non-idempotent comment request. A committed
+// terminal outcome with a prepared journal is safe to resume after a lost
+// metadata response; once it is sending, a worker never blindly posts again.
+func (s Service) claimJournal(ctx context.Context, snapshot Snapshot, runID string) (Snapshot, bool, error) {
+	if snapshot.Record.Outcome == nil || snapshot.Record.Outcome.RunID != runID || snapshot.Record.Journal == nil {
+		return snapshot, false, ErrLostOwnership
+	}
+	if snapshot.Record.Journal.State != "prepared" {
+		return snapshot, false, nil
+	}
+	snapshot.Record.Journal.State = "sending"
+	written, err := s.Store.Put(ctx, snapshot, snapshot.Record)
+	return written, err == nil, err
+}
+
+func (s Service) publishNotice(ctx context.Context, cardID, runID, message string) error {
+	snapshot, err := s.Store.Live(ctx, s.Config.BoardID, cardID)
+	if err != nil {
+		return err
+	}
+	if snapshot.Record.Outcome == nil || snapshot.Record.Outcome.RunID != runID || snapshot.Record.Journal == nil || snapshot.Record.Journal.State != "posted" || snapshot.Record.Notice == nil {
+		return ErrLostOwnership
+	}
+	if snapshot.Record.Notice.State != "prepared" {
+		return nil
+	}
 	if s.Config.Notifier == nil {
-		if err := s.markJournal(ctx, snapshot.Card.ID, runID, "posted", comment.ID, "not_configured", ""); err != nil {
+		if err := s.markJournal(ctx, cardID, runID, "posted", "", "not_configured", ""); err != nil {
 			return fmt.Errorf("notice state could not be recorded: %w", err)
 		}
 		return nil
 	}
+	snapshot.Record.Notice.State = "sending"
+	if _, err := s.Store.Put(ctx, snapshot, snapshot.Record); err != nil {
+		return err
+	}
 	noticeCtx, cancel := context.WithTimeout(ctx, s.Config.NoticeTimeout)
 	defer cancel()
-	receipt, err := s.Config.Notifier.Deliver(noticeCtx, NoticePacket{Version: SchemaVersion, NoticeID: "notice-" + runID, CardID: snapshot.Card.ID, RunID: runID, Message: message})
+	receipt, err := s.Config.Notifier.Deliver(noticeCtx, NoticePacket{Version: SchemaVersion, NoticeID: "notice-" + runID, CardID: cardID, RunID: runID, Message: message})
 	if err != nil {
-		if markErr := s.markJournal(ctx, snapshot.Card.ID, runID, "posted", comment.ID, "unknown", ""); markErr != nil {
+		if markErr := s.markJournal(ctx, cardID, runID, "posted", "", "unknown", ""); markErr != nil {
 			return fmt.Errorf("notice delivery and receipt persistence are both uncertain: %w", markErr)
 		}
 		return nil
 	}
-	if err := s.markJournal(ctx, snapshot.Card.ID, runID, "posted", comment.ID, "delivered", receipt); err != nil {
+	if receipt.NoticeID != "notice-"+runID {
+		if markErr := s.markJournal(ctx, cardID, runID, "posted", "", "unknown", ""); markErr != nil {
+			return fmt.Errorf("notification receipt belonged to another notice and uncertainty could not be recorded: %w", markErr)
+		}
+		return nil
+	}
+	if err := s.markJournal(ctx, cardID, runID, "posted", "", "delivered", receipt.ReceiptID); err != nil {
 		return fmt.Errorf("notice was delivered but its durable receipt could not be recorded: %w", err)
 	}
 	return nil

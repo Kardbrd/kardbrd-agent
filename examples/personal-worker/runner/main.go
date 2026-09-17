@@ -20,20 +20,20 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	result := map[string]any{"status": "completed", "summary": "Synthetic fixture completed.", "receipt_id": "fixture-" + packet.RunID}
+	result := map[string]any{"run_id": packet.RunID, "status": "completed", "summary": "Synthetic fixture completed.", "receipt_id": "fixture-" + packet.RunID}
 	mode := ""
 	if len(os.Args) > 1 {
 		mode = os.Args[len(os.Args)-1]
 	}
 	switch mode {
 	case "scheduled":
-		result = map[string]any{"status": "scheduled", "summary": "Synthetic future step.", "wake_at": time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)}
+		result = map[string]any{"run_id": packet.RunID, "status": "scheduled", "summary": "Synthetic future step.", "wake_at": time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)}
 	case "waiting_event":
-		result = map[string]any{"status": "waiting_event", "summary": "Synthetic event wait.", "event_id": "fixture-event-1"}
+		result = map[string]any{"run_id": packet.RunID, "status": "waiting_event", "summary": "Synthetic event wait.", "event_id": "fixture-event-1"}
 	case "waiting_user":
-		result = map[string]any{"status": "waiting_user", "summary": "Synthetic decision wait.", "decision_prompt": "Approve the synthetic fixture?"}
+		result = map[string]any{"run_id": packet.RunID, "status": "waiting_user", "summary": "Synthetic decision wait.", "decision_prompt": "Approve the synthetic fixture?"}
 	case "needs_review":
-		result = map[string]any{"status": "needs_review", "review_note": "Synthetic uncertainty for operator review."}
+		result = map[string]any{"run_id": packet.RunID, "status": "needs_review", "review_note": "Synthetic uncertainty for operator review."}
 	}
 	if packet.Action != nil {
 		switch mode {
