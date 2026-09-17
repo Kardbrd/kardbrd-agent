@@ -461,7 +461,7 @@ func (s Service) runWithLease(ctx context.Context, cardID string, claim *Run, pa
 				return AdapterResult{}, ErrLostOwnership
 			}
 			renewCtx, renewCancel := context.WithTimeout(timeoutCtx, actualRemaining)
-			err := s.renew(renewCtx, cardID, claim)
+			renewedExpiry, err := s.renew(renewCtx, cardID, claim)
 			renewCancel()
 			if err != nil {
 				cancelRun()
@@ -471,7 +471,12 @@ func (s Service) runWithLease(ctx context.Context, cardID string, claim *Run, pa
 				}
 				return AdapterResult{}, err
 			}
-			if !leaseDeadline.After(s.clock().Now()) || runCtx.Err() != nil {
+			// The renewal's expiry was chosen before its metadata POST. Its
+			// response may arrive much later, so the remaining guard must be
+			// measured from the expiry that was actually written—not from now.
+			leaseDeadline = renewedExpiry
+			remainingLease = leaseDeadline.Sub(s.clock().Now())
+			if remainingLease <= 0 || runCtx.Err() != nil {
 				cancelRun()
 				<-resultCh
 				return AdapterResult{}, ErrLostOwnership
@@ -481,8 +486,6 @@ func (s Service) runWithLease(ctx context.Context, cardID string, claim *Run, pa
 				<-resultCh
 				return AdapterResult{}, ErrLostOwnership
 			}
-			leaseDeadline = s.clock().Now().Add(s.Config.LeaseDuration)
-			remainingLease = s.Config.LeaseDuration
 			leaseTimer = time.AfterFunc(remainingLease, cancelRun)
 			ticker.Stop()
 			ticker = s.leaseTicker(leaseRenewInterval(s.Config.LeaseDuration, remainingLease))
@@ -501,35 +504,41 @@ func leaseRenewInterval(leaseDuration, remainingLease time.Duration) time.Durati
 	return interval
 }
 
-func (s Service) renew(ctx context.Context, cardID string, claim *Run) error {
+// renew returns the exact lease expiry persisted by its successful metadata
+// write. Callers must treat it as a durable deadline; response arrival is not
+// a lease extension.
+func (s Service) renew(ctx context.Context, cardID string, claim *Run) (time.Time, error) {
 	snapshot, err := s.Store.Live(ctx, s.Config.BoardID, cardID)
 	if err != nil {
-		return ErrLostOwnership
+		return time.Time{}, ErrLostOwnership
 	}
 	if !ownsLive(snapshot.Record, claim, s.clock().Now()) {
-		return ErrLostOwnership
+		return time.Time{}, ErrLostOwnership
 	}
 	now := s.clock().Now()
 	snapshot.Record.Run.HeartbeatAt = now
 	snapshot.Record.Run.LeaseExpires = now.Add(s.Config.LeaseDuration)
-	if _, err := s.Store.Put(ctx, snapshot, snapshot.Record); err == nil {
-		return nil
+	if written, err := s.Store.Put(ctx, snapshot, snapshot.Record); err == nil {
+		return written.Record.Run.LeaseExpires, nil
 	} else if !errors.Is(err, ErrConflict) {
-		return err
+		return time.Time{}, err
 	}
 	// This is a deliberately revalidated renewal, not a blind stale retry.
 	snapshot, err = s.Store.Live(ctx, s.Config.BoardID, cardID)
 	if err != nil || !ownsLive(snapshot.Record, claim, s.clock().Now()) {
-		return ErrLostOwnership
+		return time.Time{}, ErrLostOwnership
 	}
 	now = s.clock().Now()
 	snapshot.Record.Run.HeartbeatAt = now
 	snapshot.Record.Run.LeaseExpires = now.Add(s.Config.LeaseDuration)
-	_, err = s.Store.Put(ctx, snapshot, snapshot.Record)
+	written, err := s.Store.Put(ctx, snapshot, snapshot.Record)
 	if errors.Is(err, ErrConflict) {
-		return ErrLostOwnership
+		return time.Time{}, ErrLostOwnership
 	}
-	return err
+	if err != nil {
+		return time.Time{}, err
+	}
+	return written.Record.Run.LeaseExpires, nil
 }
 
 func (s Service) finishResult(ctx context.Context, cardID string, claim *Run, result AdapterResult) error {
@@ -772,7 +781,11 @@ func claimFence(record Record) (string, error) {
 		Authorization      json.RawMessage `json:"authorization"`
 		Action             *ActionIntent   `json:"action,omitempty"`
 		Sources            []SourceRef     `json:"sources,omitempty"`
-	}{Goal: record.Goal, CompletionCriteria: record.CompletionCriteria, Authorization: record.Delegation.Authorization, Action: record.Action, Sources: record.Sources}
+		// Decision is an authorization input for a resumed task. Its stable
+		// question ID, prompt, and exact answered value fence the claim just
+		// like the operator's delegation and action intent do.
+		Decision *Decision `json:"decision,omitempty"`
+	}{Goal: record.Goal, CompletionCriteria: record.CompletionCriteria, Authorization: record.Delegation.Authorization, Action: record.Action, Sources: record.Sources, Decision: record.Decision}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return "", err

@@ -144,6 +144,8 @@ type metadataServer struct {
 	markdownRelease       <-chan struct{}
 	renewalStarted        chan struct{}
 	renewalRelease        <-chan struct{}
+	renewalPostStarted    chan struct{}
+	renewalPostRelease    <-chan struct{}
 	createAmbiguous       bool
 	server                *httptest.Server
 }
@@ -308,6 +310,23 @@ func (f *metadataServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 					delete(f.metadata[cardID], key)
 				}
 				f.revisions[cardID]++
+				// A response may be delayed after the server has already
+				// durably accepted a renewal. Tests use this boundary to prove
+				// the client keeps the persisted expiry rather than extending it
+				// from response arrival.
+				if f.renewalPostStarted != nil && f.renewalPostRelease != nil {
+					select {
+					case f.renewalPostStarted <- struct{}{}:
+					default:
+					}
+					release := f.renewalPostRelease
+					f.mu.Unlock()
+					select {
+					case <-release:
+					case <-r.Context().Done():
+					}
+					f.mu.Lock()
+				}
 				if f.dropCompletedResponse {
 					record, err := ParseRecord(f.metadata[cardID][MetadataKey])
 					if err != nil {
@@ -644,6 +663,87 @@ func TestLateRunStopsAtCommittedLeaseWhenRenewalBlocks(t *testing.T) {
 	close(renewalRelease)
 }
 
+func TestSlowSuccessfulRenewalKeepsPersistedLeaseDeadline(t *testing.T) {
+	fake := newMetadataServer(t)
+	fake.add("card-1", testRecord(StateReady))
+	runner := blockingRunner{started: make(chan struct{})}
+	service := testService(fake, runner, time.Now().UTC())
+	service.Clock = realClock{}
+	service.Config.LeaseDuration = 1200 * time.Millisecond
+	service.Config.RunTimeout = 4 * time.Second
+	done := make(chan error, 1)
+	go func() {
+		_, err := service.RunOnce(context.Background())
+		done <- err
+	}()
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not start the runner")
+	}
+	postStarted := make(chan struct{}, 1)
+	postRelease := make(chan struct{})
+	fake.mu.Lock()
+	fake.renewalPostStarted = postStarted
+	fake.renewalPostRelease = postRelease
+	fake.mu.Unlock()
+	select {
+	case <-postStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not durably write its first renewal")
+	}
+	persistedExpiry := fake.record("card-1").Run.LeaseExpires
+	getStarted := make(chan struct{}, 1)
+	getRelease := make(chan struct{})
+	fake.mu.Lock()
+	fake.renewalStarted = getStarted
+	fake.renewalRelease = getRelease
+	fake.mu.Unlock()
+	// The server has committed the expiry above but delays its successful
+	// response. A response-time based deadline wrongly grants this runner the
+	// delay as additional lease time.
+	time.Sleep(400 * time.Millisecond)
+	close(postRelease)
+	deadline := time.NewTimer(maxDuration(time.Until(persistedExpiry.Add(150*time.Millisecond)), time.Millisecond))
+	defer deadline.Stop()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-deadline.C:
+		close(getRelease)
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+		}
+		t.Fatal("runner outlived the expiry durably written by a slow renewal")
+	}
+	close(getRelease)
+}
+
+func TestRenewReturnsPersistedExpiryAfterConflictRevalidation(t *testing.T) {
+	fake := newMetadataServer(t)
+	now := time.Date(2030, 1, 2, 0, 0, 0, 0, time.UTC)
+	record := testRecord(StateRunning)
+	fence, err := claimFence(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := &Run{ID: "run-1", OwnerToken: "owner-1", Fence: fence, StartedAt: now, HeartbeatAt: now, LeaseExpires: now.Add(time.Minute)}
+	record.Run = claim
+	fake.add("card-1", record)
+	fake.metadataConflicts = 1
+	service := testService(fake, &countedRunner{}, now)
+	persistedExpiry, err := service.renew(context.Background(), "card-1", claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fake.record("card-1").Run.LeaseExpires; !persistedExpiry.Equal(got) {
+		t.Fatalf("renewal returned %s, durable expiry is %s", persistedExpiry, got)
+	}
+}
+
 func maxDuration(left, floor time.Duration) time.Duration {
 	if left < floor {
 		return floor
@@ -671,6 +771,32 @@ func TestAuthorizationFenceChangeCancelsRunner(t *testing.T) {
 	}
 	if got := string(fake.record("card-1").Delegation.Authorization); got != `{"scope":"narrowed"}` {
 		t.Fatalf("stale runner overwrote current authorization: %s", got)
+	}
+}
+
+func TestAnsweredDecisionFenceChangeCancelsRunner(t *testing.T) {
+	fake := newMetadataServer(t)
+	now := time.Date(2030, 1, 2, 0, 0, 0, 0, time.UTC)
+	record := testRecord(StateReady)
+	record.Decision = &Decision{ID: "decision-1", Prompt: "when?", Value: json.RawMessage(`"morning"`)}
+	fake.add("card-1", record)
+	runner := blockingRunner{started: make(chan struct{})}
+	service := testService(fake, runner, now)
+	ticks := make(chan time.Time, 1)
+	service.NewLeaseTicker = func(time.Duration) LeaseTicker { return manualLeaseTicker{ch: ticks} }
+	done := make(chan error, 1)
+	go func() { _, err := service.RunOnce(context.Background()); done <- err }()
+	<-runner.started
+	changed := fake.record("card-1")
+	changed.Decision.Value = json.RawMessage(`"afternoon"`)
+	fake.setRecord("card-1", changed)
+	ticks <- now
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	got := fake.record("card-1")
+	if got.State != StateRunning || got.Decision == nil || string(got.Decision.Value) != `"afternoon"` {
+		t.Fatalf("stale runner applied a result after decision changed: %#v", got)
 	}
 }
 
