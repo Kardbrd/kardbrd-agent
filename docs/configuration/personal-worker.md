@@ -1,5 +1,12 @@
 # Personal operations worker
 
+Card descriptions and comments are written for people: the request, useful
+progress, the outcome, and any decision needed. Execution IDs, provider receipts,
+diagnostic details and coordination state belong in card metadata; larger working
+files belong in attachments. The worker publishes the adapter's human-readable
+`summary` and `decision_prompt`, while `review_note` remains diagnostic metadata.
+Adapters must not put run IDs, source IDs or raw traces in their summaries.
+
 `kardbrd worker` is an opt-in, board-scoped durable worker for explicitly delegated personal operations. It is separate from `kardbrd agent start`: it does not load `kardbrd.yml`, does not create coding worktrees, and does not use the coding executors or their approval-bypass flags.
 
 This is an operator-reviewed integration point, not a Gmail, Calendar, browser, inbox, or notification-provider implementation. The installed binary has no provider connectors. Do not replace an existing host watcher with it until the activation checklist at the end of this page is reviewed.
