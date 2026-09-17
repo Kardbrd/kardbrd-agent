@@ -13,7 +13,10 @@ import (
 	"time"
 )
 
-var ErrLostOwnership = errors.New("worker lost its durable run ownership")
+var (
+	ErrLostOwnership         = errors.New("worker lost its durable run ownership")
+	ErrNoticeReceiptConflict = errors.New("worker notice receipt conflicts with durable evidence")
+)
 
 type Config struct {
 	BoardID       string
@@ -656,7 +659,7 @@ func (s Service) publishOutcome(ctx context.Context, snapshot Snapshot, runID st
 	message := journalMessage(snapshot.Record)
 	commentRaw, err := s.Store.Client.AddCommentOnce(ctx, snapshot.Card.ID, message)
 	if err != nil {
-		if markErr := s.markJournal(ctx, snapshot.Card.ID, runID, "unknown", "", "unknown", "", ""); markErr != nil {
+		if markErr := s.markJournal(ctx, snapshot.Card.ID, runID, snapshot.Record.Notice.ID, "unknown", "", noticeUpdate{State: "unknown"}); markErr != nil {
 			return fmt.Errorf("comment delivery and receipt persistence are both uncertain: %w", markErr)
 		}
 		return nil // The comment request itself is ambiguous and is never retried.
@@ -666,12 +669,12 @@ func (s Service) publishOutcome(ctx context.Context, snapshot Snapshot, runID st
 	}
 	_ = json.Unmarshal(commentRaw, &comment)
 	if comment.ID == "" {
-		if markErr := s.markJournal(ctx, snapshot.Card.ID, runID, "unknown", "", "unknown", "", ""); markErr != nil {
+		if markErr := s.markJournal(ctx, snapshot.Card.ID, runID, snapshot.Record.Notice.ID, "unknown", "", noticeUpdate{State: "unknown"}); markErr != nil {
 			return fmt.Errorf("comment response had no receipt and uncertainty could not be recorded: %w", markErr)
 		}
 		return nil
 	}
-	if err := s.markJournal(ctx, snapshot.Card.ID, runID, "posted", comment.ID, "prepared", "", ""); err != nil {
+	if err := s.markJournal(ctx, snapshot.Card.ID, runID, snapshot.Record.Notice.ID, "posted", comment.ID, noticeUpdate{State: "prepared"}); err != nil {
 		return fmt.Errorf("comment was posted but its durable receipt could not be recorded: %w", err)
 	}
 	return s.publishNotice(ctx, snapshot.Card.ID, runID, message)
@@ -703,8 +706,9 @@ func (s Service) publishNotice(ctx context.Context, cardID, runID, message strin
 	if snapshot.Record.Notice.State != "prepared" {
 		return nil
 	}
+	noticeID := snapshot.Record.Notice.ID
 	if s.Config.Notifier == nil {
-		if err := s.markJournal(ctx, cardID, runID, "posted", "", "not_configured", "", ""); err != nil {
+		if err := s.markJournal(ctx, cardID, runID, noticeID, "posted", "", noticeUpdate{State: "not_configured"}); err != nil {
 			return fmt.Errorf("notice state could not be recorded: %w", err)
 		}
 		return nil
@@ -715,54 +719,72 @@ func (s Service) publishNotice(ctx context.Context, cardID, runID, message strin
 	}
 	noticeCtx, cancel := context.WithTimeout(ctx, s.Config.NoticeTimeout)
 	defer cancel()
-	packet := NoticePacket{Version: SchemaVersion, NoticeID: snapshot.Record.Notice.ID, CardID: cardID, RunID: runID, Message: message}
+	packet := NoticePacket{Version: SchemaVersion, NoticeID: noticeID, CardID: cardID, RunID: runID, Message: message}
 	if snapshot.Record.Outcome.Kind == string(ResultWaitingUser) && snapshot.Record.Decision != nil {
 		packet.DecisionID = snapshot.Record.Decision.ID
 	}
 	receipt, err := s.Config.Notifier.Deliver(noticeCtx, packet)
 	if err != nil {
-		if markErr := s.markJournal(ctx, cardID, runID, "posted", "", "unknown", "", ""); markErr != nil {
+		if markErr := s.markJournal(ctx, cardID, runID, noticeID, "posted", "", noticeUpdate{State: "unknown"}); markErr != nil {
 			return fmt.Errorf("notice delivery and receipt persistence are both uncertain: %w", markErr)
 		}
 		return nil
 	}
 	if err := receipt.ValidateFor(packet.NoticeID); err != nil {
-		if markErr := s.markJournal(ctx, cardID, runID, "posted", "", "unknown", "", ""); markErr != nil {
+		if markErr := s.markJournal(ctx, cardID, runID, noticeID, "posted", "", noticeUpdate{State: "unknown"}); markErr != nil {
 			return fmt.Errorf("notification receipt was invalid and uncertainty could not be recorded: %w", markErr)
 		}
 		return nil
 	}
 	if receipt.DeliveryState == NoticeQueued {
-		if err := s.markJournal(ctx, cardID, runID, "posted", "", "queued", receipt.ReceiptID, ""); err != nil {
+		if err := s.markJournal(ctx, cardID, runID, noticeID, "posted", "", noticeUpdate{State: "queued", QueueReceiptID: receipt.ReceiptID}); err != nil {
 			return fmt.Errorf("notice was queued but its durable queue receipt could not be recorded: %w", err)
 		}
 		return nil
 	}
-	if err := s.markJournal(ctx, cardID, runID, "posted", "", "delivered", "", receipt.ReceiptID); err != nil {
+	if err := s.markJournal(ctx, cardID, runID, noticeID, "posted", "", noticeUpdate{State: "delivered", ReceiptID: receipt.ReceiptID}); err != nil {
 		return fmt.Errorf("notice was delivered but its durable receipt could not be recorded: %w", err)
 	}
 	return nil
 }
 
-func (s Service) markJournal(ctx context.Context, cardID, runID, journalState, commentID, noticeState, queueReceipt, deliveryReceipt string) error {
-	// This is an idempotent receipt update, not a stale claim retry. A single
-	// conflict retry re-reads and proves the terminal outcome is still the same
-	// run before applying only receipt fields; it never resends a message.
+type noticeUpdate struct {
+	State          string
+	QueueReceiptID string
+	ReceiptID      string
+}
+
+// markJournal records a comment/notice result for one exact notice. It never
+// turns newer delivery proof back into queue or uncertainty. Every CAS retry
+// reads the exact target again, so a concurrent operator acknowledgement
+// cannot cause an old notifier return to mutate another outbox entry.
+func (s Service) markJournal(ctx context.Context, cardID, runID, noticeID, journalState, commentID string, update noticeUpdate) error {
 	for attempt := 0; attempt < 2; attempt++ {
 		snapshot, err := s.Store.Live(ctx, s.Config.BoardID, cardID)
 		if err != nil {
 			return err
 		}
-		if snapshot.Record.Outcome == nil || snapshot.Record.Outcome.RunID != runID || snapshot.Record.Journal == nil || snapshot.Record.Notice == nil {
+		notice, unresolvedIndex := findNotice(snapshot.Record, noticeID)
+		if notice == nil {
 			return ErrLostOwnership
 		}
-		snapshot.Record.Journal.State = journalState
-		if commentID != "" {
-			snapshot.Record.Journal.CommentID = commentID
+		changedNotice, err := applyNoticeUpdate(notice, update)
+		if err != nil {
+			return err
 		}
-		snapshot.Record.Notice.State = noticeState
-		snapshot.Record.Notice.QueueReceiptID = queueReceipt
-		snapshot.Record.Notice.ReceiptID = deliveryReceipt
+		changedJournal := false
+		if unresolvedIndex < 0 {
+			if snapshot.Record.Outcome == nil || snapshot.Record.Outcome.RunID != runID || snapshot.Record.Journal == nil {
+				return ErrLostOwnership
+			}
+			changedJournal = applyJournalUpdate(snapshot.Record.Journal, journalState, commentID)
+			snapshot.Record.Notice = notice
+		} else {
+			snapshot.Record.UnresolvedNotices[unresolvedIndex] = *notice
+		}
+		if !changedJournal && !changedNotice {
+			return nil
+		}
 		if _, err = s.Store.Put(ctx, snapshot, snapshot.Record); err == nil {
 			return nil
 		} else if !errors.Is(err, ErrConflict) {
@@ -770,6 +792,122 @@ func (s Service) markJournal(ctx context.Context, cardID, runID, journalState, c
 		}
 	}
 	return ErrConflict
+}
+
+// applyJournalUpdate preserves a durable comment receipt when a stale error
+// return follows a confirmed post. Notice evidence has the stricter state
+// machine below; this small guard keeps the paired outbox record honest too.
+func applyJournalUpdate(journal *Journal, state, commentID string) bool {
+	changed := false
+	if journal.State != "posted" || state == "posted" {
+		if journal.State != state {
+			journal.State = state
+			changed = true
+		}
+	}
+	if commentID != "" && journal.CommentID == "" {
+		journal.CommentID = commentID
+		changed = true
+	}
+	return changed
+}
+
+// applyNoticeUpdate is a monotonic merge of a notifier outcome into durable
+// notice evidence. A receipt can add proof, but a delayed queue response,
+// adapter error, or malformed result cannot erase stronger proof. Different
+// non-empty receipts are an operator-visible conflict, never a replacement.
+func applyNoticeUpdate(notice *Notice, update noticeUpdate) (bool, error) {
+	if notice == nil {
+		return false, ErrLostOwnership
+	}
+	if notice.QueueReceiptID != "" && update.QueueReceiptID != "" && notice.QueueReceiptID != update.QueueReceiptID {
+		return false, fmt.Errorf("%w: queue receipt %q differs from %q for notice %q", ErrNoticeReceiptConflict, update.QueueReceiptID, notice.QueueReceiptID, notice.ID)
+	}
+	if notice.ReceiptID != "" && update.ReceiptID != "" && notice.ReceiptID != update.ReceiptID {
+		return false, fmt.Errorf("%w: delivery receipt %q differs from %q for notice %q", ErrNoticeReceiptConflict, update.ReceiptID, notice.ReceiptID, notice.ID)
+	}
+
+	switch notice.State {
+	case "delivered":
+		switch update.State {
+		case "delivered", "queued", "unknown", "not_configured", "prepared", "sending":
+			return false, nil
+		default:
+			return false, fmt.Errorf("unknown notice update state %q", update.State)
+		}
+	case "queued":
+		switch update.State {
+		case "queued", "unknown", "not_configured", "prepared", "sending":
+			return false, nil
+		case "delivered":
+			if update.ReceiptID == "" {
+				return false, errors.New("delivered notice update requires a receipt")
+			}
+			notice.State = "delivered"
+			notice.ReceiptID = update.ReceiptID
+			return true, nil
+		default:
+			return false, fmt.Errorf("unknown notice update state %q", update.State)
+		}
+	case "prepared", "sending", "unknown":
+		switch update.State {
+		case "queued":
+			if update.QueueReceiptID == "" {
+				return false, errors.New("queued notice update requires a queue receipt")
+			}
+			// Never erase an anomalous but durable delivery receipt held on an
+			// unresolved record; it is stronger than a late queue acceptance.
+			if notice.ReceiptID != "" {
+				return false, nil
+			}
+			notice.State = "queued"
+			notice.QueueReceiptID = update.QueueReceiptID
+			return true, nil
+		case "delivered":
+			if update.ReceiptID == "" {
+				return false, errors.New("delivered notice update requires a receipt")
+			}
+			notice.State = "delivered"
+			if update.QueueReceiptID != "" {
+				notice.QueueReceiptID = update.QueueReceiptID
+			}
+			notice.ReceiptID = update.ReceiptID
+			return true, nil
+		case "unknown":
+			if notice.State == update.State {
+				return false, nil
+			}
+			// Preserve any receipt fields even for an uncertain state. They
+			// remain durable evidence for reconciliation rather than being
+			// cleared by a late adapter failure.
+			notice.State = update.State
+			return true, nil
+		case "not_configured":
+			if notice.State == "prepared" {
+				notice.State = update.State
+				return true, nil
+			}
+			return false, nil
+		case "prepared", "sending":
+			// A result from an earlier outbox phase cannot clear a known
+			// sending/unknown state. The latter may already represent an
+			// ambiguous external effect.
+			return false, nil
+		default:
+			return false, fmt.Errorf("unknown notice update state %q", update.State)
+		}
+	case "not_configured":
+		// No notifier was configured for this notice. A stale result from a
+		// prior configuration cannot resurrect it or replace held evidence.
+		switch update.State {
+		case "prepared", "sending", "unknown", "not_configured", "queued", "delivered":
+			return false, nil
+		default:
+			return false, fmt.Errorf("unknown notice update state %q", update.State)
+		}
+	default:
+		return false, fmt.Errorf("unknown durable notice state %q", notice.State)
+	}
 }
 
 func matchesClaim(record Record, claim *Run) bool {

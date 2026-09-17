@@ -70,6 +70,26 @@ func (n blockingNotifier) Deliver(ctx context.Context, _ NoticePacket) (NoticeRe
 	return NoticeReceipt{}, ctx.Err()
 }
 
+// gatedNoticeNotifier lets a test persist external delivery evidence while a
+// notifier call is in flight. This is the real host-relay ordering: queue
+// acceptance may return after the relay has already confirmed UI display.
+type gatedNoticeNotifier struct {
+	started chan struct{}
+	release chan struct{}
+	receipt NoticeReceipt
+	err     error
+}
+
+func (n gatedNoticeNotifier) Deliver(_ context.Context, packet NoticePacket) (NoticeReceipt, error) {
+	close(n.started)
+	<-n.release
+	receipt := n.receipt
+	if receipt.NoticeID == "" {
+		receipt.NoticeID = packet.NoticeID
+	}
+	return receipt, n.err
+}
+
 type countedNotifier struct {
 	mu      sync.Mutex
 	calls   int
@@ -168,6 +188,8 @@ type metadataServer struct {
 	commentNoID           bool
 	created               int
 	metadataConflicts     int
+	metadataPostStarted   chan struct{}
+	metadataPostRelease   <-chan struct{}
 	conflictAfterComment  int
 	dropCompletedResponse bool
 	markdownMutation      func()
@@ -318,6 +340,24 @@ func (f *metadataServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 					f.t.Error(err)
 					write(http.StatusBadRequest, map[string]string{"error": err.Error()})
 					return
+				}
+				// Pause exactly one metadata POST after its client has read a
+				// revision. Tests use this to put an operator acknowledgement
+				// between an outbox update's read and CAS write.
+				if f.metadataPostStarted != nil && f.metadataPostRelease != nil {
+					started, release := f.metadataPostStarted, f.metadataPostRelease
+					f.metadataPostStarted = nil
+					f.metadataPostRelease = nil
+					select {
+					case started <- struct{}{}:
+					default:
+					}
+					f.mu.Unlock()
+					select {
+					case <-release:
+					case <-r.Context().Done():
+					}
+					f.mu.Lock()
 				}
 				if f.metadataConflicts > 0 || (f.conflictAfterComment > 0 && f.comments > 0) {
 					if f.metadataConflicts > 0 {
@@ -1061,6 +1101,92 @@ func TestQueuedNoticeReceiptIsNotDeliveryAndIsRetained(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("later task step lost queued notice: %#v", fake.record("card-1").UnresolvedNotices)
+	}
+}
+
+func TestLateNoticeUpdatesPreserveVerifiedDeliveryEvidence(t *testing.T) {
+	now := time.Date(2030, 1, 2, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name          string
+		receipt       NoticeReceipt
+		notifierErr   error
+		queueReceipt  string
+		wantRunErr    bool
+		interleaveCAS bool
+	}{
+		{
+			name:          "queued success loses CAS to exact delivery acknowledgement",
+			receipt:       NoticeReceipt{ReceiptID: "queue-1", DeliveryState: NoticeQueued},
+			queueReceipt:  "queue-1",
+			interleaveCAS: true,
+		},
+		{
+			name:         "conflicting queued success is held",
+			receipt:      NoticeReceipt{ReceiptID: "queue-late", DeliveryState: NoticeQueued},
+			queueReceipt: "queue-verified",
+			wantRunErr:   true,
+		},
+		{
+			name:         "adapter error cannot erase delivery acknowledgement",
+			notifierErr:  errors.New("relay response lost"),
+			queueReceipt: "queue-verified",
+		},
+		{
+			name:         "malformed adapter receipt cannot erase delivery acknowledgement",
+			receipt:      NoticeReceipt{ReceiptID: "", DeliveryState: NoticeQueued},
+			queueReceipt: "queue-verified",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newMetadataServer(t)
+			fake.add("card-1", testRecord(StateReady))
+			notifier := gatedNoticeNotifier{
+				started: make(chan struct{}),
+				release: make(chan struct{}),
+				receipt: tc.receipt,
+				err:     tc.notifierErr,
+			}
+			service := testService(fake, &countedRunner{result: AdapterResult{Status: ResultCompleted}}, now)
+			service.Config.Notifier = notifier
+			done := make(chan error, 1)
+			go func() {
+				_, err := service.RunOnce(context.Background())
+				done <- err
+			}()
+			<-notifier.started
+
+			if tc.interleaveCAS {
+				fake.mu.Lock()
+				postStarted := make(chan struct{}, 1)
+				postRelease := make(chan struct{})
+				fake.metadataPostStarted = postStarted
+				fake.metadataPostRelease = postRelease
+				fake.mu.Unlock()
+				close(notifier.release)
+				<-postStarted
+				if changed, err := service.AcknowledgeNotice(context.Background(), "card-1", fake.record("card-1").Notice.ID, tc.queueReceipt, "displayed-1"); err != nil || !changed {
+					t.Fatalf("delivery acknowledgement = %v, %v", changed, err)
+				}
+				close(postRelease)
+			} else {
+				if changed, err := service.AcknowledgeNotice(context.Background(), "card-1", fake.record("card-1").Notice.ID, tc.queueReceipt, "displayed-1"); err != nil || !changed {
+					t.Fatalf("delivery acknowledgement = %v, %v", changed, err)
+				}
+				close(notifier.release)
+			}
+
+			err := <-done
+			if tc.wantRunErr && err == nil {
+				t.Fatal("conflicting late queue receipt was silently accepted")
+			}
+			if !tc.wantRunErr && err != nil {
+				t.Fatal(err)
+			}
+			notice := fake.record("card-1").Notice
+			if notice.State != "delivered" || notice.QueueReceiptID != tc.queueReceipt || notice.ReceiptID != "displayed-1" {
+				t.Fatalf("late notifier outcome replaced verified delivery evidence: %#v", notice)
+			}
+		})
 	}
 }
 
