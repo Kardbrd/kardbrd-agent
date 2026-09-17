@@ -37,7 +37,7 @@ func TestWorkerAdapterHelper(t *testing.T) {
 		fmt.Fprint(os.Stdout, `{"status":"completed","receipt_id":"r-1"}`)
 	case "wrong-run-id":
 		fmt.Fprint(os.Stdout, `{"run_id":"other-run","status":"completed","receipt_id":"r-1"}`)
-	case "notice-match", "notice-wrong-id":
+	case "notice-match", "notice-queued", "notice-delivered", "notice-wrong-id", "notice-bad-state", "notice-empty-receipt":
 		var packet NoticePacket
 		if err := json.Unmarshal(input, &packet); err != nil {
 			os.Exit(2)
@@ -45,7 +45,20 @@ func TestWorkerAdapterHelper(t *testing.T) {
 		if mode == "notice-wrong-id" {
 			packet.NoticeID = "another-notice"
 		}
-		_ = json.NewEncoder(os.Stdout).Encode(NoticeReceipt{NoticeID: packet.NoticeID, ReceiptID: "notice-receipt-1"})
+		receipt := NoticeReceipt{NoticeID: packet.NoticeID, ReceiptID: "notice-receipt-1"}
+		if mode == "notice-queued" {
+			receipt.DeliveryState = "queued"
+		}
+		if mode == "notice-delivered" {
+			receipt.DeliveryState = "delivered"
+		}
+		if mode == "notice-bad-state" {
+			receipt.DeliveryState = "later"
+		}
+		if mode == "notice-empty-receipt" {
+			receipt.ReceiptID = ""
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(receipt)
 	case "bad":
 		fmt.Fprint(os.Stdout, "not-json")
 	case "large":
@@ -196,9 +209,14 @@ func TestSubprocessNotifierRequiresMatchingNoticeID(t *testing.T) {
 		name    string
 		mode    string
 		wantErr bool
+		state   string
 	}{
-		{name: "matching", mode: "notice-match"},
+		{name: "matching defaults delivered", mode: "notice-match", state: "delivered"},
+		{name: "explicit delivered", mode: "notice-delivered", state: "delivered"},
+		{name: "queued", mode: "notice-queued", state: "queued"},
 		{name: "mismatched", mode: "notice-wrong-id", wantErr: true},
+		{name: "invalid state", mode: "notice-bad-state", wantErr: true},
+		{name: "empty receipt", mode: "notice-empty-receipt", wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			receipt, err := (SubprocessNotifier{Argv: helperArgv(tc.mode), OutputLimit: 4096, Env: []string{"GO_WANT_WORKER_ADAPTER=1"}}).Deliver(context.Background(), packet)
@@ -208,7 +226,7 @@ func TestSubprocessNotifierRequiresMatchingNoticeID(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || receipt.NoticeID != packet.NoticeID || receipt.ReceiptID != "notice-receipt-1" {
+			if err != nil || receipt.NoticeID != packet.NoticeID || receipt.ReceiptID != "notice-receipt-1" || receipt.DeliveryState != tc.state {
 				t.Fatalf("receipt = %#v, err = %v", receipt, err)
 			}
 		})

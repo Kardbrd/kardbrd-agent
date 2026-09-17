@@ -167,6 +167,43 @@ func TestWorkerRunOnceCompiledCLIHTTPAndSubprocess(t *testing.T) {
 	}
 }
 
+func TestWorkerNoticeReceiptCompiledCLIHTTPDoesNotInvokeAdapters(t *testing.T) {
+	serverState := newCLIWorkerServer()
+	serverState.metadata["ops"] = json.RawMessage(`{"version":1,"goal":"compiled goal","completion_criteria":"fixture completion","delegation":{"delegated":true,"authorization":{"scope":"fixture"}},"state":"completed","notice":{"id":"notice-1","state":"queued","queue_receipt_id":"queue-1"}}`)
+	server := httptest.NewServer(http.HandlerFunc(serverState.serveHTTP))
+	defer server.Close()
+	bin := filepath.Join(t.TempDir(), "kardbrd")
+	build := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), "build", "-o", bin, "./cmd/kardbrd")
+	build.Dir = filepath.Join("..", "..")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build CLI: %v\n%s", err, output)
+	}
+	command := exec.Command(bin,
+		"worker", "notice-receipt", "card-1",
+		"--board-id", "board-1",
+		"--notice-id", "notice-1",
+		"--queue-receipt-id", "queue-1",
+		"--receipt-id", "delivery-1",
+	)
+	command.Dir = t.TempDir()
+	command.Env = append(os.Environ(), "KARDBRD_TOKEN=cli-test-token", "KARDBRD_API_URL="+server.URL)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("compiled notice acknowledgement: %v\n%s", err, output)
+	}
+	if !bytes.Contains(output, []byte(`"changed": true`)) {
+		t.Fatalf("notice acknowledgement output: %s", output)
+	}
+	serverState.mu.Lock()
+	defer serverState.mu.Unlock()
+	if serverState.comments != 0 || serverState.runnerCalls != 0 {
+		t.Fatalf("notice acknowledgement invoked an adapter: comments=%d runner=%d", serverState.comments, serverState.runnerCalls)
+	}
+	if !strings.Contains(string(serverState.metadata["ops"]), `"state":"delivered"`) || !strings.Contains(string(serverState.metadata["ops"]), `"queue_receipt_id":"queue-1"`) || !strings.Contains(string(serverState.metadata["ops"]), `"receipt_id":"delivery-1"`) {
+		t.Fatalf("notice acknowledgement metadata: %s", serverState.metadata["ops"])
+	}
+}
+
 func TestWorkerCrossProcessContentionUsesOneRunner(t *testing.T) {
 	serverState := newCLIWorkerServer()
 	serverState.metadataBarrier = make(chan struct{})

@@ -16,6 +16,88 @@ type Enrollment struct {
 	Action             *ActionIntent
 }
 
+// AcknowledgeNotice records a host relay's later proof that one exact queued
+// notice reached its conversation. It uses metadata CAS only: no Runner,
+// Notifier, comment, or external adapter is invoked.
+func (s Service) AcknowledgeNotice(ctx context.Context, cardID, noticeID, queueReceiptID, receiptID string) (bool, error) {
+	if err := s.Config.ValidateReadOnly(); err != nil {
+		return false, err
+	}
+	for _, value := range []string{cardID, noticeID, queueReceiptID, receiptID} {
+		if strings.TrimSpace(value) == "" || len(value) > maxStableIDSize {
+			return false, errors.New("card, notice, queue receipt, and delivery receipt IDs are required and bounded")
+		}
+	}
+	// A conflict retry always finds by exact notice ID again. An acknowledgement
+	// for retained evidence can therefore never mutate a later current notice.
+	for attempt := 0; attempt < 2; attempt++ {
+		snapshot, err := s.Store.Live(ctx, s.Config.BoardID, cardID)
+		if err != nil {
+			return false, err
+		}
+		if !snapshot.HasRecord || snapshot.ParseErr != nil {
+			return false, errors.New("card has no recognized worker metadata")
+		}
+		notice, unresolvedIndex := findNotice(snapshot.Record, noticeID)
+		if notice == nil {
+			return false, fmt.Errorf("notice ID %q does not match current or retained notice evidence", noticeID)
+		}
+		if notice.State == "delivered" {
+			if notice.QueueReceiptID != "" && notice.QueueReceiptID != queueReceiptID {
+				return false, errors.New("queue receipt does not match delivered notice")
+			}
+			if notice.ReceiptID == receiptID {
+				return false, nil
+			}
+			return false, errors.New("delivery receipt conflicts with already delivered notice")
+		}
+		switch notice.State {
+		case "queued":
+			if notice.QueueReceiptID != queueReceiptID {
+				return false, errors.New("queue receipt does not match queued notice")
+			}
+		case "sending", "unknown":
+			// A queue response may have been lost. This explicit operator path can
+			// reconcile it only while no different queue receipt is already known.
+			if notice.QueueReceiptID != "" && notice.QueueReceiptID != queueReceiptID {
+				return false, errors.New("queue receipt does not match unresolved notice")
+			}
+		default:
+			return false, fmt.Errorf("notice %q is %s and cannot accept a delivery receipt", noticeID, notice.State)
+		}
+		notice.State = "delivered"
+		notice.QueueReceiptID = queueReceiptID
+		notice.ReceiptID = receiptID
+		if unresolvedIndex < 0 {
+			snapshot.Record.Notice = notice
+		} else {
+			snapshot.Record.UnresolvedNotices[unresolvedIndex] = *notice
+		}
+		if _, err = s.Store.Put(ctx, snapshot, snapshot.Record); err == nil {
+			return true, nil
+		} else if !errors.Is(err, ErrConflict) {
+			return false, err
+		}
+	}
+	return false, ErrConflict
+}
+
+// findNotice returns an owned copy of current evidence (index -1) or a
+// retained evidence item. The caller assigns the modified copy back.
+func findNotice(record Record, noticeID string) (*Notice, int) {
+	if record.Notice != nil && record.Notice.ID == noticeID {
+		copy := *record.Notice
+		return &copy, -1
+	}
+	for index := range record.UnresolvedNotices {
+		if record.UnresolvedNotices[index].ID == noticeID {
+			copy := record.UnresolvedNotices[index]
+			return &copy, index
+		}
+	}
+	return nil, -1
+}
+
 func (s Service) Enroll(ctx context.Context, cardID string, enrollment Enrollment) error {
 	if err := s.Config.ValidateReadOnly(); err != nil {
 		return err

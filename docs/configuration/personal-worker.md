@@ -142,7 +142,25 @@ This command does not invoke `--runner`, cannot self-approve a proposal, and pro
 
 ## Notices, reconciliation, and rollback
 
-Meaningful results first receive a stable journal/notice ID in metadata. The worker posts one card comment with a one-attempt request. A comment is not notification delivery. A committed outcome whose metadata response was lost remains `journal.state=prepared`; the next pass may safely claim and send that never-started journal item. Before any comment or notification request it durably changes that item to `sending`; a restart from `sending` or `unknown` is held for reconciliation and is never blindly replayed. A successful comment response without its actual ID is also `unknown`, never a fabricated receipt. With `--notice-command`, repeated `--notice-arg`, and a bounded `--notice-timeout`, a trusted notification adapter receives a `NoticePacket` and must echo that `notice_id` with its receipt as `{"notice_id":"packet-notice-id","receipt_id":"stable-id"}`; only then is notice state `delivered`. Without an adapter it is `not_configured`; on an ambiguous comment/notification response it is `unknown` and is not automatically retried. When a later task step replaces a current unresolved journal or notice, the prior evidence is retained in `unresolved_journals` or `unresolved_notices` for reconciliation. Receipt CAS conflicts are re-read and revalidated against the same terminal run once; if receipt persistence remains uncertain, the pass visibly fails without resending the comment or notice.
+Meaningful results first receive a stable journal/notice ID in metadata. The worker posts one card comment with a one-attempt request. A comment is not notification delivery. A committed outcome whose metadata response was lost remains `journal.state=prepared`; the next pass may safely claim and send that never-started journal item. Before any comment or notification request it durably changes that item to `sending`; a restart from `sending` or `unknown` is held for reconciliation and is never blindly replayed. A successful comment response without its actual ID is also `unknown`, never a fabricated receipt.
+
+With `--notice-command`, repeated `--notice-arg`, and a bounded `--notice-timeout`, a trusted notification adapter receives a `NoticePacket`. For a `waiting_user` outcome it also receives that exact pending `decision_id`, so a host relay can route the displayed question and later reply precisely. The adapter must echo a bounded nonempty `notice_id` and `receipt_id`:
+
+```json
+{"notice_id":"packet-notice-id","receipt_id":"stable-id","delivery_state":"queued"}
+```
+
+`delivery_state` is either `queued` or `delivered`; omission remains compatible with synchronous adapters and means `delivered`. `queued` means only that transport accepted the notice. The worker stores `notice.state=queued` and `queue_receipt_id=stable-id`, with no delivery `receipt_id`, and never resends it in `run-once`. `delivered` preserves the synchronous behavior: `notice.state=delivered` with the final `receipt_id`. Invalid adapter receipts, including a different notice ID or delivery state, become `unknown` rather than delivery proof.
+
+When a relay later verifies actual UI display, an operator records it without calling a runner, notifier, or comment endpoint:
+
+```bash
+kardbrd worker notice-receipt SYNTHETIC_CARD --board-id PERSONAL_BOARD \
+  --notice-id notice-run-123 --queue-receipt-id host-queue-456 \
+  --receipt-id host-delivery-789
+```
+
+The command uses revision CAS and matches the exact current or retained unresolved notice. A queued notice must match its stored queue receipt exactly. It can explicitly reconcile a `sending` or `unknown` notice that has no known queue receipt; it refuses `prepared`, `not_configured`, missing, or mismatched notices. It keeps both queue and final receipts on delivery. Repeating the exact acknowledgement is a no-op, while a different final receipt cannot rewrite delivered evidence. When a later task step replaces a queued, sending, or unknown current notice, the old evidence is retained in `unresolved_notices`; acknowledgements always re-find the requested ID after a conflict and cannot alter a different current notice.
 
 To inspect an uncertainty, use `kardbrd card metadata get CARD_ID ops` and its card activity/comment history. Confirm external action receipts before a human explicitly resolves it. Do not alter a `running` claim from another owner.
 
@@ -167,5 +185,5 @@ Rollback is operational, not destructive: stop `worker serve`, retain per-run ar
 | 4. bounded subprocess contract | `internal/worker/subprocess.go`, packet/strict-output/environment tests including missing/mismatched `run_id`, cancellation and successful-child cleanup tests |
 | 5. wakeups/decisions/action receipts | `internal/worker/operations.go`, future-wake/action-receipt tests, stable current-question IDs, replay rejection, and non-evicting receipt-capacity tests |
 | 6. suggestions-only boundary | `SubprocessObserver`, fixture observer, CAS registry concurrent/ambiguous-ingestion tests, explicit suggestion enrollment, and scheduled-observer pass test |
-| 7. journal/notice receipts/quiet passes | `service.go`, committed-write/lost-response prepared-journal recovery, conflict-safe receipt and bounded-notifier tests, `TestQuietNoopAndWaitingUserIsolation` |
+| 7. journal/notice receipts/quiet passes | `service.go`, `TestQueuedNoticeReceiptIsNotDeliveryAndIsRetained`, `TestAcknowledgeNoticeDeliveryMatchesExactCurrentOrRetainedNotice`, compiled CLI/HTTP metadata-only acknowledgement, committed-write/lost-response prepared-journal recovery, conflict-safe receipt and bounded-notifier tests, `TestQuietNoopAndWaitingUserIsolation` |
 | 8. operations/activation/docs | this page, fixtures, `go test -race ./...`, vet, pre-commit, strict MkDocs |

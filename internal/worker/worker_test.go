@@ -92,6 +92,37 @@ func (wrongNoticeNotifier) Deliver(_ context.Context, _ NoticePacket) (NoticeRec
 	return NoticeReceipt{NoticeID: "another-notice", ReceiptID: "receipt-1"}, nil
 }
 
+type receiptNotifier struct {
+	mu      sync.Mutex
+	calls   int
+	receipt NoticeReceipt
+	packets []NoticePacket
+}
+
+func (n *receiptNotifier) Deliver(_ context.Context, packet NoticePacket) (NoticeReceipt, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.calls++
+	n.packets = append(n.packets, packet)
+	receipt := n.receipt
+	if receipt.NoticeID == "" {
+		receipt.NoticeID = packet.NoticeID
+	}
+	return receipt, nil
+}
+
+func (n *receiptNotifier) Calls() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.calls
+}
+
+func (n *receiptNotifier) Packets() []NoticePacket {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]NoticePacket(nil), n.packets...)
+}
+
 func (n *countedNotifier) Calls() int {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -992,6 +1023,135 @@ func TestNoticeReceiptAndAmbiguousCommentAreNeverRetried(t *testing.T) {
 			t.Fatalf("later step erased unresolved notice %q: %#v", original, fake.record("card-1"))
 		}
 	})
+}
+
+func TestQueuedNoticeReceiptIsNotDeliveryAndIsRetained(t *testing.T) {
+	now := time.Date(2030, 1, 2, 0, 0, 0, 0, time.UTC)
+	fake := newMetadataServer(t)
+	fake.add("card-1", testRecord(StateReady))
+	notifier := &receiptNotifier{receipt: NoticeReceipt{ReceiptID: "queue-1", DeliveryState: "queued"}}
+	service := testService(fake, &countedRunner{result: AdapterResult{Status: ResultWaitingUser, DecisionPrompt: "approve?"}}, now)
+	service.Config.Notifier = notifier
+	if _, err := service.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	record := fake.record("card-1")
+	if record.Notice == nil || record.Notice.State != "queued" || record.Notice.QueueReceiptID != "queue-1" || record.Notice.ReceiptID != "" {
+		t.Fatalf("queued notice fabricated delivery receipt: %#v", record.Notice)
+	}
+	packets := notifier.Packets()
+	if len(packets) != 1 || packets[0].DecisionID != record.Decision.ID {
+		t.Fatalf("waiting-user notice packet lost exact decision identity: %#v / %#v", packets, record.Decision)
+	}
+	if _, err := service.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if notifier.Calls() != 1 {
+		t.Fatalf("queued notice was resent on later poll: %d calls", notifier.Calls())
+	}
+	if changed, err := service.Decide(context.Background(), "card-1", record.Decision.ID, json.RawMessage(`true`)); err != nil || !changed {
+		t.Fatalf("decision = %v, %v", changed, err)
+	}
+	if _, err := testService(fake, &countedRunner{result: AdapterResult{Status: ResultCompleted}}, now).RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, notice := range fake.record("card-1").UnresolvedNotices {
+		found = found || (notice.ID == record.Notice.ID && notice.State == "queued" && notice.QueueReceiptID == "queue-1" && notice.ReceiptID == "")
+	}
+	if !found {
+		t.Fatalf("later task step lost queued notice: %#v", fake.record("card-1").UnresolvedNotices)
+	}
+}
+
+func TestCustomNotifierReceiptIsValidatedBeforeDelivery(t *testing.T) {
+	now := time.Date(2030, 1, 2, 0, 0, 0, 0, time.UTC)
+	for _, receipt := range []NoticeReceipt{
+		{ReceiptID: "receipt-1", DeliveryState: "eventually"},
+		{ReceiptID: ""},
+		{ReceiptID: strings.Repeat("r", maxStableIDSize+1)},
+	} {
+		fake := newMetadataServer(t)
+		fake.add("card-1", testRecord(StateReady))
+		service := testService(fake, &countedRunner{result: AdapterResult{Status: ResultCompleted}}, now)
+		service.Config.Notifier = &receiptNotifier{receipt: receipt}
+		if _, err := service.RunOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := fake.record("card-1").Notice; got.State != "unknown" || got.ReceiptID != "" || got.QueueReceiptID != "" {
+			t.Fatalf("invalid custom notifier receipt recorded as delivery: %#v", got)
+		}
+	}
+}
+
+func TestAcknowledgeNoticeDeliveryMatchesExactCurrentOrRetainedNotice(t *testing.T) {
+	fake := newMetadataServer(t)
+	record := testRecord(StateCompleted)
+	record.Notice = &Notice{ID: "notice-current", State: "queued", QueueReceiptID: "queue-current"}
+	record.UnresolvedNotices = []Notice{{ID: "notice-old", State: "queued", QueueReceiptID: "queue-old"}}
+	fake.add("card-1", record)
+	fake.mu.Lock()
+	fake.metadata["card-1"]["keep"] = json.RawMessage(`{"large":9007199254740993,"nested":[true,null]}`)
+	keep := append([]byte(nil), fake.metadata["card-1"]["keep"]...)
+	fake.metadataConflicts = 1
+	fake.mu.Unlock()
+	service := testService(fake, nil, time.Now().UTC())
+
+	changed, err := service.AcknowledgeNotice(context.Background(), "card-1", "notice-old", "queue-old", "delivery-old")
+	if err != nil || !changed {
+		t.Fatalf("retained acknowledgement = %v, %v", changed, err)
+	}
+	updated := fake.record("card-1")
+	if updated.Notice.ID != "notice-current" || updated.Notice.State != "queued" {
+		t.Fatalf("retained acknowledgement changed current notice: %#v", updated.Notice)
+	}
+	old := updated.UnresolvedNotices[0]
+	if old.State != "delivered" || old.QueueReceiptID != "queue-old" || old.ReceiptID != "delivery-old" {
+		t.Fatalf("retained acknowledgement = %#v", old)
+	}
+	fake.mu.Lock()
+	if string(fake.metadata["card-1"]["keep"]) != string(keep) {
+		fake.mu.Unlock()
+		t.Fatalf("unrelated JSON changed: %s", fake.metadata["card-1"]["keep"])
+	}
+	fake.mu.Unlock()
+	if changed, err = service.AcknowledgeNotice(context.Background(), "card-1", "notice-old", "queue-old", "delivery-old"); err != nil || changed {
+		t.Fatalf("exact repeated acknowledgement = %v, %v", changed, err)
+	}
+	if _, err := service.AcknowledgeNotice(context.Background(), "card-1", "notice-old", "queue-old", "different-delivery"); err == nil {
+		t.Fatal("different delivered receipt rewrote a durable acknowledgement")
+	}
+	if _, err := service.AcknowledgeNotice(context.Background(), "card-1", "notice-current", "wrong-queue", "delivery-current"); err == nil {
+		t.Fatal("mismatched queue receipt was accepted")
+	}
+	changed, err = service.AcknowledgeNotice(context.Background(), "card-1", "notice-current", "queue-current", "delivery-current")
+	if err != nil || !changed {
+		t.Fatalf("current acknowledgement = %v, %v", changed, err)
+	}
+	updated = fake.record("card-1")
+	if updated.Notice.State != "delivered" || updated.Notice.QueueReceiptID != "queue-current" || updated.Notice.ReceiptID != "delivery-current" {
+		t.Fatalf("current acknowledgement = %#v", updated.Notice)
+	}
+	updated.Notice = &Notice{ID: "notice-uncertain", State: "unknown"}
+	fake.setRecord("card-1", updated)
+	changed, err = service.AcknowledgeNotice(context.Background(), "card-1", "notice-uncertain", "queue-reconciled", "delivery-reconciled")
+	if err != nil || !changed {
+		t.Fatalf("explicit unknown reconciliation = %v, %v", changed, err)
+	}
+	updated = fake.record("card-1")
+	if updated.Notice.State != "delivered" || updated.Notice.QueueReceiptID != "queue-reconciled" || updated.Notice.ReceiptID != "delivery-reconciled" {
+		t.Fatalf("unknown reconciliation = %#v", updated.Notice)
+	}
+	if _, err := service.AcknowledgeNotice(context.Background(), "card-1", "stale-notice", "queue-stale", "delivery-stale"); err == nil {
+		t.Fatal("stale notice ID was accepted")
+	}
+	for _, state := range []string{"prepared", "not_configured"} {
+		updated.Notice = &Notice{ID: "notice-" + state, State: state}
+		fake.setRecord("card-1", updated)
+		if _, err := service.AcknowledgeNotice(context.Background(), "card-1", updated.Notice.ID, "queue-external", "delivery-external"); err == nil {
+			t.Fatalf("%s notice accepted an operator delivery receipt", state)
+		}
+	}
 }
 
 func TestWakeDecideAndSuggestionDeduplicateWithoutRunner(t *testing.T) {

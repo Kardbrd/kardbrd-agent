@@ -82,6 +82,7 @@ func TestClientCommandPathParity(t *testing.T) {
 		"worker decide",
 		"worker enroll",
 		"worker ingest",
+		"worker notice-receipt",
 		"worker registry",
 		"worker run-once",
 		"worker serve",

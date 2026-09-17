@@ -195,7 +195,10 @@ type NoticePacket struct {
 	NoticeID string `json:"notice_id"`
 	CardID   string `json:"card_id"`
 	RunID    string `json:"run_id"`
-	Message  string `json:"message"`
+	// DecisionID is sent only with a waiting-user outcome, allowing a host
+	// relay to route the displayed question and answer exactly.
+	DecisionID string `json:"decision_id,omitempty"`
+	Message    string `json:"message"`
 }
 
 type Notifier interface {
@@ -205,6 +208,36 @@ type Notifier interface {
 type NoticeReceipt struct {
 	NoticeID  string `json:"notice_id"`
 	ReceiptID string `json:"receipt_id"`
+	// An omitted state retains synchronous-adapter compatibility as delivered.
+	// queued means the adapter accepted transport, not that a user saw it.
+	DeliveryState string `json:"delivery_state,omitempty"`
+}
+
+const (
+	NoticeQueued    = "queued"
+	NoticeDelivered = "delivered"
+)
+
+// ValidateFor normalizes legacy synchronous receipts and checks every adapter
+// result. Service calls this too, because custom Notifier implementations do
+// not pass through the subprocess JSON boundary.
+func (r *NoticeReceipt) ValidateFor(noticeID string) error {
+	if strings.TrimSpace(noticeID) == "" || len(noticeID) > maxStableIDSize {
+		return errors.New("notification notice ID is invalid")
+	}
+	if strings.TrimSpace(r.NoticeID) == "" || len(r.NoticeID) > maxStableIDSize || strings.TrimSpace(r.ReceiptID) == "" || len(r.ReceiptID) > maxStableIDSize {
+		return errors.New("notification adapter returned no stable notice receipt")
+	}
+	if r.NoticeID != noticeID {
+		return errors.New("notification adapter receipt belongs to another notice")
+	}
+	if r.DeliveryState == "" {
+		r.DeliveryState = NoticeDelivered
+	}
+	if r.DeliveryState != NoticeQueued && r.DeliveryState != NoticeDelivered {
+		return fmt.Errorf("notification adapter returned invalid delivery state %q", r.DeliveryState)
+	}
+	return nil
 }
 
 type SubprocessNotifier struct {
@@ -226,11 +259,11 @@ func (n SubprocessNotifier) Deliver(ctx context.Context, packet NoticePacket) (N
 		return NoticeReceipt{}, err
 	}
 	var receipt NoticeReceipt
-	if err := json.Unmarshal(stdout, &receipt); err != nil || strings.TrimSpace(receipt.NoticeID) == "" || strings.TrimSpace(receipt.ReceiptID) == "" {
+	if err := json.Unmarshal(stdout, &receipt); err != nil {
 		return NoticeReceipt{}, fmt.Errorf("notification adapter returned no stable notice receipt")
 	}
-	if receipt.NoticeID != packet.NoticeID {
-		return NoticeReceipt{}, fmt.Errorf("notification adapter receipt belongs to another notice")
+	if err := receipt.ValidateFor(packet.NoticeID); err != nil {
+		return NoticeReceipt{}, err
 	}
 	return receipt, nil
 }

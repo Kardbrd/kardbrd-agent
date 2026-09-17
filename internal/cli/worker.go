@@ -56,7 +56,7 @@ func NewWorkerCommand(root *rootOptions) *cobra.Command {
 		},
 	}
 	addWorkerFlags(group, flags)
-	group.AddCommand(workerCheck(root, flags), workerRunOnce(root, flags), workerServe(root, flags), workerEnroll(root, flags), workerWake(root, flags), workerDecide(root, flags), workerRegistry(root, flags), workerIngest(root, flags))
+	group.AddCommand(workerCheck(root, flags), workerRunOnce(root, flags), workerServe(root, flags), workerEnroll(root, flags), workerWake(root, flags), workerDecide(root, flags), workerNoticeReceipt(root, flags), workerRegistry(root, flags), workerIngest(root, flags))
 	return group
 }
 
@@ -239,6 +239,33 @@ func workerDecide(root *rootOptions, flags *workerFlags) *cobra.Command {
 	cmd.Flags().StringVar(&value, "value", "", "JSON decision value")
 	_ = cmd.MarkFlagRequired("decision-id")
 	_ = cmd.MarkFlagRequired("value")
+	return cmd
+}
+
+func workerNoticeReceipt(root *rootOptions, flags *workerFlags) *cobra.Command {
+	var noticeID, queueReceiptID, receiptID string
+	cmd := &cobra.Command{
+		Use:   "notice-receipt CARD_ID",
+		Short: "Record a verified host delivery receipt without sending a notice",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			service, err := newWorkerService(cmd.Context(), root, flags, false)
+			if err != nil {
+				return err
+			}
+			changed, err := service.AcknowledgeNotice(cmd.Context(), args[0], noticeID, queueReceiptID, receiptID)
+			if err != nil {
+				return err
+			}
+			return outputWorkerJSON(cmd, map[string]bool{"changed": changed})
+		},
+	}
+	cmd.Flags().StringVar(&noticeID, "notice-id", "", "Exact durable notice ID")
+	cmd.Flags().StringVar(&queueReceiptID, "queue-receipt-id", "", "Exact host queue acceptance receipt ID")
+	cmd.Flags().StringVar(&receiptID, "receipt-id", "", "Verified final host delivery receipt ID")
+	_ = cmd.MarkFlagRequired("notice-id")
+	_ = cmd.MarkFlagRequired("queue-receipt-id")
+	_ = cmd.MarkFlagRequired("receipt-id")
 	return cmd
 }
 

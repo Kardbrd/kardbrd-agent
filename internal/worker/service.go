@@ -656,7 +656,7 @@ func (s Service) publishOutcome(ctx context.Context, snapshot Snapshot, runID st
 	message := journalMessage(snapshot.Record)
 	commentRaw, err := s.Store.Client.AddCommentOnce(ctx, snapshot.Card.ID, message)
 	if err != nil {
-		if markErr := s.markJournal(ctx, snapshot.Card.ID, runID, "unknown", "", "unknown", ""); markErr != nil {
+		if markErr := s.markJournal(ctx, snapshot.Card.ID, runID, "unknown", "", "unknown", "", ""); markErr != nil {
 			return fmt.Errorf("comment delivery and receipt persistence are both uncertain: %w", markErr)
 		}
 		return nil // The comment request itself is ambiguous and is never retried.
@@ -666,12 +666,12 @@ func (s Service) publishOutcome(ctx context.Context, snapshot Snapshot, runID st
 	}
 	_ = json.Unmarshal(commentRaw, &comment)
 	if comment.ID == "" {
-		if markErr := s.markJournal(ctx, snapshot.Card.ID, runID, "unknown", "", "unknown", ""); markErr != nil {
+		if markErr := s.markJournal(ctx, snapshot.Card.ID, runID, "unknown", "", "unknown", "", ""); markErr != nil {
 			return fmt.Errorf("comment response had no receipt and uncertainty could not be recorded: %w", markErr)
 		}
 		return nil
 	}
-	if err := s.markJournal(ctx, snapshot.Card.ID, runID, "posted", comment.ID, "prepared", ""); err != nil {
+	if err := s.markJournal(ctx, snapshot.Card.ID, runID, "posted", comment.ID, "prepared", "", ""); err != nil {
 		return fmt.Errorf("comment was posted but its durable receipt could not be recorded: %w", err)
 	}
 	return s.publishNotice(ctx, snapshot.Card.ID, runID, message)
@@ -704,7 +704,7 @@ func (s Service) publishNotice(ctx context.Context, cardID, runID, message strin
 		return nil
 	}
 	if s.Config.Notifier == nil {
-		if err := s.markJournal(ctx, cardID, runID, "posted", "", "not_configured", ""); err != nil {
+		if err := s.markJournal(ctx, cardID, runID, "posted", "", "not_configured", "", ""); err != nil {
 			return fmt.Errorf("notice state could not be recorded: %w", err)
 		}
 		return nil
@@ -715,26 +715,36 @@ func (s Service) publishNotice(ctx context.Context, cardID, runID, message strin
 	}
 	noticeCtx, cancel := context.WithTimeout(ctx, s.Config.NoticeTimeout)
 	defer cancel()
-	receipt, err := s.Config.Notifier.Deliver(noticeCtx, NoticePacket{Version: SchemaVersion, NoticeID: "notice-" + runID, CardID: cardID, RunID: runID, Message: message})
+	packet := NoticePacket{Version: SchemaVersion, NoticeID: snapshot.Record.Notice.ID, CardID: cardID, RunID: runID, Message: message}
+	if snapshot.Record.Outcome.Kind == string(ResultWaitingUser) && snapshot.Record.Decision != nil {
+		packet.DecisionID = snapshot.Record.Decision.ID
+	}
+	receipt, err := s.Config.Notifier.Deliver(noticeCtx, packet)
 	if err != nil {
-		if markErr := s.markJournal(ctx, cardID, runID, "posted", "", "unknown", ""); markErr != nil {
+		if markErr := s.markJournal(ctx, cardID, runID, "posted", "", "unknown", "", ""); markErr != nil {
 			return fmt.Errorf("notice delivery and receipt persistence are both uncertain: %w", markErr)
 		}
 		return nil
 	}
-	if receipt.NoticeID != "notice-"+runID {
-		if markErr := s.markJournal(ctx, cardID, runID, "posted", "", "unknown", ""); markErr != nil {
-			return fmt.Errorf("notification receipt belonged to another notice and uncertainty could not be recorded: %w", markErr)
+	if err := receipt.ValidateFor(packet.NoticeID); err != nil {
+		if markErr := s.markJournal(ctx, cardID, runID, "posted", "", "unknown", "", ""); markErr != nil {
+			return fmt.Errorf("notification receipt was invalid and uncertainty could not be recorded: %w", markErr)
 		}
 		return nil
 	}
-	if err := s.markJournal(ctx, cardID, runID, "posted", "", "delivered", receipt.ReceiptID); err != nil {
+	if receipt.DeliveryState == NoticeQueued {
+		if err := s.markJournal(ctx, cardID, runID, "posted", "", "queued", receipt.ReceiptID, ""); err != nil {
+			return fmt.Errorf("notice was queued but its durable queue receipt could not be recorded: %w", err)
+		}
+		return nil
+	}
+	if err := s.markJournal(ctx, cardID, runID, "posted", "", "delivered", "", receipt.ReceiptID); err != nil {
 		return fmt.Errorf("notice was delivered but its durable receipt could not be recorded: %w", err)
 	}
 	return nil
 }
 
-func (s Service) markJournal(ctx context.Context, cardID, runID, journalState, commentID, noticeState, receipt string) error {
+func (s Service) markJournal(ctx context.Context, cardID, runID, journalState, commentID, noticeState, queueReceipt, deliveryReceipt string) error {
 	// This is an idempotent receipt update, not a stale claim retry. A single
 	// conflict retry re-reads and proves the terminal outcome is still the same
 	// run before applying only receipt fields; it never resends a message.
@@ -751,7 +761,8 @@ func (s Service) markJournal(ctx context.Context, cardID, runID, journalState, c
 			snapshot.Record.Journal.CommentID = commentID
 		}
 		snapshot.Record.Notice.State = noticeState
-		snapshot.Record.Notice.ReceiptID = receipt
+		snapshot.Record.Notice.QueueReceiptID = queueReceipt
+		snapshot.Record.Notice.ReceiptID = deliveryReceipt
 		if _, err = s.Store.Put(ctx, snapshot, snapshot.Record); err == nil {
 			return nil
 		} else if !errors.Is(err, ErrConflict) {

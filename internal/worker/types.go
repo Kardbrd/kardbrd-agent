@@ -107,9 +107,12 @@ type Journal struct {
 }
 
 type Notice struct {
-	ID        string `json:"id"`
-	State     string `json:"state"`
-	ReceiptID string `json:"receipt_id,omitempty"`
+	ID    string `json:"id"`
+	State string `json:"state"`
+	// QueueReceiptID proves only that a relay accepted the notice for later
+	// display. It is intentionally distinct from a user-delivery receipt.
+	QueueReceiptID string `json:"queue_receipt_id,omitempty"`
+	ReceiptID      string `json:"receipt_id,omitempty"`
 }
 
 func (j Journal) needsReconciliation() bool {
@@ -117,7 +120,7 @@ func (j Journal) needsReconciliation() bool {
 }
 
 func (n Notice) needsReconciliation() bool {
-	return n.State == "prepared" || n.State == "sending" || n.State == "unknown"
+	return n.State == "prepared" || n.State == "sending" || n.State == "unknown" || n.State == "queued"
 }
 
 // SuggestionClaim is an idempotency reservation stored on an explicitly
@@ -197,6 +200,16 @@ func (r Record) Validate() error {
 	if len(r.EventReceipts) > maxReceiptIDs || len(r.DecisionReceipts) > maxReceiptIDs {
 		return fmt.Errorf("%w (%d IDs per kind)", ErrReceiptCapacity, maxReceiptIDs)
 	}
+	if r.Notice != nil {
+		if err := r.Notice.Validate(); err != nil {
+			return err
+		}
+	}
+	for _, notice := range r.UnresolvedNotices {
+		if err := notice.Validate(); err != nil {
+			return err
+		}
+	}
 	if r.SuggestionRegistry {
 		if r.Delegation.Delegated || r.State != StatePaused || r.Action != nil {
 			return errors.New("suggestion registry must be a non-delegated paused record without an action")
@@ -247,6 +260,34 @@ func (r Record) Validate() error {
 		return errors.New("waiting_event work requires an event ID")
 	}
 	return nil
+}
+
+// Validate rejects malformed durable notice evidence. A queued receipt is
+// transport acceptance only, while a delivered receipt is final proof from a
+// synchronous adapter or a later operator acknowledgement.
+func (n Notice) Validate() error {
+	if strings.TrimSpace(n.ID) == "" || len(n.ID) > maxStableIDSize {
+		return errors.New("worker notice ID is required")
+	}
+	if len(n.QueueReceiptID) > maxStableIDSize || len(n.ReceiptID) > maxStableIDSize {
+		return errors.New("worker notice receipt ID is invalid")
+	}
+	switch n.State {
+	case "prepared", "sending", "unknown", "not_configured":
+		return nil
+	case "queued":
+		if strings.TrimSpace(n.QueueReceiptID) == "" || n.ReceiptID != "" {
+			return errors.New("queued notice requires a queue receipt and no delivery receipt")
+		}
+		return nil
+	case "delivered":
+		if strings.TrimSpace(n.ReceiptID) == "" {
+			return errors.New("delivered notice requires a delivery receipt")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown worker notice state %q", n.State)
+	}
 }
 
 func (r Record) executableState() bool {
