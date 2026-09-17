@@ -55,6 +55,7 @@ func NewRootCommand() *cobra.Command {
 	cmd.InitDefaultHelpCmd()
 	cmd.InitDefaultCompletionCmd()
 	cmd.AddCommand(NewAgentCommand(opts))
+	cmd.AddCommand(NewWorkerCommand(opts))
 	cmd.AddCommand(NewClientCommands(opts)...)
 	cmd.AddCommand(newSelfUpdateCommand())
 

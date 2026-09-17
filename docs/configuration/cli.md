@@ -1,8 +1,9 @@
 # CLI Reference
 
-`kardbrd` is one binary with two surfaces:
+`kardbrd` is one binary with three surfaces:
 
 - `kardbrd agent ...` runs and validates the automation agent.
+- `kardbrd worker ...` is an opt-in durable personal-operations worker.
 - Every other `kardbrd ...` command is the Kardbrd client CLI.
 
 ## Agent
@@ -11,6 +12,31 @@
 kardbrd agent start [OPTIONS]
 kardbrd agent validate [kardbrd.yml]
 ```
+
+## Personal worker
+
+```bash
+kardbrd worker check --board-id BOARD_ID
+kardbrd worker run-once --board-id BOARD_ID --worker-id OPERATOR_WORKER \
+  --runner /trusted/bridge --artifact-dir /private/worker-artifacts
+kardbrd worker serve --board-id BOARD_ID --worker-id OPERATOR_WORKER \
+  --runner /trusted/bridge --artifact-dir /private/worker-artifacts
+kardbrd worker enroll CARD_ID --board-id BOARD_ID --goal "..." \
+  --completion-criteria "..." --authorization '{"allowed_actions":["..."]}'
+kardbrd worker wake CARD_ID --board-id BOARD_ID --event-id STABLE_EVENT_ID
+kardbrd worker decide CARD_ID --board-id BOARD_ID --decision-id STABLE_DECISION_ID --value '{"approved":true}'
+kardbrd worker registry REGISTRY_CARD_ID --board-id BOARD_ID
+kardbrd worker ingest --board-id BOARD_ID --list-id LIST_ID --suggestion-registry-card REGISTRY_CARD_ID \
+  --observer /trusted/read-only-observer
+```
+
+`check` is read-only. Every execution pass requires an explicit board, worker
+identity, and trusted argv-only runner; it validates lease, timeout,
+concurrency, packet/output limits, poll interval, artifact directory, and
+notice timeout from conservative defaults or supplied flags. Worker HTTP calls
+are always one attempt, including metadata, comments, and suggestion creation. See
+[Personal worker](personal-worker.md) for protocol, fixture, notification,
+reconciliation, and activation details.
 
 ### `agent start` options
 
