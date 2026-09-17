@@ -90,6 +90,26 @@ func (n gatedNoticeNotifier) Deliver(_ context.Context, packet NoticePacket) (No
 	return receipt, n.err
 }
 
+func awaitTestSignal(t *testing.T, signal <-chan struct{}, description string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", description)
+	}
+}
+
+func awaitTestError(t *testing.T, result <-chan error, description string) error {
+	t.Helper()
+	select {
+	case err := <-result:
+		return err
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", description)
+		return nil
+	}
+}
+
 type countedNotifier struct {
 	mu      sync.Mutex
 	calls   int
@@ -1111,7 +1131,7 @@ func TestLateNoticeUpdatesPreserveVerifiedDeliveryEvidence(t *testing.T) {
 		receipt       NoticeReceipt
 		notifierErr   error
 		queueReceipt  string
-		wantRunErr    bool
+		wantConflict  bool
 		interleaveCAS bool
 	}{
 		{
@@ -1124,17 +1144,25 @@ func TestLateNoticeUpdatesPreserveVerifiedDeliveryEvidence(t *testing.T) {
 			name:         "conflicting queued success is held",
 			receipt:      NoticeReceipt{ReceiptID: "queue-late", DeliveryState: NoticeQueued},
 			queueReceipt: "queue-verified",
-			wantRunErr:   true,
+			wantConflict: true,
 		},
 		{
-			name:         "adapter error cannot erase delivery acknowledgement",
-			notifierErr:  errors.New("relay response lost"),
+			name:         "conflicting delivered success is held",
+			receipt:      NoticeReceipt{ReceiptID: "delivery-late", DeliveryState: NoticeDelivered},
 			queueReceipt: "queue-verified",
+			wantConflict: true,
 		},
 		{
-			name:         "malformed adapter receipt cannot erase delivery acknowledgement",
-			receipt:      NoticeReceipt{ReceiptID: "", DeliveryState: NoticeQueued},
-			queueReceipt: "queue-verified",
+			name:          "adapter error cannot erase delivery acknowledgement",
+			notifierErr:   errors.New("relay response lost"),
+			queueReceipt:  "queue-verified",
+			interleaveCAS: true,
+		},
+		{
+			name:          "malformed adapter receipt cannot erase delivery acknowledgement",
+			receipt:       NoticeReceipt{ReceiptID: "", DeliveryState: NoticeQueued},
+			queueReceipt:  "queue-verified",
+			interleaveCAS: true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1153,7 +1181,7 @@ func TestLateNoticeUpdatesPreserveVerifiedDeliveryEvidence(t *testing.T) {
 				_, err := service.RunOnce(context.Background())
 				done <- err
 			}()
-			<-notifier.started
+			awaitTestSignal(t, notifier.started, "notifier start")
 
 			if tc.interleaveCAS {
 				fake.mu.Lock()
@@ -1163,7 +1191,7 @@ func TestLateNoticeUpdatesPreserveVerifiedDeliveryEvidence(t *testing.T) {
 				fake.metadataPostRelease = postRelease
 				fake.mu.Unlock()
 				close(notifier.release)
-				<-postStarted
+				awaitTestSignal(t, postStarted, "stale notice CAS write")
 				if changed, err := service.AcknowledgeNotice(context.Background(), "card-1", fake.record("card-1").Notice.ID, tc.queueReceipt, "displayed-1"); err != nil || !changed {
 					t.Fatalf("delivery acknowledgement = %v, %v", changed, err)
 				}
@@ -1175,11 +1203,11 @@ func TestLateNoticeUpdatesPreserveVerifiedDeliveryEvidence(t *testing.T) {
 				close(notifier.release)
 			}
 
-			err := <-done
-			if tc.wantRunErr && err == nil {
-				t.Fatal("conflicting late queue receipt was silently accepted")
+			err := awaitTestError(t, done, "worker notice completion")
+			if tc.wantConflict && !errors.Is(err, ErrNoticeReceiptConflict) {
+				t.Fatalf("late receipt conflict = %v, want ErrNoticeReceiptConflict", err)
 			}
-			if !tc.wantRunErr && err != nil {
+			if !tc.wantConflict && err != nil {
 				t.Fatal(err)
 			}
 			notice := fake.record("card-1").Notice
@@ -1187,6 +1215,32 @@ func TestLateNoticeUpdatesPreserveVerifiedDeliveryEvidence(t *testing.T) {
 				t.Fatalf("late notifier outcome replaced verified delivery evidence: %#v", notice)
 			}
 		})
+	}
+}
+
+func TestLateRetainedNoticeAlsoPersistsItsExactJournalReceipt(t *testing.T) {
+	fake := newMetadataServer(t)
+	record := testRecord(StateCompleted)
+	record.Outcome = &Outcome{RunID: "run-new", Kind: string(ResultCompleted)}
+	record.Journal = &Journal{ID: "journal-run-new", State: "posted", CommentID: "comment-new"}
+	record.Notice = &Notice{ID: "notice-run-new", State: "delivered", ReceiptID: "delivery-new"}
+	record.UnresolvedJournals = []Journal{{ID: "journal-run-old", State: "sending"}}
+	record.UnresolvedNotices = []Notice{{ID: "notice-run-old", State: "prepared"}}
+	fake.add("card-1", record)
+	fake.mu.Lock()
+	fake.metadataConflicts = 1
+	fake.mu.Unlock()
+	service := testService(fake, nil, time.Now().UTC())
+
+	if err := service.markJournal(context.Background(), "card-1", "run-old", "notice-run-old", "posted", "comment-old", noticeUpdate{State: "prepared"}); err != nil {
+		t.Fatal(err)
+	}
+	updated := fake.record("card-1")
+	if journal := updated.UnresolvedJournals[0]; journal.State != "posted" || journal.CommentID != "comment-old" {
+		t.Fatalf("late retained journal receipt was lost: %#v", journal)
+	}
+	if current := updated.Journal; current.ID != "journal-run-new" || current.CommentID != "comment-new" {
+		t.Fatalf("late retained update changed current journal: %#v", current)
 	}
 }
 

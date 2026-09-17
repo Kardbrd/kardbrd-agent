@@ -780,6 +780,13 @@ func (s Service) markJournal(ctx context.Context, cardID, runID, noticeID, journ
 			changedJournal = applyJournalUpdate(snapshot.Record.Journal, journalState, commentID)
 			snapshot.Record.Notice = notice
 		} else {
+			// A later task may have retained this old outbox while the comment
+			// response was still in flight. Keep its real comment receipt with
+			// the same run's retained journal; never apply it to the successor.
+			if journal, journalIndex := findRetainedJournal(snapshot.Record.UnresolvedJournals, "journal-"+runID); journal != nil {
+				changedJournal = applyJournalUpdate(journal, journalState, commentID)
+				snapshot.Record.UnresolvedJournals[journalIndex] = *journal
+			}
 			snapshot.Record.UnresolvedNotices[unresolvedIndex] = *notice
 		}
 		if !changedJournal && !changedNotice {
@@ -792,6 +799,16 @@ func (s Service) markJournal(ctx context.Context, cardID, runID, noticeID, journ
 		}
 	}
 	return ErrConflict
+}
+
+func findRetainedJournal(journals []Journal, journalID string) (*Journal, int) {
+	for index := range journals {
+		if journals[index].ID == journalID {
+			copy := journals[index]
+			return &copy, index
+		}
+	}
+	return nil, -1
 }
 
 // applyJournalUpdate preserves a durable comment receipt when a stale error
