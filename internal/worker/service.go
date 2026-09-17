@@ -961,16 +961,22 @@ func claimFence(record Record) (string, error) {
 }
 
 func journalMessage(record Record) string {
-	label := strings.ReplaceAll(string(record.State), "_", " ")
-	message := "**Personal worker " + label + "**"
-	if record.Outcome != nil && record.Outcome.RunID != "" {
-		message += "\n\nRun: `" + record.Outcome.RunID + "`"
+	// Comments and notifications are for the person following the task.
+	// Run identities, receipts and diagnostic review notes stay in metadata.
+	labels := map[State]string{
+		StateCompleted: "Completed", StateScheduled: "Next step scheduled",
+		StateWaitingEvent: "Waiting for an update", StateWaitingUser: "Your decision is needed",
+		StateNeedsReview: "Needs attention", StateCancelled: "Cancelled", StatePaused: "Paused",
 	}
+	label := labels[record.State]
+	if label == "" {
+		label = "Task update"
+	}
+	message := "**" + label + "**"
 	if record.Outcome != nil && record.Outcome.Summary != "" {
 		message += "\n\n" + record.Outcome.Summary
-	}
-	if record.Outcome != nil && record.Outcome.ReviewNote != "" {
-		message += "\n\nReview required: " + record.Outcome.ReviewNote
+	} else if record.State == StateNeedsReview {
+		message += "\n\nThis step is paused until the problem is checked. It will not be retried automatically."
 	}
 	if record.State == StateWaitingUser && record.Decision != nil {
 		message += "\n\nDecision needed: " + record.Decision.Prompt

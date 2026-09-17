@@ -204,6 +204,7 @@ type metadataServer struct {
 	metadata              map[string]map[string]json.RawMessage
 	revisions             map[string]int64
 	comments              int
+	commentBodies         []string
 	commentFail           bool
 	commentNoID           bool
 	created               int
@@ -436,6 +437,13 @@ func (f *metadataServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if len(parts) == 4 && parts[3] == "comments" && r.Method == http.MethodPost {
+			var posted struct {
+				Content string `json:"content"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
+				f.t.Errorf("decode posted comment: %v", err)
+			}
+			f.commentBodies = append(f.commentBodies, posted.Content)
 			f.comments++
 			if f.commentFail {
 				write(http.StatusInternalServerError, map[string]string{"error": "ambiguous comment"})
