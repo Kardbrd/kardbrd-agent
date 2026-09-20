@@ -76,6 +76,32 @@ func TestCardMovedToDoneRemovesWorktree(t *testing.T) {
 	assertEqual(t, true, stream.closed)
 }
 
+func TestReserveCleanupCancelsActiveSessionAndDiscardsPendingWork(t *testing.T) {
+	manager := newTestManager(t)
+	cancelled := make(chan struct{})
+	activeStream := &fakeStream{}
+	manager.Active["card1"] = &ActiveSession{
+		CardID: "card1",
+		Cancel: func() { close(cancelled) },
+		Stream: activeStream,
+	}
+	manager.pending["card1"] = pendingMention{cardID: "card1", commentID: "follow-up"}
+
+	cleanup := manager.reserveCleanup(context.Background(), "card1")
+
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("active session was not cancelled")
+	}
+	assertEqual(t, true, activeStream.closed)
+	assertEqual(t, true, cleanup.Cleanup)
+	if manager.Active["card1"] != cleanup {
+		t.Fatal("cleanup did not retain ownership of the card")
+	}
+	assertEqual(t, 0, len(manager.pending))
+}
+
 func TestRuleDispatchPostsAuthError(t *testing.T) {
 	manager := newTestManager(t)
 	manager.Executor = &fakeExecutor{auth: executor.AuthStatus{Authenticated: false, Error: "login required"}}

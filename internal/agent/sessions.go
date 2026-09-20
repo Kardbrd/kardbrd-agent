@@ -9,6 +9,7 @@ import (
 
 type ActiveSession struct {
 	CardID       string
+	Context      context.Context
 	WorktreePath string
 	CommentID    string
 	Process      *exec.Cmd
@@ -16,4 +17,5 @@ type ActiveSession struct {
 	SessionID    string
 	Stream       api.StreamConn
 	Streaming    bool
+	Cleanup      bool
 }

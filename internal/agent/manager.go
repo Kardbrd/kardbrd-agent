@@ -339,6 +339,13 @@ func (m *Manager) finishActiveSession(session *ActiveSession) {
 	delete(m.Active, session.CardID)
 	pending, queued := m.pending[session.CardID]
 	delete(m.pending, session.CardID)
+	if session.Cleanup {
+		m.mu.Unlock()
+		if stream != nil {
+			_ = stream.Close()
+		}
+		return
+	}
 	var pendingSession *ActiveSession
 	var pendingExecCtx context.Context
 	var pendingCancel context.CancelFunc
@@ -362,6 +369,42 @@ func (m *Manager) finishActiveSession(session *ActiveSession) {
 		}
 		_ = m.processClaimedMention(pending.ctx, pendingExecCtx, pendingSession, pending.content, pending.authorName)
 	}()
+}
+
+// reserveCleanup gives a Done cleanup exclusive ownership of a card before it
+// waits for an execution slot. It cancels prior work without allowing that
+// work's deferred completion to replace the cleanup owner.
+func (m *Manager) reserveCleanup(ctx context.Context, cardID string) *ActiveSession {
+	execCtx, cancel := context.WithCancel(ctx)
+	cleanup := &ActiveSession{CardID: cardID, Context: execCtx, Cancel: cancel, Cleanup: true}
+
+	m.mu.Lock()
+	current := m.Active[cardID]
+	if current != nil && current.Cleanup {
+		m.mu.Unlock()
+		cancel()
+		return nil
+	}
+	if current != nil && current.Process != nil && current.Process.Process != nil {
+		_ = current.Process.Process.Kill()
+	}
+	if current != nil && current.Cancel != nil {
+		current.Cancel()
+	}
+	var stream api.StreamConn
+	if current != nil {
+		stream = current.Stream
+		current.Stream = nil
+		current.Streaming = false
+	}
+	delete(m.pending, cardID)
+	m.Active[cardID] = cleanup
+	m.mu.Unlock()
+
+	if stream != nil {
+		_ = stream.Close()
+	}
+	return cleanup
 }
 
 func (m *Manager) acquire(ctx context.Context) error {
