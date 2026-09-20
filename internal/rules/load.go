@@ -51,8 +51,8 @@ func LoadFile(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if validation := ValidateFile(path); !validation.IsValid() {
-		return Config{}, fmt.Errorf("kardbrd.yml: %s", validation.Errors[0].Message)
+	if err := validateLoadedCleanupCommands(data); err != nil {
+		return Config{}, err
 	}
 
 	var raw rawConfig
@@ -115,6 +115,41 @@ func LoadFile(path string) (Config, error) {
 	return cfg, nil
 }
 
+// validateLoadedCleanupCommands retains LoadFile's existing compatibility for
+// ordinary rules while preventing yaml.v3 from coercing non-string cleanup
+// argv values during direct loading. It validates the same bytes that are
+// decoded below, avoiding a reload-time validation/read race.
+func validateLoadedCleanupCommands(data []byte) error {
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return err
+	}
+	if len(root.Content) == 0 || root.Content[0].Kind != yaml.MappingNode {
+		return nil
+	}
+	rulesNode := mapping(root.Content[0])["rules"]
+	if rulesNode == nil || rulesNode.Kind != yaml.SequenceNode {
+		return nil
+	}
+	for index, entry := range rulesNode.Content {
+		if entry.Kind != yaml.MappingNode {
+			continue
+		}
+		fields := mapping(entry)
+		command, ok := fields["cleanup_command"]
+		if !ok {
+			continue
+		}
+		var result ValidationResult
+		name := scalar(fields["name"])
+		validateCleanupCommandNode(&result, index, name, fields, parseEventNode(fields["event"]), command)
+		if len(result.Errors) > 0 {
+			return fmt.Errorf("rule %q: %s", name, result.Errors[0].Message)
+		}
+	}
+	return nil
+}
+
 func validateCleanupCommand(name string, events []string, list, action string, command []string) error {
 	if len(command) == 0 {
 		return fmt.Errorf("rule %q: cleanup_command must contain at least one argument", name)
@@ -133,8 +168,8 @@ func validateCleanupCommand(name string, events []string, list, action string, c
 			return fmt.Errorf("rule %q: cleanup_command arguments must not be empty", name)
 		}
 	}
-	if cleanupCommandUsesSudo(command[0]) {
-		return fmt.Errorf("rule %q: cleanup_command must not invoke sudo", name)
+	if cleanupCommandUsesRestrictedRunner(command[0]) {
+		return fmt.Errorf("rule %q: cleanup_command must not invoke sudo, env, or a shell", name)
 	}
 	return nil
 }

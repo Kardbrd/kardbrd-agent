@@ -2,10 +2,13 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -117,6 +120,7 @@ func TestDoneCleanupRunsBeforeWorktreeRemovalAndSuppressesRegularDoneRules(t *te
 	assertEqual(t, "", worktrees.createdCard)
 	assertEqual(t, "", worktrees.removedCard)
 	assertEqual(t, 0, manager.Executor.(*fakeExecutor).executionCount())
+	assertEqual(t, 0, manager.Client.(*fakeBoardClient).commentCount())
 }
 
 func TestDoneCleanupPreservesCleanDirtyAndMissingGitWorktrees(t *testing.T) {
@@ -154,6 +158,14 @@ func TestDoneCleanupPreservesCleanDirtyAndMissingGitWorktrees(t *testing.T) {
 			if tt.worktree {
 				worktreeBefore = readFile(t, filepath.Join(worktreePath, "source.txt"))
 			}
+			sourceTreeBefore := snapshotTree(t, source)
+			sourceStatusBefore := gitStatus(t, source)
+			worktreeTreeBefore := map[string]string(nil)
+			worktreeStatusBefore := ""
+			if tt.worktree {
+				worktreeTreeBefore = snapshotTree(t, worktreePath)
+				worktreeStatusBefore = gitStatus(t, worktreePath)
+			}
 
 			outputFile := filepath.Join(t.TempDir(), "cleanup-output")
 			manager := newTestManager(t)
@@ -167,12 +179,19 @@ func TestDoneCleanupPreservesCleanDirtyAndMissingGitWorktrees(t *testing.T) {
 			}
 
 			assertEqual(t, sourceBefore, readFile(t, sourceFile))
+			assertStringMapEqual(t, sourceTreeBefore, snapshotTree(t, source))
+			assertEqual(t, sourceStatusBefore, gitStatus(t, source))
 			if tt.worktree {
 				assertEqual(t, worktreeBefore, readFile(t, filepath.Join(worktreePath, "source.txt")))
+				assertStringMapEqual(t, worktreeTreeBefore, snapshotTree(t, worktreePath))
+				assertEqual(t, worktreeStatusBefore, gitStatus(t, worktreePath))
 			}
 			worktrees := manager.Worktree.(*fakeWorktree)
 			assertEqual(t, "", worktrees.createdCard)
 			assertEqual(t, "", worktrees.removedCard)
+			assertEqual(t, 0, worktrees.createCalls)
+			assertEqual(t, 0, worktrees.removeCalls)
+			assertEqual(t, 0, worktrees.setupCalls)
 		})
 	}
 }
@@ -220,6 +239,31 @@ func TestDoneCleanupSkipsCardReopenedWhileWaitingForSlot(t *testing.T) {
 	}
 	if _, err := os.Stat(outputFile); !os.IsNotExist(err) {
 		t.Fatalf("cleanup ran after card reopened: %v", err)
+	}
+	worktrees := manager.Worktree.(*fakeWorktree)
+	assertEqual(t, "", worktrees.createdCard)
+	assertEqual(t, "", worktrees.removedCard)
+}
+
+func TestStaleDoneCleanupDoesNotCancelReopenedActiveWork(t *testing.T) {
+	manager := newTestManager(t)
+	cancelled := make(chan struct{})
+	active := &ActiveSession{CardID: "card1", Cancel: func() { close(cancelled) }}
+	manager.Active["card1"] = active
+	manager.Client.(*fakeBoardClient).card = rawJSON(t, map[string]any{"list": map[string]any{"name": "In Progress"}})
+	manager.Rules = &rules.Engine{Rules: []rules.Rule{doneCleanupRule(filepath.Join(t.TempDir(), "cleanup-output"), "success")}}
+
+	if err := manager.HandleBoardEvent(context.Background(), doneCardMovedEvent("card1")); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-cancelled:
+		t.Fatal("stale cleanup cancelled reopened work")
+	default:
+	}
+	if manager.Active["card1"] != active {
+		t.Fatal("stale cleanup replaced reopened work")
 	}
 	worktrees := manager.Worktree.(*fakeWorktree)
 	assertEqual(t, "", worktrees.createdCard)
@@ -291,10 +335,141 @@ func TestDoneCleanupReportsNonzeroCommandFailureWithoutSecrets(t *testing.T) {
 	assertEqual(t, 1, len(comments))
 	assertContains(t, comments[0].content, "Cleanup Error")
 	assertContains(t, comments[0].content, "[REDACTED]")
+	assertContains(t, comments[0].content, "cleanup failed with [REDACTED]")
 	assertNotContains(t, comments[0].content, "tok_secret")
 	worktrees := manager.Worktree.(*fakeWorktree)
 	assertEqual(t, "", worktrees.createdCard)
 	assertEqual(t, "", worktrees.removedCard)
+}
+
+func TestDoneCleanupReportsAuthoritativeStateFailure(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Client.(*fakeBoardClient).getCardErr = errors.New("database denied")
+	manager.Rules = &rules.Engine{Rules: []rules.Rule{doneCleanupRule(filepath.Join(t.TempDir(), "cleanup-output"), "success")}}
+
+	err := manager.HandleBoardEvent(context.Background(), doneCardMovedEvent("card1"))
+	if err == nil {
+		t.Fatal("expected authoritative state failure")
+	}
+	assertContains(t, err.Error(), "database denied")
+	comments := manager.Client.(*fakeBoardClient).commentsSnapshot()
+	assertEqual(t, 1, len(comments))
+	assertContains(t, comments[0].content, "database denied")
+	worktrees := manager.Worktree.(*fakeWorktree)
+	assertEqual(t, "", worktrees.createdCard)
+	assertEqual(t, "", worktrees.removedCard)
+	assertEqual(t, 0, worktrees.setupCalls)
+}
+
+func TestDoneCleanupTimeoutReportsBoundedFailure(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Timeout = 20 * time.Millisecond
+	manager.Client.(*fakeBoardClient).card = rawJSON(t, map[string]any{"list": map[string]any{"name": "Done"}})
+	manager.Rules = &rules.Engine{Rules: []rules.Rule{doneCleanupRule(filepath.Join(t.TempDir(), "cleanup-output"), "block")}}
+
+	err := manager.HandleBoardEvent(context.Background(), doneCardMovedEvent("card1"))
+	if err == nil {
+		t.Fatal("expected cleanup timeout")
+	}
+	assertContains(t, err.Error(), "timed out")
+	comments := manager.Client.(*fakeBoardClient).commentsSnapshot()
+	assertEqual(t, 1, len(comments))
+	assertContains(t, comments[0].content, "timed out")
+	worktrees := manager.Worktree.(*fakeWorktree)
+	assertEqual(t, "", worktrees.createdCard)
+	assertEqual(t, "", worktrees.removedCard)
+}
+
+func TestRunningDoneCleanupStopsWithoutFailureComment(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Timeout = time.Second
+	outputFile := filepath.Join(t.TempDir(), "cleanup-output")
+	manager.Client.(*fakeBoardClient).card = rawJSON(t, map[string]any{"list": map[string]any{"name": "Done"}})
+	manager.Rules = &rules.Engine{Rules: []rules.Rule{doneCleanupRule(outputFile, "block")}}
+
+	done := make(chan error, 1)
+	go func() { done <- manager.HandleBoardEvent(context.Background(), doneCardMovedEvent("card1")) }()
+	waitForFile(t, outputFile)
+	if err := manager.HandleStopReaction(context.Background(), "card1", ""); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cleanup did not stop")
+	}
+	comments := manager.Client.(*fakeBoardClient).commentsSnapshot()
+	assertEqual(t, 1, len(comments))
+	assertContains(t, comments[0].content, "Agent stopped")
+	assertNotContains(t, comments[0].content, "Cleanup Error")
+}
+
+func TestConcurrentDoneCleanupForSameCardIsSerialized(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Timeout = time.Second
+	outputFile := filepath.Join(t.TempDir(), "cleanup-output")
+	manager.Client.(*fakeBoardClient).card = rawJSON(t, map[string]any{"list": map[string]any{"name": "Done"}})
+	manager.Rules = &rules.Engine{Rules: []rules.Rule{doneCleanupRule(outputFile, "block")}}
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- manager.HandleBoardEvent(context.Background(), doneCardMovedEvent("card1")) }()
+	waitForFile(t, outputFile)
+	if err := manager.HandleBoardEvent(context.Background(), doneCardMovedEvent("card1")); err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, "started\n", readFile(t, outputFile))
+	if err := manager.HandleStopReaction(context.Background(), "card1", ""); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first cleanup did not stop")
+	}
+}
+
+func TestDoneCleanupDoesNotBlockAnotherCard(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Timeout = time.Second
+	blockingOutput := filepath.Join(t.TempDir(), "blocking-output")
+	otherOutput := filepath.Join(t.TempDir(), "other-output")
+	manager.Client.(*fakeBoardClient).card = rawJSON(t, map[string]any{"list": map[string]any{"name": "Done"}})
+	blockingRule := doneCleanupRule(blockingOutput, "block")
+	blockingRule.Title = "Blocking"
+	otherRule := doneCleanupRule(otherOutput, "success")
+	otherRule.Title = "Other"
+	manager.Rules = &rules.Engine{Rules: []rules.Rule{blockingRule, otherRule}}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- manager.HandleBoardEvent(context.Background(), map[string]any{
+			"event_type": "card_moved", "card_id": "card1", "card_title": "Blocking", "list_name": "Done",
+		})
+	}()
+	waitForFile(t, blockingOutput)
+	if err := manager.HandleBoardEvent(context.Background(), map[string]any{
+		"event_type": "card_moved", "card_id": "card2", "card_title": "Other", "list_name": "Done",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, "card2|card2|", readFile(t, otherOutput))
+	if err := manager.HandleStopReaction(context.Background(), "card1", ""); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first cleanup did not stop")
+	}
 }
 
 func TestLimitedCleanupOutputBoundsCapturedBytes(t *testing.T) {
@@ -305,6 +480,20 @@ func TestLimitedCleanupOutputBoundsCapturedBytes(t *testing.T) {
 	}
 	assertEqual(t, 6, n)
 	assertEqual(t, "abcd\n... (output truncated)", output.String())
+}
+
+func TestLimitedCleanupOutputSupportsConcurrentWrites(t *testing.T) {
+	output := newLimitedCleanupOutput(1024)
+	var writes sync.WaitGroup
+	for range 8 {
+		writes.Add(1)
+		go func() {
+			defer writes.Done()
+			_, _ = output.Write([]byte(strings.Repeat("x", 512)))
+		}()
+	}
+	writes.Wait()
+	assertEqual(t, 1024+len("\n... (output truncated)"), len(output.String()))
 }
 
 func TestDoneWithoutCleanupRetainsDefaultWorktreeLifecycle(t *testing.T) {
@@ -367,6 +556,59 @@ func readFile(t *testing.T, path string) string {
 	return string(value)
 }
 
+func snapshotTree(t *testing.T, root string) map[string]string {
+	t.Helper()
+	files := map[string]string{}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if relative == "." {
+			return nil
+		}
+		if entry.Name() == ".git" {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		files[relative] = string(content)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+func gitStatus(t *testing.T, repo string) string {
+	t.Helper()
+	command := exec.Command("git", "-C", repo, "status", "--porcelain=v1")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git status: %v\n%s", err, output)
+	}
+	return string(output)
+}
+
+func assertStringMapEqual(t *testing.T, want, got map[string]string) {
+	t.Helper()
+	if !reflect.DeepEqual(want, got) {
+		t.Fatalf("want %#v, got %#v", want, got)
+	}
+}
+
 func waitForCleanupReservation(t *testing.T, manager *Manager, cardID string) {
 	t.Helper()
 	deadline := time.After(time.Second)
@@ -383,6 +625,23 @@ func waitForCleanupReservation(t *testing.T, manager *Manager, cardID string) {
 		select {
 		case <-deadline:
 			t.Fatal("cleanup did not reserve the card")
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("file %q was not created", path)
 		case <-ticker.C:
 		}
 	}
@@ -452,6 +711,7 @@ func TestRunCleanupCommandPreservesSourceAndPassesCanonicalCardID(t *testing.T) 
 	assertEqual(t, "", worktrees.createdCard)
 	assertEqual(t, "", worktrees.removedCard)
 	assertEqual(t, 0, manager.Executor.(*fakeExecutor).executionCount())
+	assertEqual(t, 0, manager.Client.(*fakeBoardClient).commentCount())
 }
 
 func cleanupHelperCommand(outputPath, mode string) []string {
@@ -487,6 +747,40 @@ func TestCleanupCommandHelper(t *testing.T) {
 			os.Exit(2)
 		}
 		return
+	}
+	if args[1] == "block" {
+		file, err := os.OpenFile(args[0], os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+		if err != nil {
+			fmt.Fprint(os.Stderr, err)
+			os.Exit(2)
+		}
+		_, err = fmt.Fprintln(file, "started")
+		closeErr := file.Close()
+		if err != nil || closeErr != nil {
+			fmt.Fprint(os.Stderr, "unable to write cleanup start")
+			os.Exit(2)
+		}
+		select {}
+	}
+	if args[1] == "fork" {
+		childOutput := args[0] + ".child"
+		child := exec.Command(os.Args[0], "-test.run=^TestCleanupCommandHelper$", "--", childOutput, "child", "child-card")
+		if err := child.Start(); err != nil {
+			fmt.Fprint(os.Stderr, err)
+			os.Exit(2)
+		}
+		if err := os.WriteFile(args[0], []byte("started"), 0o600); err != nil {
+			fmt.Fprint(os.Stderr, err)
+			os.Exit(2)
+		}
+		select {}
+	}
+	if args[1] == "child" {
+		if err := os.WriteFile(args[0], []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			fmt.Fprint(os.Stderr, err)
+			os.Exit(2)
+		}
+		select {}
 	}
 	if err := os.WriteFile(args[0], []byte(strings.Join([]string{args[2], os.Getenv("KARDBRD_CARD_ID"), os.Getenv("KARDBRD_TOKEN")}, "|")), 0o600); err != nil {
 		fmt.Fprint(os.Stderr, err)

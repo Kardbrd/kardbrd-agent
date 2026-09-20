@@ -635,6 +635,7 @@ type fakeBoardClient struct {
 	markdown            string
 	getBoardCalled      bool
 	getCardCalls        int
+	getCardErr          error
 	comments            []commentCall
 	reactions           []reactionCall
 	updatedCardID       string
@@ -669,6 +670,9 @@ func (c *fakeBoardClient) GetBoard(ctx context.Context, boardID string, includeA
 
 func (c *fakeBoardClient) GetCard(ctx context.Context, cardID string) (json.RawMessage, error) {
 	c.getCardCalls++
+	if c.getCardErr != nil {
+		return nil, c.getCardErr
+	}
 	return c.card, nil
 }
 
@@ -865,9 +869,14 @@ type fakeWorktree struct {
 	removedCard string
 	forced      bool
 	onCreate    func(cardID string)
+	createCalls int
+	removeCalls int
+	setupCalls  int
 }
 
 func (w *fakeWorktree) Create(cardID string) (string, error) {
+	w.createCalls++
+	w.setupCalls++
 	if w.onCreate != nil {
 		w.onCreate(cardID)
 	}
@@ -876,6 +885,7 @@ func (w *fakeWorktree) Create(cardID string) (string, error) {
 }
 
 func (w *fakeWorktree) Remove(cardID string, force bool) error {
+	w.removeCalls++
 	w.removedCard = cardID
 	w.forced = force
 	return nil

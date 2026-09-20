@@ -19,3 +19,14 @@ type ActiveSession struct {
 	Streaming    bool
 	Cleanup      bool
 }
+
+func stopSessionProcess(session *ActiveSession) {
+	if session == nil || session.Process == nil || session.Process.Process == nil {
+		return
+	}
+	if session.Cleanup {
+		killCleanupProcessGroup(session.Process)
+		return
+	}
+	_ = session.Process.Process.Kill()
+}

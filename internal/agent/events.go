@@ -88,9 +88,7 @@ func (m *Manager) HandleCardMoved(ctx context.Context, message map[string]any) e
 	}
 	m.mu.Lock()
 	session := m.Active[cardID]
-	if session != nil && session.Process != nil && session.Process.Process != nil {
-		_ = session.Process.Process.Kill()
-	}
+	stopSessionProcess(session)
 	if session != nil && session.Cancel != nil {
 		session.Cancel()
 	}
@@ -123,9 +121,7 @@ func (m *Manager) HandleStopReaction(ctx context.Context, cardID string, comment
 		m.mu.Unlock()
 		return nil
 	}
-	if session.Process != nil && session.Process.Process != nil {
-		_ = session.Process.Process.Kill()
-	}
+	stopSessionProcess(session)
 	if session.Cancel != nil {
 		session.Cancel()
 	}
@@ -176,6 +172,15 @@ func (m *Manager) ProcessRule(ctx context.Context, cardID string, rule rules.Rul
 // executor or worktree manager. The canonical card ID is both the final argv
 // value and the only Kardbrd-specific environment value exposed to the command.
 func (m *Manager) runCleanup(ctx context.Context, cardID string, rule rules.Rule) error {
+	inDone, err := m.cardIsInCleanupList(ctx, cardID, rule.List)
+	if err != nil {
+		m.postCleanupFailure(ctx, cardID, rule, err, "")
+		return fmt.Errorf("preflight cleanup card state: %w", err)
+	}
+	if !inDone {
+		return nil
+	}
+
 	session := m.reserveCleanup(ctx, cardID)
 	if session == nil {
 		return nil
@@ -193,7 +198,7 @@ func (m *Manager) runCleanup(ctx context.Context, cardID string, rule rules.Rule
 	}
 	defer m.release()
 
-	inDone, err := m.cardIsInCleanupList(session.Context, cardID, rule.List)
+	inDone, err = m.cardIsInCleanupList(session.Context, cardID, rule.List)
 	if err != nil {
 		m.postCleanupFailure(ctx, cardID, rule, err, "")
 		return fmt.Errorf("recheck cleanup card state: %w", err)
@@ -207,6 +212,7 @@ func (m *Manager) runCleanup(ctx context.Context, cardID string, rule rules.Rule
 	args := append([]string(nil), rule.CleanupCommand[1:]...)
 	args = append(args, cardID)
 	cmd := exec.CommandContext(commandCtx, rule.CleanupCommand[0], args...)
+	configureCleanupProcessGroup(cmd)
 	cmd.Dir = m.CWD
 	cmd.Env = cleanupCommandEnv(cardID)
 	output := newLimitedCleanupOutput(8 * 1024)
@@ -229,7 +235,19 @@ func (m *Manager) runCleanup(ctx context.Context, cardID string, rule rules.Rule
 	session.Process = cmd
 	m.mu.Unlock()
 
+	processDone := make(chan struct{})
+	go func() {
+		select {
+		case <-commandCtx.Done():
+			killCleanupProcessGroup(cmd)
+		case <-processDone:
+		}
+	}()
 	err = cmd.Wait()
+	close(processDone)
+	// A cleanup command owns its process group. Reap descendants on every
+	// terminal path so a forked helper cannot continue after this card run.
+	killCleanupProcessGroup(cmd)
 	if session.Context.Err() != nil {
 		return nil
 	}

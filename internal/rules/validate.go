@@ -159,13 +159,18 @@ func validateCleanupCommandNode(result *ValidationResult, index int, name string
 	if scalar(fields["action"]) != "" {
 		result.addRuleError(index, name, "cleanup_command cannot be combined with action")
 	}
-	if validCommand && cleanupCommandUsesSudo(command.Content[0].Value) {
-		result.addRuleError(index, name, "cleanup_command must not invoke sudo")
+	if validCommand && cleanupCommandUsesRestrictedRunner(command.Content[0].Value) {
+		result.addRuleError(index, name, "cleanup_command must not invoke sudo, env, or a shell")
 	}
 }
 
-func cleanupCommandUsesSudo(command string) bool {
-	return strings.EqualFold(filepath.Base(strings.TrimSpace(command)), "sudo")
+func cleanupCommandUsesRestrictedRunner(command string) bool {
+	switch strings.ToLower(filepath.Base(strings.TrimSpace(command))) {
+	case "sudo", "doas", "su", "pkexec", "env", "sh", "bash", "dash", "zsh", "fish", "ksh":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateSchedulesNode(result *ValidationResult, node *yaml.Node) {

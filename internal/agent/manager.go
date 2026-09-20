@@ -162,9 +162,7 @@ func (m *Manager) Stop(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for cardID, session := range m.Active {
-		if session.Process != nil && session.Process.Process != nil {
-			_ = session.Process.Process.Kill()
-		}
+		stopSessionProcess(session)
 		if session.Cancel != nil {
 			session.Cancel()
 		}
@@ -385,9 +383,7 @@ func (m *Manager) reserveCleanup(ctx context.Context, cardID string) *ActiveSess
 		cancel()
 		return nil
 	}
-	if current != nil && current.Process != nil && current.Process.Process != nil {
-		_ = current.Process.Process.Kill()
-	}
+	stopSessionProcess(current)
 	if current != nil && current.Cancel != nil {
 		current.Cancel()
 	}

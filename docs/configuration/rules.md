@@ -106,7 +106,8 @@ worktree setup hook, fetch card markdown, or start an executor session.
 
 The command must be a non-empty YAML argv list. It is intentionally restricted
 to one `card_moved` event and `list: Done`, and cannot be combined with
-`action`. The first argv value cannot be `sudo`.
+`action`. The first argv value cannot be a privilege (`sudo`, `doas`, `su`, or
+`pkexec`), environment, or shell wrapper; invoke a dedicated script directly.
 
 ```yaml
 rules:
@@ -126,6 +127,11 @@ runtime environment (`PATH`, home/temp/locale settings, and
 credentials. Do not use YAML interpolation for card titles, comments, or card
 IDs; the direct argv and environment contract keeps those values out of a
 shell.
+
+The process working directory is the agent's configured base checkout
+(`KARDBRD_AGENT_CWD`), never a card worktree. Cleanup scripts must treat that
+directory as read-only; the cleanup contract prevents agent worktree lifecycle
+operations but cannot prevent an operator-provided script from editing files.
 
 For example, CBA's `/srv/cba/bin/retire-preview` can read the card ID from its
 final argument (or `KARDBRD_CARD_ID`) and make its preview deletion idempotent:
