@@ -1,9 +1,13 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 
@@ -143,6 +147,140 @@ func (m *Manager) CheckRules(ctx context.Context, eventType string, message map[
 
 func (m *Manager) ProcessRule(ctx context.Context, cardID string, rule rules.Rule, message map[string]any) error {
 	return m.processRule(ctx, cardID, rule, message, true)
+}
+
+// runCleanup executes a validated Done cleanup command without involving the
+// executor or worktree manager. The canonical card ID is both the final argv
+// value and the only Kardbrd-specific environment value exposed to the command.
+func (m *Manager) runCleanup(ctx context.Context, cardID string, rule rules.Rule) error {
+	session := m.reserveCleanup(ctx, cardID)
+	if session == nil {
+		return nil
+	}
+	defer func() {
+		session.Cancel()
+		m.finishActiveSession(session)
+	}()
+
+	if err := m.acquire(session.Context); err != nil {
+		if session.Context.Err() != nil {
+			return nil
+		}
+		return err
+	}
+	defer m.release()
+
+	inDone, err := m.cardIsInCleanupList(session.Context, cardID, rule.List)
+	if err != nil {
+		m.postCleanupFailure(ctx, cardID, rule, err, "")
+		return fmt.Errorf("recheck cleanup card state: %w", err)
+	}
+	if !inDone {
+		return nil
+	}
+
+	commandCtx, cancel := context.WithTimeout(session.Context, m.Timeout)
+	defer cancel()
+	args := append([]string(nil), rule.CleanupCommand[1:]...)
+	args = append(args, cardID)
+	cmd := exec.CommandContext(commandCtx, rule.CleanupCommand[0], args...)
+	cmd.Dir = m.CWD
+	cmd.Env = cleanupCommandEnv(cardID)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Start(); err != nil {
+		m.postCleanupFailure(ctx, cardID, rule, err, output.String())
+		return fmt.Errorf("start cleanup command: %w", err)
+	}
+
+	m.mu.Lock()
+	if m.Active[cardID] != session {
+		m.mu.Unlock()
+		_ = cmd.Wait()
+		return nil
+	}
+	session.Process = cmd
+	m.mu.Unlock()
+
+	err = cmd.Wait()
+	if session.Context.Err() != nil {
+		return nil
+	}
+	if err == nil {
+		return nil
+	}
+	if commandCtx.Err() != nil {
+		err = fmt.Errorf("cleanup command timed out: %w", commandCtx.Err())
+	}
+	m.postCleanupFailure(ctx, cardID, rule, err, output.String())
+	return fmt.Errorf("cleanup command failed: %w", err)
+}
+
+func (m *Manager) cardIsInCleanupList(ctx context.Context, cardID, expectedList string) (bool, error) {
+	raw, err := m.Client.GetCard(ctx, cardID)
+	if err != nil {
+		return false, err
+	}
+	var card struct {
+		List *struct {
+			Name string `json:"name"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &card); err != nil {
+		return false, fmt.Errorf("decode card state: %w", err)
+	}
+	if card.List == nil || card.List.Name == "" {
+		return false, errors.New("card state has no list name")
+	}
+	return strings.EqualFold(card.List.Name, expectedList), nil
+}
+
+func cleanupCommandEnv(cardID string) []string {
+	allowed := make([]string, 0, 8)
+	for _, value := range os.Environ() {
+		key, _, found := strings.Cut(value, "=")
+		if !found || !isCleanupEnvironmentKey(key) {
+			continue
+		}
+		allowed = append(allowed, value)
+	}
+	return append(allowed, "KARDBRD_CARD_ID="+cardID)
+}
+
+func isCleanupEnvironmentKey(key string) bool {
+	return key == "PATH" || key == "HOME" || key == "TMPDIR" || key == "TMP" || key == "TEMP" || key == "TZ" || key == "LANG" || strings.HasPrefix(key, "LC_")
+}
+
+func (m *Manager) postCleanupFailure(ctx context.Context, cardID string, rule rules.Rule, err error, output string) {
+	diagnostic := redactCleanupDiagnostic(err.Error()+"\n"+output, m.Token)
+	_, _ = m.Client.AddComment(ctx, cardID, "**Cleanup Error** ("+rule.Name+")\n\n```\n"+diagnostic+"\n```")
+}
+
+func redactCleanupDiagnostic(value, token string) string {
+	secrets := []string{token}
+	for _, entry := range os.Environ() {
+		key, secret, found := strings.Cut(entry, "=")
+		if found && secret != "" && isSensitiveCleanupEnvironmentKey(key) {
+			secrets = append(secrets, secret)
+		}
+	}
+	for _, secret := range secrets {
+		if secret != "" {
+			value = strings.ReplaceAll(value, secret, "[REDACTED]")
+		}
+	}
+	value = strings.ReplaceAll(value, "```", "'''")
+	const maxDiagnosticLength = 2000
+	if len(value) > maxDiagnosticLength {
+		value = value[:maxDiagnosticLength] + "\n... (truncated)"
+	}
+	return strings.TrimSpace(value)
+}
+
+func isSensitiveCleanupEnvironmentKey(key string) bool {
+	upper := strings.ToUpper(key)
+	return strings.Contains(upper, "TOKEN") || strings.Contains(upper, "SECRET") || strings.Contains(upper, "PASSWORD") || strings.Contains(upper, "CREDENTIAL") || strings.HasSuffix(upper, "_KEY")
 }
 
 func (m *Manager) processRule(ctx context.Context, cardID string, rule rules.Rule, message map[string]any, publishResult bool) error {

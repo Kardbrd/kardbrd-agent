@@ -2,6 +2,10 @@ package agent
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -100,6 +104,76 @@ func TestReserveCleanupCancelsActiveSessionAndDiscardsPendingWork(t *testing.T) 
 		t.Fatal("cleanup did not retain ownership of the card")
 	}
 	assertEqual(t, 0, len(manager.pending))
+}
+
+func TestRunCleanupCommandPreservesSourceAndPassesCanonicalCardID(t *testing.T) {
+	source := t.TempDir()
+	sourceFile := filepath.Join(source, "source.txt")
+	if err := os.WriteFile(sourceFile, []byte("dirty source remains"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outputFile := filepath.Join(t.TempDir(), "cleanup-output")
+	manager := newTestManager(t)
+	manager.CWD = source
+	manager.Token = "tok_secret"
+	t.Setenv("KARDBRD_TOKEN", "environment_secret")
+	manager.Client.(*fakeBoardClient).card = rawJSON(t, map[string]any{
+		"list": map[string]any{"name": "Done"},
+	})
+	rule := rules.Rule{
+		Name:           "Retire preview",
+		List:           "Done",
+		CleanupCommand: cleanupHelperCommand(outputFile, "success"),
+	}
+
+	if err := manager.runCleanup(context.Background(), "card-canonical", rule); err != nil {
+		t.Fatal(err)
+	}
+
+	gotSource, err := os.ReadFile(sourceFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, "dirty source remains", string(gotSource))
+	output, err := os.ReadFile(outputFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, "card-canonical|card-canonical|", string(output))
+	worktrees := manager.Worktree.(*fakeWorktree)
+	assertEqual(t, "", worktrees.createdCard)
+	assertEqual(t, "", worktrees.removedCard)
+	assertEqual(t, 0, manager.Executor.(*fakeExecutor).executionCount())
+}
+
+func cleanupHelperCommand(outputPath, mode string) []string {
+	return []string{os.Args[0], "-test.run=^TestCleanupCommandHelper$", "--", outputPath, mode}
+}
+
+func TestCleanupCommandHelper(t *testing.T) {
+	marker := -1
+	for i, arg := range os.Args {
+		if arg == "--" {
+			marker = i
+			break
+		}
+	}
+	if marker == -1 {
+		return
+	}
+	args := os.Args[marker+1:]
+	if len(args) != 3 {
+		fmt.Fprint(os.Stderr, "invalid cleanup helper arguments")
+		os.Exit(2)
+	}
+	if err := os.WriteFile(args[0], []byte(strings.Join([]string{args[2], os.Getenv("KARDBRD_CARD_ID"), os.Getenv("KARDBRD_TOKEN")}, "|")), 0o600); err != nil {
+		fmt.Fprint(os.Stderr, err)
+		os.Exit(2)
+	}
+	if args[1] == "fail" {
+		fmt.Fprint(os.Stderr, "cleanup failed with tok_secret")
+		os.Exit(7)
+	}
 }
 
 func TestRuleDispatchPostsAuthError(t *testing.T) {
