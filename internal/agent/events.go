@@ -245,6 +245,22 @@ func (m *Manager) runCleanup(ctx context.Context, cardID string, rule rules.Rule
 		return fmt.Errorf("start cleanup command: %w", err)
 	}
 
+	// Start watching immediately, before session ownership is published. A
+	// cancellation or ownership handoff in that interval must terminate the
+	// whole cleanup process group, including any descendants.
+	processDone := make(chan struct{})
+	defer close(processDone)
+	go func() {
+		select {
+		case <-commandCtx.Done():
+			killCleanupProcessGroup(cmd)
+		case <-processDone:
+		}
+	}()
+	if m.cleanupCommandStarted != nil {
+		m.cleanupCommandStarted()
+	}
+
 	m.mu.Lock()
 	if m.Active[cardID] != session {
 		m.mu.Unlock()
@@ -255,16 +271,7 @@ func (m *Manager) runCleanup(ctx context.Context, cardID string, rule rules.Rule
 	session.Process = cmd
 	m.mu.Unlock()
 
-	processDone := make(chan struct{})
-	go func() {
-		select {
-		case <-commandCtx.Done():
-			killCleanupProcessGroup(cmd)
-		case <-processDone:
-		}
-	}()
 	err = cmd.Wait()
-	close(processDone)
 	// A cleanup command owns its process group. Reap descendants on every
 	// terminal path so a forked helper cannot continue after this card run.
 	killCleanupProcessGroup(cmd)

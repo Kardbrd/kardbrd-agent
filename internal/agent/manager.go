@@ -82,6 +82,10 @@ type Manager struct {
 
 	sem chan struct{}
 	mu  sync.Mutex
+
+	// cleanupCommandStarted is a test seam for the interval after a cleanup
+	// process starts and before its session process handle is published.
+	cleanupCommandStarted func()
 }
 
 func NewManager(cfg Config) *Manager {
