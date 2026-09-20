@@ -297,6 +297,16 @@ func TestDoneCleanupReportsNonzeroCommandFailureWithoutSecrets(t *testing.T) {
 	assertEqual(t, "", worktrees.removedCard)
 }
 
+func TestLimitedCleanupOutputBoundsCapturedBytes(t *testing.T) {
+	output := newLimitedCleanupOutput(4)
+	n, err := output.Write([]byte("abcdef"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, 6, n)
+	assertEqual(t, "abcd\n... (output truncated)", output.String())
+}
+
 func TestDoneWithoutCleanupRetainsDefaultWorktreeLifecycle(t *testing.T) {
 	manager := newTestManager(t)
 	manager.Rules = &rules.Engine{Rules: []rules.Rule{{

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/Kardbrd/kardbrd-agent/internal/api"
 	"github.com/Kardbrd/kardbrd-agent/internal/executor"
@@ -65,7 +66,7 @@ func (m *Manager) HandleBoardEvent(ctx context.Context, message map[string]any) 
 }
 
 func (m *Manager) matchDoneCleanup(ctx context.Context, message map[string]any) (rules.Rule, bool, error) {
-	if m.Paused || m.Rules == nil || !strings.EqualFold(stringField(message, "list_name"), "done") {
+	if m.Paused || m.Rules == nil || stringField(message, "card_id") == "" || !strings.EqualFold(stringField(message, "list_name"), "done") {
 		return rules.Rule{}, false, nil
 	}
 	if err := m.enrichRuleMessage(ctx, message); err != nil {
@@ -208,10 +209,13 @@ func (m *Manager) runCleanup(ctx context.Context, cardID string, rule rules.Rule
 	cmd := exec.CommandContext(commandCtx, rule.CleanupCommand[0], args...)
 	cmd.Dir = m.CWD
 	cmd.Env = cleanupCommandEnv(cardID)
-	var output bytes.Buffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
+	output := newLimitedCleanupOutput(8 * 1024)
+	cmd.Stdout = output
+	cmd.Stderr = output
 	if err := cmd.Start(); err != nil {
+		if session.Context.Err() != nil {
+			return nil
+		}
 		m.postCleanupFailure(ctx, cardID, rule, err, output.String())
 		return fmt.Errorf("start cleanup command: %w", err)
 	}
@@ -303,6 +307,44 @@ func redactCleanupDiagnostic(value, token string) string {
 func isSensitiveCleanupEnvironmentKey(key string) bool {
 	upper := strings.ToUpper(key)
 	return strings.Contains(upper, "TOKEN") || strings.Contains(upper, "SECRET") || strings.Contains(upper, "PASSWORD") || strings.Contains(upper, "CREDENTIAL") || strings.HasSuffix(upper, "_KEY")
+}
+
+type limitedCleanupOutput struct {
+	mu        sync.Mutex
+	buffer    bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func newLimitedCleanupOutput(limit int) *limitedCleanupOutput {
+	return &limitedCleanupOutput{limit: limit}
+}
+
+func (o *limitedCleanupOutput) Write(value []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if remaining := o.limit - o.buffer.Len(); remaining > 0 {
+		if remaining > len(value) {
+			remaining = len(value)
+		}
+		_, _ = o.buffer.Write(value[:remaining])
+		if remaining < len(value) {
+			o.truncated = true
+		}
+	} else if len(value) > 0 {
+		o.truncated = true
+	}
+	return len(value), nil
+}
+
+func (o *limitedCleanupOutput) String() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	value := o.buffer.String()
+	if o.truncated {
+		value += "\n... (output truncated)"
+	}
+	return value
 }
 
 func (m *Manager) processRule(ctx context.Context, cardID string, rule rules.Rule, message map[string]any, publishResult bool) error {
