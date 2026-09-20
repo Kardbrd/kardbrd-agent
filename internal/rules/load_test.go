@@ -100,6 +100,27 @@ rules:
 	assertEqual(t, "--quiet", cfg.Rules[0].CleanupCommand[1])
 }
 
+func TestLoadDoneCleanupCommandRejectsNonStringArgument(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "invalid-cleanup-command.yml")
+	if err := os.WriteFile(path, []byte(`
+board_id: board1
+agent: BotName
+rules:
+  - name: Retire preview
+    event: card_moved
+    list: Done
+    cleanup_command:
+      - /usr/local/bin/retire-preview
+      - true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadFile(path); err == nil {
+		t.Fatal("expected non-string cleanup argument to be rejected")
+	}
+}
+
 func assertEqual[T comparable](t *testing.T, want T, got T) {
 	t.Helper()
 	if got != want {

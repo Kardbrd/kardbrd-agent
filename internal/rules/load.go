@@ -51,6 +51,9 @@ func LoadFile(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	if validation := ValidateFile(path); !validation.IsValid() {
+		return Config{}, fmt.Errorf("kardbrd.yml: %s", validation.Errors[0].Message)
+	}
 
 	var raw rawConfig
 	if err := yaml.Unmarshal(data, &raw); err != nil {
