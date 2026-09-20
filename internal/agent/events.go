@@ -45,6 +45,13 @@ func (m *Manager) HandleBoardEvent(ctx context.Context, message map[string]any) 
 	case "reaction_added":
 		// Reactions are dispatched through rules so custom stop policies can be configured.
 	case "card_moved":
+		cleanupRule, matchedCleanup, err := m.matchDoneCleanup(ctx, message)
+		if err != nil {
+			return err
+		}
+		if matchedCleanup {
+			return m.runCleanup(ctx, cardID, cleanupRule)
+		}
 		if err := m.HandleCardMoved(ctx, message); err != nil {
 			return err
 		}
@@ -55,6 +62,21 @@ func (m *Manager) HandleBoardEvent(ctx context.Context, message map[string]any) 
 	}
 
 	return m.CheckRules(ctx, eventType, message)
+}
+
+func (m *Manager) matchDoneCleanup(ctx context.Context, message map[string]any) (rules.Rule, bool, error) {
+	if m.Paused || m.Rules == nil || !strings.EqualFold(stringField(message, "list_name"), "done") {
+		return rules.Rule{}, false, nil
+	}
+	if err := m.enrichRuleMessage(ctx, message); err != nil {
+		return rules.Rule{}, false, err
+	}
+	for _, rule := range m.Rules.Match("card_moved", message) {
+		if rule.IsCleanup() {
+			return rule, true, nil
+		}
+	}
+	return rules.Rule{}, false, nil
 }
 
 func (m *Manager) HandleCardMoved(ctx context.Context, message map[string]any) error {

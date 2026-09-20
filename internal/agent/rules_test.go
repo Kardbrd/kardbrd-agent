@@ -80,6 +80,44 @@ func TestCardMovedToDoneRemovesWorktree(t *testing.T) {
 	assertEqual(t, true, stream.closed)
 }
 
+func TestDoneCleanupRunsBeforeWorktreeRemovalAndSuppressesRegularDoneRules(t *testing.T) {
+	manager := newTestManager(t)
+	outputFile := filepath.Join(t.TempDir(), "cleanup-output")
+	manager.Client.(*fakeBoardClient).card = rawJSON(t, map[string]any{
+		"list": map[string]any{"name": "Done"},
+	})
+	manager.Rules = &rules.Engine{Rules: []rules.Rule{
+		{
+			Name:           "Retire preview",
+			Events:         []string{"card_moved"},
+			List:           "Done",
+			CleanupCommand: cleanupHelperCommand(outputFile, "success"),
+		},
+		{
+			Name:   "Legacy Done automation",
+			Events: []string{"card_moved"},
+			List:   "Done",
+			Action: "/implement",
+		},
+	}}
+
+	if err := manager.HandleBoardEvent(context.Background(), map[string]any{
+		"event_type": "card_moved",
+		"card_id":    "card1",
+		"list_name":  "Done",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(outputFile); err != nil {
+		t.Fatalf("cleanup command did not run: %v", err)
+	}
+	worktrees := manager.Worktree.(*fakeWorktree)
+	assertEqual(t, "", worktrees.createdCard)
+	assertEqual(t, "", worktrees.removedCard)
+	assertEqual(t, 0, manager.Executor.(*fakeExecutor).executionCount())
+}
+
 func TestReserveCleanupCancelsActiveSessionAndDiscardsPendingWork(t *testing.T) {
 	manager := newTestManager(t)
 	cancelled := make(chan struct{})
