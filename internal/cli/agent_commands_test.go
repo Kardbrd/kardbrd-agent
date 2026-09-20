@@ -81,6 +81,16 @@ func TestAgentValidateReportsValidRulesFile(t *testing.T) {
 	assertCLIContains(t, stdout, "Valid")
 }
 
+func TestAgentValidateAcceptsDoneCleanupCommandExample(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "rules", "done-cleanup-command.yml")
+
+	stdout, stderr, err := executeRoot("agent", "validate", path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr: %s", err, stderr)
+	}
+	assertCLIContains(t, stdout, "Valid")
+}
+
 func TestAgentCommandsRejectExplicitFormat(t *testing.T) {
 	path := filepath.Join("..", "..", "testdata", "rules", "valid.yml")
 	for _, tt := range []struct {
