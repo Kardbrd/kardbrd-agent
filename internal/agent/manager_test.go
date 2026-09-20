@@ -669,11 +669,13 @@ func (c *fakeBoardClient) GetBoard(ctx context.Context, boardID string, includeA
 }
 
 func (c *fakeBoardClient) GetCard(ctx context.Context, cardID string) (json.RawMessage, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.getCardCalls++
 	if c.getCardErr != nil {
 		return nil, c.getCardErr
 	}
-	return c.card, nil
+	return append(json.RawMessage(nil), c.card...), nil
 }
 
 func (c *fakeBoardClient) GetCardMarkdown(ctx context.Context, cardID string) (string, error) {

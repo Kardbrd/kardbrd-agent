@@ -229,6 +229,7 @@ func (m *Manager) runCleanup(ctx context.Context, cardID string, rule rules.Rule
 	m.mu.Lock()
 	if m.Active[cardID] != session {
 		m.mu.Unlock()
+		killCleanupProcessGroup(cmd)
 		_ = cmd.Wait()
 		return nil
 	}

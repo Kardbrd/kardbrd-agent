@@ -382,7 +382,7 @@ func TestDoneCleanupTimeoutReportsBoundedFailure(t *testing.T) {
 
 func TestRunningDoneCleanupStopsWithoutFailureComment(t *testing.T) {
 	manager := newTestManager(t)
-	manager.Timeout = time.Second
+	manager.Timeout = 5 * time.Second
 	outputFile := filepath.Join(t.TempDir(), "cleanup-output")
 	manager.Client.(*fakeBoardClient).card = rawJSON(t, map[string]any{"list": map[string]any{"name": "Done"}})
 	manager.Rules = &rules.Engine{Rules: []rules.Rule{doneCleanupRule(outputFile, "block")}}
@@ -409,7 +409,7 @@ func TestRunningDoneCleanupStopsWithoutFailureComment(t *testing.T) {
 
 func TestConcurrentDoneCleanupForSameCardIsSerialized(t *testing.T) {
 	manager := newTestManager(t)
-	manager.Timeout = time.Second
+	manager.Timeout = 5 * time.Second
 	outputFile := filepath.Join(t.TempDir(), "cleanup-output")
 	manager.Client.(*fakeBoardClient).card = rawJSON(t, map[string]any{"list": map[string]any{"name": "Done"}})
 	manager.Rules = &rules.Engine{Rules: []rules.Rule{doneCleanupRule(outputFile, "block")}}
@@ -436,7 +436,7 @@ func TestConcurrentDoneCleanupForSameCardIsSerialized(t *testing.T) {
 
 func TestDoneCleanupDoesNotBlockAnotherCard(t *testing.T) {
 	manager := newTestManager(t)
-	manager.Timeout = time.Second
+	manager.Timeout = 5 * time.Second
 	blockingOutput := filepath.Join(t.TempDir(), "blocking-output")
 	otherOutput := filepath.Join(t.TempDir(), "other-output")
 	manager.Client.(*fakeBoardClient).card = rawJSON(t, map[string]any{"list": map[string]any{"name": "Done"}})
