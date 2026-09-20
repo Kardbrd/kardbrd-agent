@@ -51,6 +51,9 @@ func (m *Manager) HandleBoardEvent(ctx context.Context, message map[string]any) 
 			return err
 		}
 		if matchedCleanup {
+			if m.Paused {
+				return nil
+			}
 			return m.runCleanup(ctx, cardID, cleanupRule)
 		}
 		if err := m.HandleCardMoved(ctx, message); err != nil {
@@ -66,7 +69,7 @@ func (m *Manager) HandleBoardEvent(ctx context.Context, message map[string]any) 
 }
 
 func (m *Manager) matchDoneCleanup(ctx context.Context, message map[string]any) (rules.Rule, bool, error) {
-	if m.Paused || m.Rules == nil || stringField(message, "card_id") == "" || !strings.EqualFold(stringField(message, "list_name"), "done") {
+	if m.Rules == nil || stringField(message, "card_id") == "" || !strings.EqualFold(stringField(message, "list_name"), "done") {
 		return rules.Rule{}, false, nil
 	}
 	if err := m.enrichRuleMessage(ctx, message); err != nil {
@@ -128,8 +131,17 @@ func (m *Manager) HandleStopReaction(ctx context.Context, cardID string, comment
 	stream := session.Stream
 	session.Stream = nil
 	session.Streaming = false
-	delete(m.Active, cardID)
+	session.Stopping = true
 	delete(m.pending, cardID)
+	// A live session remains the card owner until its worker reaches its
+	// terminal defer. A subsequent Done cleanup must wait for that point: a
+	// Worktree.Create implementation may be unable to observe cancellation
+	// while its setup hook is unwinding. Sessions without a completion signal
+	// are synthetic/legacy state and retain the previous immediate-stop
+	// behavior.
+	if session.Done == nil {
+		delete(m.Active, cardID)
+	}
 	m.mu.Unlock()
 	if stream != nil {
 		_ = stream.Close()
@@ -181,7 +193,7 @@ func (m *Manager) runCleanup(ctx context.Context, cardID string, rule rules.Rule
 		return nil
 	}
 
-	session := m.reserveCleanup(ctx, cardID)
+	session, previousDone := m.reserveCleanup(ctx, cardID)
 	if session == nil {
 		return nil
 	}
@@ -189,6 +201,13 @@ func (m *Manager) runCleanup(ctx context.Context, cardID string, rule rules.Rule
 		session.Cancel()
 		m.finishActiveSession(session)
 	}()
+	if previousDone != nil {
+		select {
+		case <-previousDone:
+		case <-session.Context.Done():
+			return nil
+		}
+	}
 
 	if err := m.acquire(session.Context); err != nil {
 		if session.Context.Err() != nil {
@@ -373,7 +392,7 @@ func (m *Manager) processRule(ctx context.Context, cardID string, rule rules.Rul
 	defer m.release()
 
 	execCtx, cancel := context.WithCancel(ctx)
-	session := &ActiveSession{CardID: cardID, Cancel: cancel}
+	session := &ActiveSession{CardID: cardID, Cancel: cancel, Done: make(chan struct{})}
 	m.mu.Lock()
 	if _, exists := m.Active[cardID]; exists {
 		m.mu.Unlock()
@@ -458,7 +477,7 @@ func (m *Manager) HandleStreamRequested(ctx context.Context, cardID string, stre
 
 	m.mu.Lock()
 	session := m.Active[cardID]
-	if session == nil || session.Stream != nil {
+	if session == nil || session.Cleanup || session.Stopping || session.Stream != nil {
 		m.mu.Unlock()
 		return nil
 	}
@@ -471,7 +490,7 @@ func (m *Manager) HandleStreamRequested(ctx context.Context, cardID string, stre
 
 	m.mu.Lock()
 	session = m.Active[cardID]
-	if session == nil || session.Stream != nil {
+	if session == nil || session.Cleanup || session.Stopping || session.Stream != nil {
 		m.mu.Unlock()
 		_ = stream.Close()
 		return nil

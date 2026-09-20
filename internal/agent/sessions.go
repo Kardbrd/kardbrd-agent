@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"os/exec"
+	"sync"
 
 	"github.com/Kardbrd/kardbrd-agent/internal/api"
 )
@@ -18,6 +19,16 @@ type ActiveSession struct {
 	Stream       api.StreamConn
 	Streaming    bool
 	Cleanup      bool
+	Stopping     bool
+	Done         chan struct{}
+	doneOnce     sync.Once
+}
+
+func (s *ActiveSession) markDone() {
+	if s == nil || s.Done == nil {
+		return
+	}
+	s.doneOnce.Do(func() { close(s.Done) })
 }
 
 func stopSessionProcess(session *ActiveSession) {

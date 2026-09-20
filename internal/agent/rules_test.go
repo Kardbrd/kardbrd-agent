@@ -123,6 +123,36 @@ func TestDoneCleanupRunsBeforeWorktreeRemovalAndSuppressesRegularDoneRules(t *te
 	assertEqual(t, 0, manager.Client.(*fakeBoardClient).commentCount())
 }
 
+func TestPausedDoneCleanupSuppressesDefaultWorktreeRemoval(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Paused = true
+	cancelled := make(chan struct{})
+	active := &ActiveSession{CardID: "card1", Cancel: func() { close(cancelled) }}
+	manager.Active["card1"] = active
+	outputFile := filepath.Join(t.TempDir(), "cleanup-output")
+	manager.Rules = &rules.Engine{Rules: []rules.Rule{doneCleanupRule(outputFile, "success")}}
+
+	if err := manager.HandleBoardEvent(context.Background(), doneCardMovedEvent("card1")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(outputFile); !os.IsNotExist(err) {
+		t.Fatalf("paused cleanup command ran: %v", err)
+	}
+	select {
+	case <-cancelled:
+		t.Fatal("paused cleanup cancelled active work")
+	default:
+	}
+	if manager.Active["card1"] != active {
+		t.Fatal("paused cleanup changed active session ownership")
+	}
+	worktrees := manager.Worktree.(*fakeWorktree)
+	assertEqual(t, "", worktrees.createdCard)
+	assertEqual(t, "", worktrees.removedCard)
+	assertEqual(t, 0, worktrees.setupCalls)
+}
+
 func TestDoneCleanupPreservesCleanDirtyAndMissingGitWorktrees(t *testing.T) {
 	for _, tt := range []struct {
 		name          string
@@ -317,6 +347,69 @@ func TestDoneCleanupCancelsActiveWorkAndDropsPendingMention(t *testing.T) {
 	assertEqual(t, 0, len(manager.pending))
 	worktrees := manager.Worktree.(*fakeWorktree)
 	assertEqual(t, "", worktrees.createdCard)
+	assertEqual(t, "", worktrees.removedCard)
+}
+
+func TestDoneCleanupWaitsForStoppedWorktreeSetup(t *testing.T) {
+	manager := newTestManager(t)
+	manager.sem = make(chan struct{}, 2)
+	worktrees := manager.Worktree.(*fakeWorktree)
+	setupStarted := make(chan struct{})
+	releaseSetup := make(chan struct{})
+	worktrees.onCreate = func(string) {
+		close(setupStarted)
+		<-releaseSetup
+	}
+	activeDone := make(chan error, 1)
+	go func() {
+		activeDone <- manager.ProcessMention(context.Background(), "card1", "comment1", "@coder implement", "Paul")
+	}()
+	select {
+	case <-setupStarted:
+	case <-time.After(time.Second):
+		t.Fatal("worktree setup did not start")
+	}
+	worktrees.createdCard = ""
+	worktrees.createCalls = 0
+	worktrees.setupCalls = 0
+	if err := manager.HandleStopReaction(context.Background(), "card1", "comment1"); err != nil {
+		t.Fatal(err)
+	}
+	outputFile := filepath.Join(t.TempDir(), "cleanup-output")
+	manager.Client.(*fakeBoardClient).card = rawJSON(t, map[string]any{"list": map[string]any{"name": "Done"}})
+	manager.Rules = &rules.Engine{Rules: []rules.Rule{doneCleanupRule(outputFile, "success")}}
+	cleanupDone := make(chan error, 1)
+	go func() { cleanupDone <- manager.HandleBoardEvent(context.Background(), doneCardMovedEvent("card1")) }()
+	waitForCleanupReservation(t, manager, "card1")
+	select {
+	case <-cleanupDone:
+		t.Fatal("cleanup ran before canceled setup completed")
+	case <-time.After(30 * time.Millisecond):
+	}
+	if _, err := os.Stat(outputFile); !os.IsNotExist(err) {
+		t.Fatalf("cleanup command ran before setup completed: %v", err)
+	}
+	close(releaseSetup)
+	select {
+	case err := <-cleanupDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cleanup did not finish after setup completed")
+	}
+	select {
+	case err := <-activeDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled active session did not finish")
+	}
+	assertEqual(t, "card1|card1|", readFile(t, outputFile))
+	assertEqual(t, "card1", worktrees.createdCard)
+	assertEqual(t, 0, worktrees.createCalls)
+	assertEqual(t, 0, worktrees.setupCalls)
 	assertEqual(t, "", worktrees.removedCard)
 }
 
@@ -631,8 +724,12 @@ func waitForCleanupReservation(t *testing.T, manager *Manager, cardID string) {
 }
 
 func waitForFile(t *testing.T, path string) {
+	waitForFileWithin(t, path, time.Second)
+}
+
+func waitForFileWithin(t *testing.T, path string, timeout time.Duration) {
 	t.Helper()
-	deadline := time.After(time.Second)
+	deadline := time.After(timeout)
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -658,7 +755,7 @@ func TestReserveCleanupCancelsActiveSessionAndDiscardsPendingWork(t *testing.T) 
 	}
 	manager.pending["card1"] = pendingMention{cardID: "card1", commentID: "follow-up"}
 
-	cleanup := manager.reserveCleanup(context.Background(), "card1")
+	cleanup, _ := manager.reserveCleanup(context.Background(), "card1")
 
 	select {
 	case <-cancelled:

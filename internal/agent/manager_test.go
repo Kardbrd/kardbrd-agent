@@ -506,6 +506,63 @@ func TestStopReactionCancelsRunningExecutor(t *testing.T) {
 	assertEqual(t, true, stream.closed)
 }
 
+func TestStopReactionRejectsDelayedStreamRequest(t *testing.T) {
+	manager := newTestManager(t)
+	exec := manager.Executor.(*fakeExecutor)
+	exec.blockUntilCancel = true
+	exec.started = make(chan struct{})
+	exec.cancelled = make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- manager.ProcessMention(context.Background(), "card1", "comment1", "@coder do work", "Paul")
+	}()
+	select {
+	case <-exec.started:
+	case <-time.After(time.Second):
+		t.Fatal("executor did not start")
+	}
+
+	if err := manager.HandleStopReaction(context.Background(), "card1", "comment1"); err != nil {
+		t.Fatal(err)
+	}
+	oldConnect := connectStream
+	defer func() { connectStream = oldConnect }()
+	connected := false
+	connectStream = func(context.Context, string) (api.StreamConn, error) {
+		connected = true
+		return &fakeStream{}, nil
+	}
+	if err := manager.HandleStreamRequested(context.Background(), "card1", "ws://stream.test/stale"); err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, false, connected)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stopped mention did not finish")
+	}
+}
+
+func TestDoneCleanupRejectsStaleStreamRequest(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Active["card1"] = &ActiveSession{CardID: "card1", Cleanup: true, Done: make(chan struct{})}
+	oldConnect := connectStream
+	defer func() { connectStream = oldConnect }()
+	connected := false
+	connectStream = func(context.Context, string) (api.StreamConn, error) {
+		connected = true
+		return &fakeStream{}, nil
+	}
+
+	if err := manager.HandleStreamRequested(context.Background(), "card1", "ws://stream.test/stale"); err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, false, connected)
+}
+
 func TestStreamRequestedConnectsActiveSessionAndForwardsChunks(t *testing.T) {
 	manager := newTestManager(t)
 	stream := &fakeStream{}

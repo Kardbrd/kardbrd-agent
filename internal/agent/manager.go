@@ -194,7 +194,7 @@ func (m *Manager) ProcessMention(ctx context.Context, cardID, commentID, content
 	}
 
 	execCtx, cancel := context.WithCancel(ctx)
-	session := &ActiveSession{CardID: cardID, CommentID: commentID, Cancel: cancel}
+	session := &ActiveSession{CardID: cardID, CommentID: commentID, Cancel: cancel, Done: make(chan struct{})}
 	m.mu.Lock()
 	_, exists := m.Active[cardID]
 	if exists {
@@ -326,6 +326,7 @@ func (m *Manager) queueMentionIfActive(ctx context.Context, cardID, commentID, c
 }
 
 func (m *Manager) finishActiveSession(session *ActiveSession) {
+	session.markDone()
 	m.mu.Lock()
 	if m.Active[session.CardID] != session {
 		m.mu.Unlock()
@@ -349,7 +350,7 @@ func (m *Manager) finishActiveSession(session *ActiveSession) {
 	var pendingCancel context.CancelFunc
 	if queued {
 		pendingExecCtx, pendingCancel = context.WithCancel(pending.ctx)
-		pendingSession = &ActiveSession{CardID: pending.cardID, CommentID: pending.commentID, Cancel: pendingCancel}
+		pendingSession = &ActiveSession{CardID: pending.cardID, CommentID: pending.commentID, Cancel: pendingCancel, Done: make(chan struct{})}
 		m.Active[session.CardID] = pendingSession
 	}
 	m.mu.Unlock()
@@ -372,16 +373,16 @@ func (m *Manager) finishActiveSession(session *ActiveSession) {
 // reserveCleanup gives a Done cleanup exclusive ownership of a card before it
 // waits for an execution slot. It cancels prior work without allowing that
 // work's deferred completion to replace the cleanup owner.
-func (m *Manager) reserveCleanup(ctx context.Context, cardID string) *ActiveSession {
+func (m *Manager) reserveCleanup(ctx context.Context, cardID string) (*ActiveSession, <-chan struct{}) {
 	execCtx, cancel := context.WithCancel(ctx)
-	cleanup := &ActiveSession{CardID: cardID, Context: execCtx, Cancel: cancel, Cleanup: true}
+	cleanup := &ActiveSession{CardID: cardID, Context: execCtx, Cancel: cancel, Cleanup: true, Done: make(chan struct{})}
 
 	m.mu.Lock()
 	current := m.Active[cardID]
 	if current != nil && current.Cleanup {
 		m.mu.Unlock()
 		cancel()
-		return nil
+		return nil, nil
 	}
 	stopSessionProcess(current)
 	if current != nil && current.Cancel != nil {
@@ -395,12 +396,20 @@ func (m *Manager) reserveCleanup(ctx context.Context, cardID string) *ActiveSess
 	}
 	delete(m.pending, cardID)
 	m.Active[cardID] = cleanup
+	previousDone := currentDone(current)
 	m.mu.Unlock()
 
 	if stream != nil {
 		_ = stream.Close()
 	}
-	return cleanup
+	return cleanup, previousDone
+}
+
+func currentDone(session *ActiveSession) <-chan struct{} {
+	if session == nil {
+		return nil
+	}
+	return session.Done
 }
 
 func (m *Manager) acquire(ctx context.Context) error {
