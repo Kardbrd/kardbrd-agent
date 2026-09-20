@@ -1,0 +1,9 @@
+board_id: board1
+agent: CBAAutomation
+rules:
+  - name: Retire preview when Done
+    event: card_moved
+    list: Done
+    cleanup_command:
+      - /srv/cba/bin/retire-preview
+      - --quiet

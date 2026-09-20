@@ -97,6 +97,55 @@ action: |
 action: __stop__   # kill the active session for this card
 ```
 
+### Direct Done cleanup commands
+
+`cleanup_command` is an opt-in maintenance rule for retiring resources that
+belong to a card after it reaches Done. Unlike `action`, it runs a configured
+command directly: it does not create, initialize, or remove a worktree, run a
+worktree setup hook, fetch card markdown, or start an executor session.
+
+The command must be a non-empty YAML argv list. It is intentionally restricted
+to one `card_moved` event and `list: Done`, and cannot be combined with
+`action`. The first argv value cannot be a privilege (`sudo`, `doas`, `su`, or
+`pkexec`), environment, or shell wrapper; invoke a dedicated script directly.
+
+```yaml
+rules:
+  - name: Retire preview when Done
+    event: card_moved
+    list: Done
+    cleanup_command:
+      - /srv/cba/bin/retire-preview
+      - --quiet
+```
+
+The agent appends the exact canonical card ID as the final argv value, so the
+example command receives `/srv/cba/bin/retire-preview --quiet CARD_ID`. It also
+sets `KARDBRD_CARD_ID` to that same value. The command receives a minimal
+runtime environment (`PATH`, home/temp/locale settings, and
+`KARDBRD_CARD_ID`), not `KARDBRD_TOKEN`, `KARDBRD_API_URL`, or executor
+credentials. Do not use YAML interpolation for card titles, comments, or card
+IDs; the direct argv and environment contract keeps those values out of a
+shell.
+
+The process working directory is the agent's configured base checkout
+(`KARDBRD_AGENT_CWD`), never a card worktree. Cleanup scripts must treat that
+directory as read-only; the cleanup contract prevents agent worktree lifecycle
+operations but cannot prevent an operator-provided script from editing files.
+
+For example, CBA's `/srv/cba/bin/retire-preview` can read the card ID from its
+final argument (or `KARDBRD_CARD_ID`) and make its preview deletion idempotent:
+an already-absent preview exits zero. The agent runs it as its existing
+unprivileged account and applies the agent execution timeout. Nonzero exits and
+timeouts are reported on the card with bounded, redacted diagnostics.
+
+Before invoking a queued cleanup command, the agent reads the authoritative
+card state again. If the card has been moved out of Done, it skips the command.
+Matching cleanup owns the Done event, so normal Done rules and the default
+worktree removal lifecycle are suppressed for that event. Replayed events may
+invoke the command again after a prior run completes; make the resource command
+idempotent.
+
 ### Model selection
 
 Override the default model per-rule:

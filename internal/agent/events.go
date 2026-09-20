@@ -1,11 +1,16 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/Kardbrd/kardbrd-agent/internal/api"
 	"github.com/Kardbrd/kardbrd-agent/internal/executor"
@@ -41,6 +46,16 @@ func (m *Manager) HandleBoardEvent(ctx context.Context, message map[string]any) 
 	case "reaction_added":
 		// Reactions are dispatched through rules so custom stop policies can be configured.
 	case "card_moved":
+		cleanupRule, matchedCleanup, err := m.matchDoneCleanup(ctx, message)
+		if err != nil {
+			return err
+		}
+		if matchedCleanup {
+			if m.Paused {
+				return nil
+			}
+			return m.runCleanup(ctx, cardID, cleanupRule)
+		}
 		if err := m.HandleCardMoved(ctx, message); err != nil {
 			return err
 		}
@@ -53,6 +68,21 @@ func (m *Manager) HandleBoardEvent(ctx context.Context, message map[string]any) 
 	return m.CheckRules(ctx, eventType, message)
 }
 
+func (m *Manager) matchDoneCleanup(ctx context.Context, message map[string]any) (rules.Rule, bool, error) {
+	if m.Rules == nil || stringField(message, "card_id") == "" || !strings.EqualFold(stringField(message, "list_name"), "done") {
+		return rules.Rule{}, false, nil
+	}
+	if err := m.enrichRuleMessage(ctx, message); err != nil {
+		return rules.Rule{}, false, err
+	}
+	for _, rule := range m.Rules.Match("card_moved", message) {
+		if rule.IsCleanup() {
+			return rule, true, nil
+		}
+	}
+	return rules.Rule{}, false, nil
+}
+
 func (m *Manager) HandleCardMoved(ctx context.Context, message map[string]any) error {
 	cardID := stringField(message, "card_id")
 	listName := strings.ToLower(stringField(message, "list_name"))
@@ -61,9 +91,7 @@ func (m *Manager) HandleCardMoved(ctx context.Context, message map[string]any) e
 	}
 	m.mu.Lock()
 	session := m.Active[cardID]
-	if session != nil && session.Process != nil && session.Process.Process != nil {
-		_ = session.Process.Process.Kill()
-	}
+	stopSessionProcess(session)
 	if session != nil && session.Cancel != nil {
 		session.Cancel()
 	}
@@ -96,17 +124,24 @@ func (m *Manager) HandleStopReaction(ctx context.Context, cardID string, comment
 		m.mu.Unlock()
 		return nil
 	}
-	if session.Process != nil && session.Process.Process != nil {
-		_ = session.Process.Process.Kill()
-	}
+	stopSessionProcess(session)
 	if session.Cancel != nil {
 		session.Cancel()
 	}
 	stream := session.Stream
 	session.Stream = nil
 	session.Streaming = false
-	delete(m.Active, cardID)
+	session.Stopping = true
 	delete(m.pending, cardID)
+	// A live session remains the card owner until its worker reaches its
+	// terminal defer. A subsequent Done cleanup must wait for that point: a
+	// Worktree.Create implementation may be unable to observe cancellation
+	// while its setup hook is unwinding. Sessions without a completion signal
+	// are synthetic/legacy state and retain the previous immediate-stop
+	// behavior.
+	if session.Done == nil {
+		delete(m.Active, cardID)
+	}
 	m.mu.Unlock()
 	if stream != nil {
 		_ = stream.Close()
@@ -145,6 +180,218 @@ func (m *Manager) ProcessRule(ctx context.Context, cardID string, rule rules.Rul
 	return m.processRule(ctx, cardID, rule, message, true)
 }
 
+// runCleanup executes a validated Done cleanup command without involving the
+// executor or worktree manager. The canonical card ID is both the final argv
+// value and the only Kardbrd-specific environment value exposed to the command.
+func (m *Manager) runCleanup(ctx context.Context, cardID string, rule rules.Rule) error {
+	inDone, err := m.cardIsInCleanupList(ctx, cardID, rule.List)
+	if err != nil {
+		m.postCleanupFailure(ctx, cardID, rule, err, "")
+		return fmt.Errorf("preflight cleanup card state: %w", err)
+	}
+	if !inDone {
+		return nil
+	}
+
+	session, previousDone := m.reserveCleanup(ctx, cardID)
+	if session == nil {
+		return nil
+	}
+	defer func() {
+		session.Cancel()
+		m.finishActiveSession(session)
+	}()
+	if previousDone != nil {
+		select {
+		case <-previousDone:
+		case <-session.Context.Done():
+			return nil
+		}
+	}
+
+	if err := m.acquire(session.Context); err != nil {
+		if session.Context.Err() != nil {
+			return nil
+		}
+		return err
+	}
+	defer m.release()
+
+	inDone, err = m.cardIsInCleanupList(session.Context, cardID, rule.List)
+	if err != nil {
+		m.postCleanupFailure(ctx, cardID, rule, err, "")
+		return fmt.Errorf("recheck cleanup card state: %w", err)
+	}
+	if !inDone {
+		return nil
+	}
+
+	commandCtx, cancel := context.WithTimeout(session.Context, m.Timeout)
+	defer cancel()
+	args := append([]string(nil), rule.CleanupCommand[1:]...)
+	args = append(args, cardID)
+	cmd := exec.CommandContext(commandCtx, rule.CleanupCommand[0], args...)
+	configureCleanupProcessGroup(cmd)
+	cmd.Dir = m.CWD
+	cmd.Env = cleanupCommandEnv(cardID)
+	output := newLimitedCleanupOutput(8 * 1024)
+	cmd.Stdout = output
+	cmd.Stderr = output
+	if err := cmd.Start(); err != nil {
+		if session.Context.Err() != nil {
+			return nil
+		}
+		m.postCleanupFailure(ctx, cardID, rule, err, output.String())
+		return fmt.Errorf("start cleanup command: %w", err)
+	}
+
+	// Start watching immediately, before session ownership is published. A
+	// cancellation or ownership handoff in that interval must terminate the
+	// whole cleanup process group, including any descendants.
+	processDone := make(chan struct{})
+	defer close(processDone)
+	go func() {
+		select {
+		case <-commandCtx.Done():
+			killCleanupProcessGroup(cmd)
+		case <-processDone:
+		}
+	}()
+	if m.cleanupCommandStarted != nil {
+		m.cleanupCommandStarted()
+	}
+
+	m.mu.Lock()
+	if m.Active[cardID] != session {
+		m.mu.Unlock()
+		killCleanupProcessGroup(cmd)
+		_ = cmd.Wait()
+		return nil
+	}
+	session.Process = cmd
+	m.mu.Unlock()
+
+	err = cmd.Wait()
+	// A cleanup command owns its process group. Reap descendants on every
+	// terminal path so a forked helper cannot continue after this card run.
+	killCleanupProcessGroup(cmd)
+	if session.Context.Err() != nil {
+		return nil
+	}
+	if err == nil {
+		return nil
+	}
+	if commandCtx.Err() != nil {
+		err = fmt.Errorf("cleanup command timed out: %w", commandCtx.Err())
+	}
+	m.postCleanupFailure(ctx, cardID, rule, err, output.String())
+	return fmt.Errorf("cleanup command failed: %w", err)
+}
+
+func (m *Manager) cardIsInCleanupList(ctx context.Context, cardID, expectedList string) (bool, error) {
+	raw, err := m.Client.GetCard(ctx, cardID)
+	if err != nil {
+		return false, err
+	}
+	var card struct {
+		List *struct {
+			Name string `json:"name"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &card); err != nil {
+		return false, fmt.Errorf("decode card state: %w", err)
+	}
+	if card.List == nil || card.List.Name == "" {
+		return false, errors.New("card state has no list name")
+	}
+	return strings.EqualFold(card.List.Name, expectedList), nil
+}
+
+func cleanupCommandEnv(cardID string) []string {
+	allowed := make([]string, 0, 8)
+	for _, value := range os.Environ() {
+		key, _, found := strings.Cut(value, "=")
+		if !found || !isCleanupEnvironmentKey(key) {
+			continue
+		}
+		allowed = append(allowed, value)
+	}
+	return append(allowed, "KARDBRD_CARD_ID="+cardID)
+}
+
+func isCleanupEnvironmentKey(key string) bool {
+	return key == "PATH" || key == "HOME" || key == "TMPDIR" || key == "TMP" || key == "TEMP" || key == "TZ" || key == "LANG" || strings.HasPrefix(key, "LC_")
+}
+
+func (m *Manager) postCleanupFailure(ctx context.Context, cardID string, rule rules.Rule, err error, output string) {
+	diagnostic := redactCleanupDiagnostic(err.Error()+"\n"+output, m.Token)
+	_, _ = m.Client.AddComment(ctx, cardID, "**Cleanup Error** ("+rule.Name+")\n\n```\n"+diagnostic+"\n```")
+}
+
+func redactCleanupDiagnostic(value, token string) string {
+	secrets := []string{token}
+	for _, entry := range os.Environ() {
+		key, secret, found := strings.Cut(entry, "=")
+		if found && secret != "" && isSensitiveCleanupEnvironmentKey(key) {
+			secrets = append(secrets, secret)
+		}
+	}
+	for _, secret := range secrets {
+		if secret != "" {
+			value = strings.ReplaceAll(value, secret, "[REDACTED]")
+		}
+	}
+	value = strings.ReplaceAll(value, "```", "'''")
+	const maxDiagnosticLength = 2000
+	if len(value) > maxDiagnosticLength {
+		value = value[:maxDiagnosticLength] + "\n... (truncated)"
+	}
+	return strings.TrimSpace(value)
+}
+
+func isSensitiveCleanupEnvironmentKey(key string) bool {
+	upper := strings.ToUpper(key)
+	return strings.Contains(upper, "TOKEN") || strings.Contains(upper, "SECRET") || strings.Contains(upper, "PASSWORD") || strings.Contains(upper, "CREDENTIAL") || strings.HasSuffix(upper, "_KEY")
+}
+
+type limitedCleanupOutput struct {
+	mu        sync.Mutex
+	buffer    bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func newLimitedCleanupOutput(limit int) *limitedCleanupOutput {
+	return &limitedCleanupOutput{limit: limit}
+}
+
+func (o *limitedCleanupOutput) Write(value []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if remaining := o.limit - o.buffer.Len(); remaining > 0 {
+		if remaining > len(value) {
+			remaining = len(value)
+		}
+		_, _ = o.buffer.Write(value[:remaining])
+		if remaining < len(value) {
+			o.truncated = true
+		}
+	} else if len(value) > 0 {
+		o.truncated = true
+	}
+	return len(value), nil
+}
+
+func (o *limitedCleanupOutput) String() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	value := o.buffer.String()
+	if o.truncated {
+		value += "\n... (output truncated)"
+	}
+	return value
+}
+
 func (m *Manager) processRule(ctx context.Context, cardID string, rule rules.Rule, message map[string]any, publishResult bool) error {
 	if err := m.acquire(ctx); err != nil {
 		return err
@@ -152,7 +399,7 @@ func (m *Manager) processRule(ctx context.Context, cardID string, rule rules.Rul
 	defer m.release()
 
 	execCtx, cancel := context.WithCancel(ctx)
-	session := &ActiveSession{CardID: cardID, Cancel: cancel}
+	session := &ActiveSession{CardID: cardID, Cancel: cancel, Done: make(chan struct{})}
 	m.mu.Lock()
 	if _, exists := m.Active[cardID]; exists {
 		m.mu.Unlock()
@@ -237,7 +484,7 @@ func (m *Manager) HandleStreamRequested(ctx context.Context, cardID string, stre
 
 	m.mu.Lock()
 	session := m.Active[cardID]
-	if session == nil || session.Stream != nil {
+	if session == nil || session.Cleanup || session.Stopping || session.Stream != nil {
 		m.mu.Unlock()
 		return nil
 	}
@@ -250,7 +497,7 @@ func (m *Manager) HandleStreamRequested(ctx context.Context, cardID string, stre
 
 	m.mu.Lock()
 	session = m.Active[cardID]
-	if session == nil || session.Stream != nil {
+	if session == nil || session.Cleanup || session.Stopping || session.Stream != nil {
 		m.mu.Unlock()
 		_ = stream.Close()
 		return nil

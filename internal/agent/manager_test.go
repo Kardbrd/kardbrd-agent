@@ -506,6 +506,63 @@ func TestStopReactionCancelsRunningExecutor(t *testing.T) {
 	assertEqual(t, true, stream.closed)
 }
 
+func TestStopReactionRejectsDelayedStreamRequest(t *testing.T) {
+	manager := newTestManager(t)
+	exec := manager.Executor.(*fakeExecutor)
+	exec.blockUntilCancel = true
+	exec.started = make(chan struct{})
+	exec.cancelled = make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- manager.ProcessMention(context.Background(), "card1", "comment1", "@coder do work", "Paul")
+	}()
+	select {
+	case <-exec.started:
+	case <-time.After(time.Second):
+		t.Fatal("executor did not start")
+	}
+
+	if err := manager.HandleStopReaction(context.Background(), "card1", "comment1"); err != nil {
+		t.Fatal(err)
+	}
+	oldConnect := connectStream
+	defer func() { connectStream = oldConnect }()
+	connected := false
+	connectStream = func(context.Context, string) (api.StreamConn, error) {
+		connected = true
+		return &fakeStream{}, nil
+	}
+	if err := manager.HandleStreamRequested(context.Background(), "card1", "ws://stream.test/stale"); err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, false, connected)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stopped mention did not finish")
+	}
+}
+
+func TestDoneCleanupRejectsStaleStreamRequest(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Active["card1"] = &ActiveSession{CardID: "card1", Cleanup: true, Done: make(chan struct{})}
+	oldConnect := connectStream
+	defer func() { connectStream = oldConnect }()
+	connected := false
+	connectStream = func(context.Context, string) (api.StreamConn, error) {
+		connected = true
+		return &fakeStream{}, nil
+	}
+
+	if err := manager.HandleStreamRequested(context.Background(), "card1", "ws://stream.test/stale"); err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, false, connected)
+}
+
 func TestStreamRequestedConnectsActiveSessionAndForwardsChunks(t *testing.T) {
 	manager := newTestManager(t)
 	stream := &fakeStream{}
@@ -635,6 +692,7 @@ type fakeBoardClient struct {
 	markdown            string
 	getBoardCalled      bool
 	getCardCalls        int
+	getCardErr          error
 	comments            []commentCall
 	reactions           []reactionCall
 	updatedCardID       string
@@ -668,8 +726,13 @@ func (c *fakeBoardClient) GetBoard(ctx context.Context, boardID string, includeA
 }
 
 func (c *fakeBoardClient) GetCard(ctx context.Context, cardID string) (json.RawMessage, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.getCardCalls++
-	return c.card, nil
+	if c.getCardErr != nil {
+		return nil, c.getCardErr
+	}
+	return append(json.RawMessage(nil), c.card...), nil
 }
 
 func (c *fakeBoardClient) GetCardMarkdown(ctx context.Context, cardID string) (string, error) {
@@ -865,9 +928,14 @@ type fakeWorktree struct {
 	removedCard string
 	forced      bool
 	onCreate    func(cardID string)
+	createCalls int
+	removeCalls int
+	setupCalls  int
 }
 
 func (w *fakeWorktree) Create(cardID string) (string, error) {
+	w.createCalls++
+	w.setupCalls++
 	if w.onCreate != nil {
 		w.onCreate(cardID)
 	}
@@ -876,6 +944,7 @@ func (w *fakeWorktree) Create(cardID string) (string, error) {
 }
 
 func (w *fakeWorktree) Remove(cardID string, force bool) error {
+	w.removeCalls++
 	w.removedCard = cardID
 	w.forced = force
 	return nil

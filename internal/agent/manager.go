@@ -82,6 +82,10 @@ type Manager struct {
 
 	sem chan struct{}
 	mu  sync.Mutex
+
+	// cleanupCommandStarted is a test seam for the interval after a cleanup
+	// process starts and before its session process handle is published.
+	cleanupCommandStarted func()
 }
 
 func NewManager(cfg Config) *Manager {
@@ -162,9 +166,7 @@ func (m *Manager) Stop(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for cardID, session := range m.Active {
-		if session.Process != nil && session.Process.Process != nil {
-			_ = session.Process.Process.Kill()
-		}
+		stopSessionProcess(session)
 		if session.Cancel != nil {
 			session.Cancel()
 		}
@@ -196,7 +198,7 @@ func (m *Manager) ProcessMention(ctx context.Context, cardID, commentID, content
 	}
 
 	execCtx, cancel := context.WithCancel(ctx)
-	session := &ActiveSession{CardID: cardID, CommentID: commentID, Cancel: cancel}
+	session := &ActiveSession{CardID: cardID, CommentID: commentID, Cancel: cancel, Done: make(chan struct{})}
 	m.mu.Lock()
 	_, exists := m.Active[cardID]
 	if exists {
@@ -328,6 +330,7 @@ func (m *Manager) queueMentionIfActive(ctx context.Context, cardID, commentID, c
 }
 
 func (m *Manager) finishActiveSession(session *ActiveSession) {
+	session.markDone()
 	m.mu.Lock()
 	if m.Active[session.CardID] != session {
 		m.mu.Unlock()
@@ -339,12 +342,19 @@ func (m *Manager) finishActiveSession(session *ActiveSession) {
 	delete(m.Active, session.CardID)
 	pending, queued := m.pending[session.CardID]
 	delete(m.pending, session.CardID)
+	if session.Cleanup {
+		m.mu.Unlock()
+		if stream != nil {
+			_ = stream.Close()
+		}
+		return
+	}
 	var pendingSession *ActiveSession
 	var pendingExecCtx context.Context
 	var pendingCancel context.CancelFunc
 	if queued {
 		pendingExecCtx, pendingCancel = context.WithCancel(pending.ctx)
-		pendingSession = &ActiveSession{CardID: pending.cardID, CommentID: pending.commentID, Cancel: pendingCancel}
+		pendingSession = &ActiveSession{CardID: pending.cardID, CommentID: pending.commentID, Cancel: pendingCancel, Done: make(chan struct{})}
 		m.Active[session.CardID] = pendingSession
 	}
 	m.mu.Unlock()
@@ -362,6 +372,48 @@ func (m *Manager) finishActiveSession(session *ActiveSession) {
 		}
 		_ = m.processClaimedMention(pending.ctx, pendingExecCtx, pendingSession, pending.content, pending.authorName)
 	}()
+}
+
+// reserveCleanup gives a Done cleanup exclusive ownership of a card before it
+// waits for an execution slot. It cancels prior work without allowing that
+// work's deferred completion to replace the cleanup owner.
+func (m *Manager) reserveCleanup(ctx context.Context, cardID string) (*ActiveSession, <-chan struct{}) {
+	execCtx, cancel := context.WithCancel(ctx)
+	cleanup := &ActiveSession{CardID: cardID, Context: execCtx, Cancel: cancel, Cleanup: true, Done: make(chan struct{})}
+
+	m.mu.Lock()
+	current := m.Active[cardID]
+	if current != nil && current.Cleanup {
+		m.mu.Unlock()
+		cancel()
+		return nil, nil
+	}
+	stopSessionProcess(current)
+	if current != nil && current.Cancel != nil {
+		current.Cancel()
+	}
+	var stream api.StreamConn
+	if current != nil {
+		stream = current.Stream
+		current.Stream = nil
+		current.Streaming = false
+	}
+	delete(m.pending, cardID)
+	m.Active[cardID] = cleanup
+	previousDone := currentDone(current)
+	m.mu.Unlock()
+
+	if stream != nil {
+		_ = stream.Close()
+	}
+	return cleanup, previousDone
+}
+
+func currentDone(session *ActiveSession) <-chan struct{} {
+	if session == nil {
+		return nil
+	}
+	return session.Done
 }
 
 func (m *Manager) acquire(ctx context.Context) error {

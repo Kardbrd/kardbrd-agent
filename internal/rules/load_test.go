@@ -74,6 +74,100 @@ schedules:
 	assertEqual(t, false, cfg.Schedules[1].PublishesResult())
 }
 
+func TestLoadDoneCleanupCommand(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cleanup-command.yml")
+	if err := os.WriteFile(path, []byte(`
+board_id: board1
+agent: BotName
+rules:
+  - name: Retire preview
+    event: card_moved
+    list: Done
+    cleanup_command:
+      - /usr/local/bin/retire-preview
+      - --quiet
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, 1, len(cfg.Rules))
+	assertEqual(t, true, cfg.Rules[0].IsCleanup())
+	assertEqual(t, "/usr/local/bin/retire-preview", cfg.Rules[0].CleanupCommand[0])
+	assertEqual(t, "--quiet", cfg.Rules[0].CleanupCommand[1])
+}
+
+func TestLoadDoneCleanupCommandRejectsNonStringArgument(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "invalid-cleanup-command.yml")
+	if err := os.WriteFile(path, []byte(`
+board_id: board1
+agent: BotName
+rules:
+  - name: Retire preview
+    event: card_moved
+    list: Done
+    cleanup_command:
+      - /usr/local/bin/retire-preview
+      - true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadFile(path); err == nil {
+		t.Fatal("expected non-string cleanup argument to be rejected")
+	}
+}
+
+func TestLoadRulesKeepsExistingValidationScopeForUnrelatedSchedules(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-schedule.yml")
+	if err := os.WriteFile(path, []byte(`
+board_id: board1
+agent: BotName
+schedules:
+  - name: Legacy schedule
+    cron: not-a-cron
+    action: inspect
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFile(path)
+	if err != nil {
+		t.Fatalf("LoadFile changed unrelated schedule behavior: %v", err)
+	}
+	assertEqual(t, "not-a-cron", cfg.Schedules[0].Cron)
+}
+
+func TestLoadDoneCleanupCommandRejectsEveryInvalidCleanupForm(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		rule string
+	}{
+		{name: "empty argv", rule: "cleanup_command: []"},
+		{name: "blank argv", rule: "cleanup_command:\n      - ''"},
+		{name: "wrong event", rule: "event: card_created\n    cleanup_command:\n      - /usr/local/bin/retire-preview"},
+		{name: "wrong list", rule: "list: In Progress\n    cleanup_command:\n      - /usr/local/bin/retire-preview"},
+		{name: "action", rule: "action: /implement\n    cleanup_command:\n      - /usr/local/bin/retire-preview"},
+		{name: "sudo", rule: "cleanup_command:\n      - sudo\n      - retire-preview"},
+		{name: "shell wrapper", rule: "cleanup_command:\n      - /bin/sh\n      - -c\n      - retire-preview"},
+		{name: "env sudo wrapper", rule: "cleanup_command:\n      - /usr/bin/env\n      - sudo\n      - retire-preview"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "invalid-cleanup-command.yml")
+			content := "board_id: board1\nagent: BotName\nrules:\n  - name: Retire preview\n    event: card_moved\n    list: Done\n    " + tt.rule + "\n"
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadFile(path); err == nil {
+				t.Fatal("expected invalid cleanup command to be rejected")
+			}
+		})
+	}
+}
+
 func assertEqual[T comparable](t *testing.T, want T, got T) {
 	t.Helper()
 	if got != want {
