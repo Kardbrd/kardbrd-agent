@@ -3,6 +3,7 @@ package rules
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -31,6 +32,7 @@ type rawRule struct {
 	RequireUser     string   `yaml:"require_user"`
 	Assignee        []string `yaml:"assignee"`
 	CommentAuthor   string   `yaml:"comment_author"`
+	CleanupCommand  []string `yaml:"cleanup_command"`
 }
 
 type rawSchedule struct {
@@ -72,6 +74,11 @@ func LoadFile(path string) (Config, error) {
 		if err != nil {
 			return Config{}, fmt.Errorf("rule %q: %w", rawRule.Name, err)
 		}
+		if rawRule.CleanupCommand != nil {
+			if err := validateCleanupCommand(rawRule.Name, events, rawRule.List, rawRule.Action, rawRule.CleanupCommand); err != nil {
+				return Config{}, err
+			}
+		}
 		cfg.Rules = append(cfg.Rules, Rule{
 			Name:            rawRule.Name,
 			Events:          events,
@@ -87,6 +94,7 @@ func LoadFile(path string) (Config, error) {
 			RequireUser:     rawRule.RequireUser,
 			Assignee:        rawRule.Assignee,
 			CommentAuthor:   rawRule.CommentAuthor,
+			CleanupCommand:  append([]string(nil), rawRule.CleanupCommand...),
 		})
 	}
 	for _, rawSchedule := range raw.Schedules {
@@ -102,6 +110,30 @@ func LoadFile(path string) (Config, error) {
 		})
 	}
 	return cfg, nil
+}
+
+func validateCleanupCommand(name string, events []string, list, action string, command []string) error {
+	if len(command) == 0 {
+		return fmt.Errorf("rule %q: cleanup_command must contain at least one argument", name)
+	}
+	if len(events) != 1 || events[0] != "card_moved" {
+		return fmt.Errorf("rule %q: cleanup_command rules must use only the card_moved event", name)
+	}
+	if !strings.EqualFold(list, "done") {
+		return fmt.Errorf("rule %q: cleanup_command rules must target the Done list", name)
+	}
+	if action != "" {
+		return fmt.Errorf("rule %q: cleanup_command cannot be combined with action", name)
+	}
+	for _, arg := range command {
+		if strings.TrimSpace(arg) == "" {
+			return fmt.Errorf("rule %q: cleanup_command arguments must not be empty", name)
+		}
+	}
+	if cleanupCommandUsesSudo(command[0]) {
+		return fmt.Errorf("rule %q: cleanup_command must not invoke sudo", name)
+	}
+	return nil
 }
 
 func parseEvents(value any) ([]string, error) {

@@ -3,6 +3,7 @@ package rules
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/robfig/cron/v3"
@@ -44,7 +45,7 @@ var knownEvents = set(
 )
 
 var knownTopFields = set("board_id", "agent", "api_url", "executor", "rules", "schedules")
-var knownRuleFields = set("name", "event", "action", "model", "list", "title", "label", "content_contains", "exclude_label", "require_label", "emoji", "require_user", "assignee", "comment_author")
+var knownRuleFields = set("name", "event", "action", "model", "list", "title", "label", "content_contains", "exclude_label", "require_label", "emoji", "require_user", "assignee", "comment_author", "cleanup_command")
 var knownScheduleFields = set("name", "card_id", "cron", "action", "model", "assignee", "list", "publish_result")
 
 func ValidateFile(path string) ValidationResult {
@@ -121,13 +122,50 @@ func validateRulesNode(result *ValidationResult, node *yaml.Node) {
 				result.addRuleWarning(i, name, "unknown event '"+event+"'")
 			}
 		}
-		if scalar(fields["action"]) == "" {
+		cleanupCommand, isCleanup := fields["cleanup_command"]
+		if isCleanup {
+			validateCleanupCommandNode(result, i, name, fields, events, cleanupCommand)
+		} else if scalar(fields["action"]) == "" {
 			result.addRuleError(i, name, "Missing required field 'action'")
 		}
 		if assignee, ok := fields["assignee"]; ok && assignee.Kind != yaml.SequenceNode {
 			result.addRuleError(i, name, "assignee must be a YAML list")
 		}
 	}
+}
+
+func validateCleanupCommandNode(result *ValidationResult, index int, name string, fields map[string]*yaml.Node, events []string, command *yaml.Node) {
+	validCommand := command.Kind == yaml.SequenceNode
+	if !validCommand {
+		result.addRuleError(index, name, "cleanup_command must be a YAML list")
+	} else if len(command.Content) == 0 {
+		result.addRuleError(index, name, "cleanup_command must contain at least one argument")
+		validCommand = false
+	} else {
+		for _, arg := range command.Content {
+			if arg.Kind != yaml.ScalarNode || arg.Tag != "!!str" || strings.TrimSpace(arg.Value) == "" {
+				result.addRuleError(index, name, "cleanup_command arguments must be non-empty strings")
+				validCommand = false
+				break
+			}
+		}
+	}
+	if len(events) != 1 || events[0] != "card_moved" {
+		result.addRuleError(index, name, "cleanup_command rules must use only the card_moved event")
+	}
+	if !strings.EqualFold(scalar(fields["list"]), "done") {
+		result.addRuleError(index, name, "cleanup_command rules must target the Done list")
+	}
+	if scalar(fields["action"]) != "" {
+		result.addRuleError(index, name, "cleanup_command cannot be combined with action")
+	}
+	if validCommand && cleanupCommandUsesSudo(command.Content[0].Value) {
+		result.addRuleError(index, name, "cleanup_command must not invoke sudo")
+	}
+}
+
+func cleanupCommandUsesSudo(command string) bool {
+	return strings.EqualFold(filepath.Base(strings.TrimSpace(command)), "sudo")
 }
 
 func validateSchedulesNode(result *ValidationResult, node *yaml.Node) {

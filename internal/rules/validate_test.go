@@ -128,6 +128,41 @@ schedules:
 	assertIssueContains(t, result.Errors, "publish_result must be a boolean")
 }
 
+func TestValidateRulesFileValidatesDoneCleanupCommand(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cleanup-command.yml")
+	writeFile(t, path, `
+board_id: board1
+agent: Bot
+rules:
+  - name: Valid cleanup
+    event: card_moved
+    list: Done
+    cleanup_command:
+      - /usr/local/bin/retire-preview
+  - name: Invalid cleanup
+    event: card_created
+    list: In Progress
+    action: /implement
+    cleanup_command: retire-preview
+  - name: Sudo cleanup
+    event: card_moved
+    list: Done
+    cleanup_command:
+      - sudo
+      - retire-preview
+`)
+
+	result := ValidateFile(path)
+	if result.IsValid() {
+		t.Fatal("expected invalid cleanup configuration")
+	}
+	assertIssueContains(t, result.Errors, "cleanup_command must be a YAML list")
+	assertIssueContains(t, result.Errors, "cleanup_command rules must use only the card_moved event")
+	assertIssueContains(t, result.Errors, "cleanup_command rules must target the Done list")
+	assertIssueContains(t, result.Errors, "cleanup_command cannot be combined with action")
+	assertIssueContains(t, result.Errors, "must not invoke sudo")
+}
+
 func writeFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(strings.TrimLeft(content, "\n")), 0o600); err != nil {

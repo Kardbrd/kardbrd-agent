@@ -74,6 +74,32 @@ schedules:
 	assertEqual(t, false, cfg.Schedules[1].PublishesResult())
 }
 
+func TestLoadDoneCleanupCommand(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cleanup-command.yml")
+	if err := os.WriteFile(path, []byte(`
+board_id: board1
+agent: BotName
+rules:
+  - name: Retire preview
+    event: card_moved
+    list: Done
+    cleanup_command:
+      - /usr/local/bin/retire-preview
+      - --quiet
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, 1, len(cfg.Rules))
+	assertEqual(t, true, cfg.Rules[0].IsCleanup())
+	assertEqual(t, "/usr/local/bin/retire-preview", cfg.Rules[0].CleanupCommand[0])
+	assertEqual(t, "--quiet", cfg.Rules[0].CleanupCommand[1])
+}
+
 func assertEqual[T comparable](t *testing.T, want T, got T) {
 	t.Helper()
 	if got != want {

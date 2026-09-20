@@ -32,10 +32,17 @@ type Rule struct {
 	RequireUser     string
 	Assignee        []string
 	CommentAuthor   string
+	// CleanupCommand is a direct argv command run when a card enters Done. It
+	// deliberately bypasses the executor and worktree lifecycle.
+	CleanupCommand []string
 }
 
 func (r Rule) IsStop() bool {
 	return r.Action == StopAction
+}
+
+func (r Rule) IsCleanup() bool {
+	return len(r.CleanupCommand) > 0
 }
 
 func (r Rule) ModelID() string {
