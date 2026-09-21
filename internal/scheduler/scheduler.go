@@ -80,6 +80,12 @@ func (m *Manager) Start(ctx context.Context) error {
 func (m *Manager) UpdateSchedules(schedules []rules.Schedule) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Parse the full candidate before changing the active cron. AddFunc uses the
+	// same parser, so a malformed candidate cannot partially remove/install an
+	// existing schedule set during a rules reload.
+	if err := m.validateSchedulesLocked(schedules); err != nil {
+		return err
+	}
 
 	m.Schedules = append([]rules.Schedule(nil), schedules...)
 	if m.cron == nil {
@@ -94,6 +100,15 @@ func (m *Manager) UpdateSchedules(schedules []rules.Schedule) error {
 		ctx = context.Background()
 	}
 	return m.installSchedulesLocked(ctx)
+}
+
+func (m *Manager) validateSchedulesLocked(schedules []rules.Schedule) error {
+	for _, schedule := range schedules {
+		if _, err := m.parser.Parse(schedule.Cron); err != nil {
+			return fmt.Errorf("schedule %q: %w", schedule.Name, err)
+		}
+	}
+	return nil
 }
 
 func (m *Manager) installSchedulesLocked(ctx context.Context) error {

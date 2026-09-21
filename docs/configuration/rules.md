@@ -146,6 +146,15 @@ worktree removal lifecycle are suppressed for that event. Replayed events may
 invoke the command again after a prior run completes; make the resource command
 idempotent.
 
+### Exact card commands
+
+The optional `comment_command` field creates an exact normal-card route. Its
+rule must use only `comment_created`, must have an `action`, and command names
+are unique per local agent configuration. `execution` defaults to `prepare`;
+use `existing_or_base` for a read-only stop action that must not initialize a
+worktree. See [Portable worktree lifecycle](worktree-lifecycle.md) for the full
+ownership, queue, and deployment contract.
+
 ### Model selection
 
 Override the default model per-rule:
@@ -241,4 +250,7 @@ kardbrd agent validate path/to/kardbrd.yml
 
 ## Hot-reload
 
-The rule engine watches `kardbrd.yml` for changes and reloads automatically every 60 seconds. No restart needed after editing rules.
+The rule engine watches `kardbrd.yml` for changes and reloads ordinary rules and
+schedules automatically every 60 seconds. `worktree` and complete
+`comment_command` policy changes are restart-only; an incompatible reload keeps
+the current configuration active.

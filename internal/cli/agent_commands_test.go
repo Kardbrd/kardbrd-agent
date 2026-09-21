@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Kardbrd/kardbrd-agent/internal/config"
+	"github.com/Kardbrd/kardbrd-agent/internal/rules"
 )
 
 func TestAgentStartReportsMissingNewEnvNames(t *testing.T) {
@@ -77,6 +80,16 @@ func TestAgentValidateReportsValidRulesFile(t *testing.T) {
 	stdout, stderr, err := executeRoot("agent", "validate", path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v\nstderr: %s", err, stderr)
+	}
+	assertCLIContains(t, stdout, "Valid")
+}
+
+func TestAgentValidateAcceptsLifecycleFixture(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "rules", "worktree-lifecycle.yml")
+
+	stdout, stderr, err := executeRoot("agent", "validate", path)
+	if err != nil {
+		t.Fatalf("unexpected lifecycle fixture validation error: %v\nstderr: %s", err, stderr)
 	}
 	assertCLIContains(t, stdout, "Valid")
 }
@@ -262,6 +275,17 @@ func TestBaseOnlyLifecycleAdapterPermitsExistingOrBaseWithoutGit(t *testing.T) {
 	assertEqual(t, "/non-git/base", path)
 	if _, err := adapter.Prepare(context.Background(), "card1", "board1"); err == nil {
 		t.Fatal("expected non-Git prepare to be rejected")
+	}
+}
+
+func TestLifecycleHookTimeoutCannotExceedAgentDeadline(t *testing.T) {
+	cfg := config.AgentConfig{TimeoutSeconds: 60}
+	rulesCfg := rules.Config{Worktree: &rules.WorktreeConfig{
+		Checkout: rules.WorktreeCheckout{Mode: rules.CheckoutFull},
+		Prepare:  &rules.PrepareHook{Hook: rules.Hook{TimeoutSeconds: 61}},
+	}}
+	if err := validateLifecycleDeadline(cfg, rulesCfg); err == nil {
+		t.Fatal("expected lifecycle timeout validation error")
 	}
 }
 

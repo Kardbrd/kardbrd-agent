@@ -1,7 +1,8 @@
 # Portable worktree lifecycle — implementation report
 
 **Card:** M4PkGAV6
-**Branch commit:** `2e90133` (based on `d01e8b0`, which includes #67)
+**Branch range:** `d01e8b0..card/M4PkGAV6` (the final PR commit includes this
+report and independent-review record)
 **Scope:** generic Kardbrd lifecycle only; no project adapters, runtime changes,
 release, installation, restart, migration, credentials, or live agents changed.
 
@@ -27,10 +28,10 @@ release, installation, restart, migration, credentials, or live agents changed.
 
 ## Verification
 
-Executed on this branch after the final implementation commit:
+Executed on this branch after the final review fixes:
 
 ```text
-/usr/local/go/bin/go test ./...
+/usr/local/go/bin/go test ./... -count=1
 PASS: all packages
 
 /usr/local/go/bin/go vet ./...
@@ -39,15 +40,22 @@ PASS: no diagnostics
 PATH=/usr/local/go/bin:$PATH pre-commit run --all-files
 PASS: whitespace, YAML, conflict/case checks, codespell, kardbrd.yml validation
 
-/usr/local/go/bin/go test -race ./internal/agent ./internal/worktree ./internal/rules ./internal/cli
-PASS: agent, worktree, rules, CLI
+/tmp/.../kardbrd agent validate testdata/rules/worktree-lifecycle.yml
+PASS: built CLI accepts the portable lifecycle fixture
+
+/usr/local/go/bin/go test -race ./internal/agent ./internal/worktree ./internal/rules ./internal/cli ./internal/scheduler
+PASS: agent, worktree, rules, CLI, scheduler
 ```
 
-The focused tests include real Git remote/ref creation with a dirty feature base,
+Focused tests cover real Git remote/ref creation with a dirty feature base,
 adoption preserving dirty custom branches, delegated helper materialization with
 repository skills winning, minimal hook environment, descendant cancellation,
-exact command precedence, FIFO ordering, Done draining, current Done rejection,
-and restart-only policy rejection.
+exact command precedence, FIFO/dedup/full/failed-command feedback, Done
+draining, fresh Done/title/label authorization checks, restart-only policy
+rejection, and a deterministic concurrent reload transaction. Additional real
+Git tests cover stale registrations, foreign/symlink paths, and aliased
+adoption manifests. `docs/proposals/code-review.md` records the independent
+review findings and their remediations.
 
 ## Deliberate scope boundaries
 

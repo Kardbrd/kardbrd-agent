@@ -156,6 +156,9 @@ Legacy names such as `KARDBRD_ID`, `KARDBRD_AGENT`, `KARDBRD_URL`, and `AGENT_*`
 
 ## Rules
 
+For the opt-in verified Git lifecycle, exact card commands, and administrative
+adoption, see [Portable worktree lifecycle](docs/configuration/worktree-lifecycle.md).
+
 Create `kardbrd.yml` in the target repository:
 
 ```yaml

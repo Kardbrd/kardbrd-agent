@@ -99,6 +99,11 @@ type Manager struct {
 
 	sem chan struct{}
 	mu  sync.Mutex
+	// reloadMu covers the entire source-load, schedule-update, and rule-swap
+	// transaction. Reload requests can originate from the bot card and the
+	// filesystem watcher concurrently; neither may leave rules from one
+	// candidate paired with schedules from another.
+	reloadMu sync.Mutex
 
 	// cleanupCommandStarted is a test seam for the interval after a cleanup
 	// process starts and before its session process handle is published.
@@ -373,7 +378,11 @@ func (m *Manager) finishActiveSession(session *ActiveSession) {
 			if stream != nil {
 				_ = stream.Close()
 			}
-			go func() { _ = m.runCommand(nextSession, next) }()
+			go func() {
+				if err := m.runCommand(nextSession, next); err != nil {
+					m.postCommandFailure(context.Background(), next.key.CardID, err)
+				}
+			}()
 			return
 		}
 	}
@@ -642,6 +651,26 @@ func (m *Manager) ApplyRulesConfig(cfg rules.Config) error {
 	m.Rules = &rules.Engine{Rules: append([]rules.Rule(nil), cfg.Rules...)}
 	m.Schedules = append([]rules.Schedule(nil), cfg.Schedules...)
 	return nil
+}
+
+// ReloadAndApply serializes a complete ordinary-rules reload. The configured
+// loader is responsible for loading and validating its candidate and updating
+// the scheduler only after validation; the engine swap happens under the same
+// transaction lock.
+func (m *Manager) ReloadAndApply(ctx context.Context) (rules.Config, error) {
+	m.reloadMu.Lock()
+	defer m.reloadMu.Unlock()
+	if m.Reload == nil {
+		return rules.Config{}, errors.New("rule engine is not reloadable")
+	}
+	loaded, err := m.Reload(ctx)
+	if err != nil {
+		return rules.Config{}, err
+	}
+	if err := m.ApplyRulesConfig(loaded); err != nil {
+		return rules.Config{}, err
+	}
+	return loaded, nil
 }
 
 func (m *Manager) selectWorktree(ctx context.Context, cardID string, policy rules.ExecutionPolicy) (string, error) {

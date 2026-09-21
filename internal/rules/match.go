@@ -5,6 +5,12 @@ import "strings"
 func (e Engine) Match(eventType string, message map[string]any) []Rule {
 	var matched []Rule
 	for _, rule := range e.Rules {
+		// Exact commands are claimed by the agent's dedicated command router.
+		// They must never become fuzzy generic rules for prose, other-agent
+		// mentions, or non-exact slash text.
+		if rule.CommentCommand != "" {
+			continue
+		}
 		if matches(rule, eventType, message) {
 			matched = append(matched, rule)
 		}

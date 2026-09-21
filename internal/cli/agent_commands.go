@@ -150,6 +150,9 @@ func newAgentStartCommand(root *rootOptions) *cobra.Command {
 				if rulesCfg.Worktree != nil && strings.TrimSpace(cfg.SetupCommand) != "" {
 					return fmt.Errorf("worktree lifecycle conflicts with legacy setup command")
 				}
+				if err := validateLifecycleDeadline(cfg, rulesCfg); err != nil {
+					return err
+				}
 			}
 
 			missing := missingAgentConfig(cfg)
@@ -336,6 +339,9 @@ func realRunAgentRuntime(ctx context.Context, runtime agentRuntime) error {
 			if err := manager.ValidateRulesConfig(loaded); err != nil {
 				return rules.Config{}, err
 			}
+			if err := validateLifecycleDeadline(cfg, loaded); err != nil {
+				return rules.Config{}, err
+			}
 			if err := scheduleManager.UpdateSchedules(loaded.Schedules); err != nil {
 				return rules.Config{}, err
 			}
@@ -375,6 +381,22 @@ func realRunAgentRuntime(ctx context.Context, runtime agentRuntime) error {
 	}
 }
 
+func validateLifecycleDeadline(cfg config.AgentConfig, rulesCfg rules.Config) error {
+	if rulesCfg.Worktree == nil {
+		return nil
+	}
+	limit := cfg.TimeoutSeconds
+	for _, hook := range []*rules.Hook{rulesCfg.Worktree.Checkout.Bootstrap} {
+		if hook != nil && hook.TimeoutSeconds > limit {
+			return fmt.Errorf("worktree hook timeout_seconds must not exceed agent timeout")
+		}
+	}
+	if rulesCfg.Worktree.Prepare != nil && rulesCfg.Worktree.Prepare.TimeoutSeconds > limit {
+		return fmt.Errorf("worktree hook timeout_seconds must not exceed agent timeout")
+	}
+	return nil
+}
+
 func rulesReloadLoop(ctx context.Context, path string, manager *agent.Manager) {
 	lastMod, _ := fileModTime(path)
 	ticker := time.NewTicker(60 * time.Second)
@@ -388,11 +410,7 @@ func rulesReloadLoop(ctx context.Context, path string, manager *agent.Manager) {
 			if !ok || !modTime.After(lastMod) || manager.Reload == nil {
 				continue
 			}
-			loaded, err := manager.Reload(ctx)
-			if err != nil {
-				continue
-			}
-			if err := manager.ApplyRulesConfig(loaded); err != nil {
+			if _, err := manager.ReloadAndApply(ctx); err != nil {
 				continue
 			}
 			_ = manager.EnsureBotCard(ctx)

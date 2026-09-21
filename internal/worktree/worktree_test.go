@@ -154,6 +154,64 @@ func TestLifecycleExistingOrBaseUsesBaseForAbsentSource(t *testing.T) {
 	assertEqual(t, manager.BaseRepo, path)
 }
 
+func TestLifecycleExistingOrBaseFailsClosedForPresentForeignOrSymlinkPath(t *testing.T) {
+	for _, mode := range []string{"foreign", "symlink"} {
+		t.Run(mode, func(t *testing.T) {
+			base := t.TempDir()
+			git(t, base, "init")
+			configureTestGit(t, base)
+			root := filepath.Join(t.TempDir(), "worktrees")
+			if err := os.MkdirAll(root, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			manager, err := NewLifecycleManager(base, root, "codex", rules.WorktreeConfig{Checkout: rules.WorktreeCheckout{Mode: rules.CheckoutFull}, Sharing: rules.WorktreeSharing{Env: rules.SharingEnvDisabled, Skills: rules.SharingSkillsDisabled}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := manager.WorktreePath("Foreign")
+			if mode == "foreign" {
+				if err := os.Mkdir(path, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Symlink(t.TempDir(), path); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := manager.ExistingOrBase(context.Background(), LifecycleRequest{CardID: "Foreign", BoardID: "board1"}); err == nil {
+				t.Fatal("expected present unowned path to fail closed")
+			}
+		})
+	}
+}
+
+func TestLifecycleExistingOrBaseUsesBaseForStaleAbsentRegistration(t *testing.T) {
+	base := t.TempDir()
+	git(t, base, "init")
+	configureTestGit(t, base)
+	writeFile(t, filepath.Join(base, "source.txt"), "base\n")
+	git(t, base, "add", "source.txt")
+	git(t, base, "commit", "-m", "base")
+	root := filepath.Join(t.TempDir(), "worktrees")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewLifecycleManager(base, root, "codex", rules.WorktreeConfig{Checkout: rules.WorktreeCheckout{Mode: rules.CheckoutFull}, Sharing: rules.WorktreeSharing{Env: rules.SharingEnvDisabled, Skills: rules.SharingSkillsDisabled}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := manager.WorktreePath("Stale")
+	git(t, base, "worktree", "add", "-b", manager.BranchName("Stale"), path)
+	if err := os.RemoveAll(path); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := manager.ExistingOrBase(context.Background(), LifecycleRequest{CardID: "Stale", BoardID: "board1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, manager.BaseRepo, selected)
+	registered := gitOutput(t, base, "worktree", "list", "--porcelain")
+	assertContains(t, registered, "worktree "+path)
+}
+
 func TestLifecycleAdoptionPreservesCustomBranchAndEdits(t *testing.T) {
 	base := t.TempDir()
 	git(t, base, "init")
@@ -194,6 +252,37 @@ func TestLifecycleAdoptionPreservesCustomBranchAndEdits(t *testing.T) {
 	assertEqual(t, adopted, path)
 	assertEqual(t, "fix/Existing-preserved\n", gitOutput(t, adopted, "branch", "--show-current"))
 	assertEqual(t, "preserved dirty edit\n", readFile(t, filepath.Join(adopted, "source.txt")))
+}
+
+func TestLifecycleRejectsAliasedAdoptionPaths(t *testing.T) {
+	base := t.TempDir()
+	git(t, base, "init")
+	configureTestGit(t, base)
+	root := t.TempDir()
+	path := filepath.Join(root, "card-existing")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "card-alias")
+	if err := os.Symlink(path, alias); err != nil {
+		t.Fatal(err)
+	}
+	common := gitOutput(t, base, "rev-parse", "--git-common-dir")
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(base, common)
+	}
+	_, err := NewLifecycleManager(base, root, "codex", rules.WorktreeConfig{
+		Checkout: rules.WorktreeCheckout{Mode: rules.CheckoutFull},
+		Sharing:  rules.WorktreeSharing{Env: rules.SharingEnvDisabled, Skills: rules.SharingSkillsDisabled},
+		Adoptions: []rules.WorktreeAdoption{
+			{CardID: "First", Path: path, CommonGitDir: common, Branch: "feature/first"},
+			{CardID: "Second", Path: alias, CommonGitDir: common, Branch: "feature/second"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected aliased adoption manifest to be rejected")
+	}
+	assertContains(t, err.Error(), "non-canonical alias")
 }
 
 func TestLifecyclePrepareRunsMinimalHookEnvironment(t *testing.T) {
@@ -299,6 +388,55 @@ func TestLifecycleDelegatedBootstrapMaterializesBeforeSkillFallback(t *testing.T
 		t.Fatal("fallback link hid tracked repository skills")
 	}
 	assertEqual(t, "repository skill\n", readFile(t, filepath.Join(skill, "repo-skill.md")))
+}
+
+func TestLifecycleCreatedRecoveryCompletesPrepareEvenWhenReuseDisabled(t *testing.T) {
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	git(t, "", "init", "--bare", remote)
+	seed := filepath.Join(t.TempDir(), "seed")
+	git(t, "", "clone", remote, seed)
+	configureTestGit(t, seed)
+	writeFile(t, filepath.Join(seed, "source.txt"), "main\n")
+	git(t, seed, "add", "source.txt")
+	git(t, seed, "commit", "-m", "main")
+	git(t, seed, "branch", "-M", "main")
+	git(t, seed, "push", "-u", "origin", "main")
+	base := filepath.Join(t.TempDir(), "base")
+	git(t, "", "clone", remote, base)
+	configureTestGit(t, base)
+	stable := filepath.Join(t.TempDir(), "stable")
+	if err := os.MkdirAll(stable, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bootstrap := filepath.Join(stable, "bootstrap")
+	writeFile(t, bootstrap, "#!/bin/sh\nif [ ! -e '"+filepath.Join(stable, "attempted")+"' ]; then touch '"+filepath.Join(stable, "attempted")+"'; exit 1; fi\ngit reset --hard HEAD\n")
+	prepare := filepath.Join(stable, "prepare")
+	writeFile(t, prepare, "#!/bin/sh\ntouch prepared\n")
+	for _, helper := range []string{bootstrap, prepare} {
+		if err := os.Chmod(helper, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manager, err := NewLifecycleManager(base, filepath.Join(t.TempDir(), "worktrees"), "codex", rules.WorktreeConfig{
+		Base:     rules.WorktreeBase{Remote: "origin", Ref: "refs/heads/main"},
+		Helpers:  rules.WorktreeHelpers{StableRoot: stable},
+		Checkout: rules.WorktreeCheckout{Mode: rules.CheckoutDelegated, Bootstrap: &rules.Hook{Argv: []string{bootstrap}, TimeoutSeconds: 10}},
+		Prepare:  &rules.PrepareHook{Hook: rules.Hook{Argv: []string{prepare}, TimeoutSeconds: 10}, OnCreate: true, OnReuse: false},
+		Sharing:  rules.WorktreeSharing{Env: rules.SharingEnvDisabled, Skills: rules.SharingSkillsDisabled},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Prepare(context.Background(), LifecycleRequest{CardID: "Recover", BoardID: "board1"}); err == nil {
+		t.Fatal("expected first bootstrap failure")
+	}
+	path, err := manager.Prepare(context.Background(), LifecycleRequest{CardID: "Recover", BoardID: "board1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(path, "prepared")); err != nil {
+		t.Fatalf("create prepare was skipped during recovery: %v", err)
+	}
 }
 
 func TestLifecycleRunnerReapsDescendantsOnCancellation(t *testing.T) {

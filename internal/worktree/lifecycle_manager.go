@@ -45,15 +45,16 @@ type LifecycleManager struct {
 }
 
 type lifecycleRecord struct {
-	CardID       string `json:"card_id"`
-	Path         string `json:"path"`
-	CommonGitDir string `json:"common_git_dir"`
-	Branch       string `json:"branch"`
-	Origin       string `json:"origin"`
-	Stage        string `json:"stage"`
-	FailedPhase  string `json:"failed_phase,omitempty"`
-	Materialized bool   `json:"materialized"`
-	Shared       bool   `json:"shared"`
+	CardID              string `json:"card_id"`
+	Path                string `json:"path"`
+	CommonGitDir        string `json:"common_git_dir"`
+	Branch              string `json:"branch"`
+	Origin              string `json:"origin"`
+	Stage               string `json:"stage"`
+	FailedPhase         string `json:"failed_phase,omitempty"`
+	Materialized        bool   `json:"materialized"`
+	Shared              bool   `json:"shared"`
+	EnvLinkAcknowledged bool   `json:"env_link_acknowledged"`
 }
 
 func NewLifecycleManager(baseRepo, worktreesDir, executorType string, config rules.WorktreeConfig) (*LifecycleManager, error) {
@@ -80,6 +81,9 @@ func NewLifecycleManager(baseRepo, worktreesDir, executorType string, config rul
 		return nil, fmt.Errorf("resolve base Git common directory: %w", err)
 	}
 	manager.baseCommonGitDir = common
+	if err := manager.validateAdoptionManifest(); err != nil {
+		return nil, err
+	}
 	if config.Checkout.Bootstrap != nil {
 		if err := manager.verifyHook(*config.Checkout.Bootstrap); err != nil {
 			return nil, err
@@ -91,6 +95,37 @@ func NewLifecycleManager(baseRepo, worktreesDir, executorType string, config rul
 		}
 	}
 	return manager, nil
+}
+
+// validateAdoptionManifest resolves every configured legacy path before the
+// lifecycle is enabled. An adoption entry represents already-present source;
+// accepting a missing or symlink-alias path would make the required one-card /
+// one-resolved-path ownership check unknowable until later.
+func (m *LifecycleManager) validateAdoptionManifest() error {
+	ids := make(map[string]struct{}, len(m.Config.Adoptions))
+	paths := make(map[string]struct{}, len(m.Config.Adoptions))
+	for _, adoption := range m.Config.Adoptions {
+		if _, exists := ids[adoption.CardID]; exists {
+			return fmt.Errorf("adoption card ID %q is duplicated", adoption.CardID)
+		}
+		ids[adoption.CardID] = struct{}{}
+		path := cleanAbs(adoption.Path)
+		if !within(m.WorktreesBase, path) {
+			return fmt.Errorf("adoption path %q escapes worktree root", path)
+		}
+		resolved, err := canonicalExistingPath(path)
+		if err != nil {
+			return fmt.Errorf("resolve adoption path %q: %w", adoption.Path, err)
+		}
+		if resolved != path {
+			return fmt.Errorf("adoption path %q is a non-canonical alias", adoption.Path)
+		}
+		if _, exists := paths[resolved]; exists {
+			return fmt.Errorf("adoption resolved path %q is duplicated", resolved)
+		}
+		paths[resolved] = struct{}{}
+	}
+	return nil
 }
 
 func (m *LifecycleManager) WorktreePath(cardID string) string {
@@ -143,6 +178,15 @@ func (m *LifecycleManager) Prepare(ctx context.Context, request LifecycleRequest
 			return "", err
 		}
 	}
+	if m.Config.Sharing.Env == rules.SharingEnvDisabled {
+		linked, err := m.hasBaseEnvLink(path)
+		if err != nil {
+			return "", err
+		}
+		if linked && !record.EnvLinkAcknowledged {
+			return "", fmt.Errorf("worktree %q has an unacknowledged base .env link", path)
+		}
+	}
 
 	if !record.Shared && record.Origin == "created" {
 		if err := m.verifyOwned(ctx, request.CardID, path, record); err != nil {
@@ -153,6 +197,11 @@ func (m *LifecycleManager) Prepare(ctx context.Context, request LifecycleRequest
 			_ = m.writeRecord(context.Background(), path, record)
 			return "", err
 		}
+		acknowledged, err := m.hasBaseEnvLink(path)
+		if err != nil {
+			return "", err
+		}
+		record.EnvLinkAcknowledged = record.EnvLinkAcknowledged || acknowledged
 		record.Shared = true
 		if err := m.writeRecord(ctx, path, record); err != nil {
 			return "", err
@@ -235,7 +284,11 @@ func (m *LifecycleManager) Adopt(ctx context.Context, cardID string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	record := lifecycleRecord{CardID: cardID, Path: path, CommonGitDir: m.baseCommonGitDir, Branch: adoption.Branch, Origin: "adopted", Stage: "created", Materialized: true, Shared: true}
+	acknowledged, err := m.hasBaseEnvLink(path)
+	if err != nil {
+		return err
+	}
+	record := lifecycleRecord{CardID: cardID, Path: path, CommonGitDir: m.baseCommonGitDir, Branch: adoption.Branch, Origin: "adopted", Stage: "created", Materialized: true, Shared: true, EnvLinkAcknowledged: acknowledged}
 	if err := m.verifyOwnershipWithoutRecord(ctx, cardID, path, record); err != nil {
 		return err
 	}
@@ -249,6 +302,11 @@ func (m *LifecycleManager) Adopt(ctx context.Context, cardID string) error {
 func (m *LifecycleManager) acquireOrCreate(ctx context.Context, request LifecycleRequest) (lifecycleRecord, string, LifecycleReason, bool, error) {
 	m.gitMu.Lock()
 	defer m.gitMu.Unlock()
+	releaseLock, err := lockLifecycleGitAdministration(ctx, filepath.Join(m.baseCommonGitDir, "kardbrd-lifecycle.lock"))
+	if err != nil {
+		return lifecycleRecord{}, "", "", false, fmt.Errorf("lock shared Git administration: %w", err)
+	}
+	defer releaseLock()
 	paths := m.candidatePaths(request.CardID)
 	var present []string
 	for _, path := range paths {
@@ -269,7 +327,14 @@ func (m *LifecycleManager) acquireOrCreate(ctx context.Context, request Lifecycl
 		if err := m.verifyOwned(ctx, request.CardID, present[0], record); err != nil {
 			return lifecycleRecord{}, "", "", false, err
 		}
-		return record, present[0], LifecycleReuse, false, nil
+		reason := LifecycleReuse
+		// A created worktree that has not reached ready is still its initial
+		// creation transaction. Recovery must finish selected create phases
+		// even when prepare-on-reuse is deliberately disabled.
+		if record.Origin == "created" && record.Stage != "ready" {
+			reason = LifecycleCreate
+		}
+		return record, present[0], reason, false, nil
 	}
 
 	path := m.WorktreePath(request.CardID)
@@ -538,6 +603,36 @@ func (m *LifecycleManager) linkIfFallback(ctx context.Context, worktreePath, rel
 		return err
 	}
 	return os.Symlink(source, destination)
+}
+
+func (m *LifecycleManager) hasBaseEnvLink(worktreePath string) (bool, error) {
+	path := filepath.Join(worktreePath, ".env")
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return false, nil
+	}
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false, err
+	}
+	baseEnv := filepath.Join(m.BaseRepo, ".env")
+	if _, err := os.Lstat(baseEnv); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	baseTarget, err := filepath.EvalSymlinks(baseEnv)
+	if err != nil {
+		return false, err
+	}
+	return target == baseTarget, nil
 }
 
 func (m *LifecycleManager) trackedPath(ctx context.Context, path, relative string) (bool, error) {

@@ -213,6 +213,10 @@ func TestLoadLifecycleRejectsNullUnknownAndCoercedFields(t *testing.T) {
 		"worktree:\n  unknown: value",
 		"worktree:\n  checkout:\n    mode: delegated",
 		"worktree:\n  prepare:\n    argv: [/stable/prepare]\n    on_create: 'true'",
+		"worktree:\n  base:\n    remote: --upload-pack=bad",
+		"worktree:\n  base:\n    ref: refs/heads/feature..bad",
+		"worktree:\n  base:\n    ref: refs/heads/name:refspec",
+		"worktree:\n  base:\n    ref: \"refs/heads/bad\\tname\"",
 	} {
 		t.Run(lifecycle, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "invalid-lifecycle.yml")
@@ -225,6 +229,22 @@ func TestLoadLifecycleRejectsNullUnknownAndCoercedFields(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLoadLifecycleAllowsExplicitEmptyPassthrough(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "empty-passthrough.yml")
+	content := "board_id: board1\nagent: BotName\nworktree:\n  environment:\n    passthrough: []\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFile(path)
+	if err != nil {
+		t.Fatalf("explicit empty passthrough must be valid: %v", err)
+	}
+	if cfg.Worktree == nil {
+		t.Fatal("expected lifecycle configuration")
+	}
+	assertEqual(t, 0, len(cfg.Worktree.Environment.Passthrough))
 }
 
 func assertEqual[T comparable](t *testing.T, want T, got T) {

@@ -11,7 +11,13 @@
 ```bash
 kardbrd agent start [OPTIONS]
 kardbrd agent validate [kardbrd.yml]
+kardbrd agent adopt-worktree CARD_ID [OPTIONS]
 ```
+
+`agent adopt-worktree` verifies and records exactly one matching
+`worktree.adoptions` entry without changing source. It accepts `--cwd`,
+`--worktrees-dir`, `--rules`, and `--executor`; see [Portable worktree
+lifecycle](worktree-lifecycle.md).
 
 ## Personal worker
 

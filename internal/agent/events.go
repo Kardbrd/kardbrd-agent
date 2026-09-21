@@ -655,12 +655,8 @@ func (m *Manager) HandleBotCardCommand(ctx context.Context, cardID string, conte
 			_, _ = m.Client.AddComment(ctx, cardID, "⚠️ Rule engine is not reloadable (static rules)\n\n@"+authorName)
 			return nil
 		}
-		loaded, err := m.Reload(ctx)
+		loaded, err := m.ReloadAndApply(ctx)
 		if err != nil {
-			_, _ = m.Client.AddComment(ctx, cardID, "**Reload failed**\n\n```\n"+err.Error()+"\n```\n\n@"+authorName)
-			return nil
-		}
-		if err := m.ApplyRulesConfig(loaded); err != nil {
 			_, _ = m.Client.AddComment(ctx, cardID, "**Reload failed**\n\n```\n"+err.Error()+"\n```\n\n@"+authorName)
 			return nil
 		}

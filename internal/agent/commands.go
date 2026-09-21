@@ -43,31 +43,49 @@ func (m *Manager) ProcessCommentCommand(ctx context.Context, cardID string, rule
 		return err
 	}
 	if !rules.RuleMatches(rule, "comment_created", message) {
-		_, _ = m.Client.AddComment(ctx, cardID, "**Command denied**\n\nThis command is not authorized by its configured rule.")
+		if m.reserveTerminalCommand(cardID, rule, message, "denied") {
+			_, _ = m.Client.AddComment(ctx, cardID, "**Command denied**\n\nThis command is not authorized by its configured rule.")
+		}
 		return nil
 	}
-	claim, session, queued, rejected := m.reserveCommand(ctx, cardID, rule, message)
+	claim, session, queuePosition, rejected := m.reserveCommand(ctx, cardID, rule, message)
 	if claim == nil {
 		return nil
 	}
-	if queued {
-		_, _ = m.Client.AddComment(ctx, cardID, fmt.Sprintf("**Command queued** (position %d)", len(m.commandQueueSnapshot(cardID))))
+	if queuePosition > 0 {
+		_, _ = m.Client.AddComment(ctx, cardID, fmt.Sprintf("**Command queued** (position %d)", queuePosition))
 		return nil
 	}
 	if rejected != "" {
 		_, _ = m.Client.AddComment(ctx, cardID, "**Command rejected**\n\n"+rejected)
 		return nil
 	}
-	return m.runCommand(session, claim)
+	if err := m.runCommand(session, claim); err != nil {
+		m.postCommandFailure(ctx, cardID, err)
+	}
+	return nil
 }
 
-func (m *Manager) reserveCommand(ctx context.Context, cardID string, rule rules.Rule, message map[string]any) (*commandClaim, *ActiveSession, bool, string) {
+func (m *Manager) reserveTerminalCommand(cardID string, rule rules.Rule, message map[string]any, state string) bool {
 	key := commandDedupKey{BoardID: m.BoardID, CardID: cardID, Comment: stringField(message, "comment_id"), Command: strings.ToLower(rule.CommentCommand)}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.pruneCommandClaimsLocked(time.Now())
 	if _, exists := m.commandClaims[key]; exists {
-		return nil, nil, false, ""
+		return false
+	}
+	m.commandSeq++
+	m.commandClaims[key] = &commandClaim{key: key, sequence: m.commandSeq, rule: cloneCommandRule(rule), message: cloneMessage(message), state: state, terminalAt: time.Now()}
+	return true
+}
+
+func (m *Manager) reserveCommand(ctx context.Context, cardID string, rule rules.Rule, message map[string]any) (*commandClaim, *ActiveSession, int, string) {
+	key := commandDedupKey{BoardID: m.BoardID, CardID: cardID, Comment: stringField(message, "comment_id"), Command: strings.ToLower(rule.CommentCommand)}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pruneCommandClaimsLocked(time.Now())
+	if _, exists := m.commandClaims[key]; exists {
+		return nil, nil, 0, ""
 	}
 	m.commandSeq++
 	claim := &commandClaim{key: key, sequence: m.commandSeq, rule: cloneCommandRule(rule), message: cloneMessage(message), context: ctx}
@@ -76,22 +94,24 @@ func (m *Manager) reserveCommand(ctx context.Context, cardID string, rule rules.
 		if current.Cleanup {
 			claim.state = "canceled_done"
 			claim.terminalAt = time.Now()
-			return claim, nil, false, "The card is being cleaned up after entering Done."
+			return claim, nil, 0, "The card is being cleaned up after entering Done."
 		}
 		queue := m.commandQueues[cardID]
 		if len(queue) >= commandQueueLimit {
 			claim.state = "rejected_full"
 			claim.terminalAt = time.Now()
-			return claim, nil, false, "The command queue is full; submit a later explicit command to retry."
+			return claim, nil, 0, "The command queue is full; submit a later explicit command to retry."
 		}
 		claim.state = "queued"
 		m.commandQueues[cardID] = append(queue, claim)
-		return claim, nil, true, ""
+		// Capture the position under the reservation lock. A later arrival must
+		// not change this command's visible FIFO acknowledgement.
+		return claim, nil, len(queue) + 1, ""
 	}
 	claim.state = "running"
 	session := m.newCommandSession(claim)
 	m.Active[cardID] = session
-	return claim, session, false, ""
+	return claim, session, 0, ""
 }
 
 func (m *Manager) newCommandSession(claim *commandClaim) *ActiveSession {
@@ -138,7 +158,8 @@ func (m *Manager) recheckCommand(ctx context.Context, claim *commandClaim) error
 		return fmt.Errorf("could not recheck current card state")
 	}
 	var card struct {
-		List *struct {
+		Title string `json:"title"`
+		List  *struct {
 			Name string `json:"name"`
 		} `json:"list"`
 	}
@@ -149,6 +170,15 @@ func (m *Manager) recheckCommand(ctx context.Context, claim *commandClaim) error
 		return errors.New("the card is in Done and cannot run this command")
 	}
 	message := cloneMessage(claim.message)
+	// The claim intentionally keeps the original rule/action snapshot, but
+	// authorization itself is evaluated against current card state. Drop all
+	// event-derived card fields so enrichment cannot reuse stale labels or
+	// assignee data from the queued delivery.
+	message["list_name"] = card.List.Name
+	message["card_title"] = card.Title
+	delete(message, "card_labels")
+	delete(message, "card_assignee_id")
+	delete(message, "card_assignee_is_bot")
 	if err := m.enrichRuleMessage(ctx, message); err != nil {
 		return errors.New("could not recheck current command authorization")
 	}
@@ -215,6 +245,11 @@ func (m *Manager) finishCommand(claim *commandClaim, state string) {
 	}
 	claim.state = state
 	claim.terminalAt = time.Now()
+}
+
+func (m *Manager) postCommandFailure(ctx context.Context, cardID string, err error) {
+	diagnostic := redactCleanupDiagnostic(err.Error(), m.Token)
+	_, _ = m.Client.AddComment(ctx, cardID, "**Command Error**\n\n```\n"+diagnostic+"\n```")
 }
 
 func (m *Manager) commandQueueSnapshot(cardID string) []*commandClaim {

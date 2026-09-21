@@ -142,7 +142,7 @@ func validateWorktreeNode(node *yaml.Node) error {
 			return fmt.Errorf("environment: %w", err)
 		}
 		if passthrough := values["passthrough"]; passthrough != nil {
-			if err := stringList(passthrough, "passthrough"); err != nil {
+			if err := stringListAllowEmpty(passthrough, "passthrough"); err != nil {
 				return fmt.Errorf("environment: %w", err)
 			}
 		}
@@ -274,6 +274,19 @@ func stringList(node *yaml.Node, name string) error {
 	if node == nil || node.Kind != yaml.SequenceNode || len(node.Content) == 0 {
 		return fmt.Errorf("%s must be a non-empty YAML list", name)
 	}
+	return validateStringListEntries(node, name)
+}
+
+// stringListAllowEmpty is for declarative collections whose empty value is
+// meaningful. Hook argv remains intentionally non-empty through stringList.
+func stringListAllowEmpty(node *yaml.Node, name string) error {
+	if node == nil || node.Kind != yaml.SequenceNode {
+		return fmt.Errorf("%s must be a YAML list", name)
+	}
+	return validateStringListEntries(node, name)
+}
+
+func validateStringListEntries(node *yaml.Node, name string) error {
 	for _, value := range node.Content {
 		if err := exactString(value, name+" entries"); err != nil {
 			return err
@@ -283,12 +296,13 @@ func stringList(node *yaml.Node, name string) error {
 }
 
 var portableEnvironmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var gitRemoteName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 func validateWorktreeConfig(config WorktreeConfig) error {
-	if strings.TrimSpace(config.Base.Remote) == "" || strings.ContainsAny(config.Base.Remote, " \t\n") {
+	if !gitRemoteName.MatchString(config.Base.Remote) {
 		return fmt.Errorf("worktree.base.remote must be a non-empty remote name")
 	}
-	if ref := config.Base.Ref; ref != "" && (!strings.HasPrefix(ref, "refs/heads/") || strings.TrimPrefix(ref, "refs/heads/") == "" || strings.Contains(ref, "//") || strings.HasSuffix(ref, "/")) {
+	if ref := config.Base.Ref; ref != "" && !validBranchRef(ref) {
 		return fmt.Errorf("worktree.base.ref must be refs/heads/<name>")
 	}
 	if config.Checkout.Mode != CheckoutFull && config.Checkout.Mode != CheckoutDelegated {
@@ -343,6 +357,27 @@ func validateWorktreeConfig(config WorktreeConfig) error {
 		paths[path] = true
 	}
 	return nil
+}
+
+func validBranchRef(ref string) bool {
+	if !strings.HasPrefix(ref, "refs/heads/") {
+		return false
+	}
+	branch := strings.TrimPrefix(ref, "refs/heads/")
+	if branch == "" || strings.HasPrefix(branch, "/") || strings.HasSuffix(branch, "/") || strings.Contains(branch, "//") || strings.Contains(branch, "..") || strings.Contains(branch, "@{") || strings.ContainsAny(branch, " ~^:?*[\\") {
+		return false
+	}
+	for _, character := range branch {
+		if character <= 0x20 || character == 0x7f {
+			return false
+		}
+	}
+	for _, component := range strings.Split(branch, "/") {
+		if component == "" || component == "." || component == ".." || strings.HasPrefix(component, ".") || strings.HasSuffix(component, ".lock") {
+			return false
+		}
+	}
+	return true
 }
 
 func validateHookConfig(name string, hook Hook) error {
