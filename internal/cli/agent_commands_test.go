@@ -232,6 +232,27 @@ func TestAgentStartRulesFileOverridesExecutor(t *testing.T) {
 	assertEqual(t, "codex", captured.Config.Executor)
 }
 
+func TestAgentStartRejectsLifecycleAndLegacySetupConflict(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kardbrd.yml")
+	if err := os.WriteFile(path, []byte("board_id: board1\nagent: coder\nworktree: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, err := executeRoot(
+		"--token", "tok",
+		"agent", "start",
+		"--board-id", "board1",
+		"--name", "coder",
+		"--cwd", dir,
+		"--rules", path,
+		"--setup-cmd", "npm install",
+	)
+	if err == nil {
+		t.Fatal("expected lifecycle/legacy setup conflict")
+	}
+	assertCLIContains(t, stderr, "worktree lifecycle conflicts with legacy setup command")
+}
+
 func stubAgentRuntime(t *testing.T, fn func(context.Context, agentRuntime) error) func() {
 	t.Helper()
 	previous := runAgentRuntime

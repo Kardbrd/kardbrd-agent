@@ -20,6 +20,7 @@ type ActiveSession struct {
 	Streaming    bool
 	Cleanup      bool
 	Stopping     bool
+	Command      *commandClaim
 	Done         chan struct{}
 	doneOnce     sync.Once
 }

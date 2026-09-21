@@ -1,6 +1,9 @@
 package rules
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -8,6 +11,24 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+// LifecycleFingerprint identifies restart-only policy: the lifecycle block and
+// complete exact command rules. Ordinary fuzzy rules and schedules are omitted
+// so they can retain validated reload support.
+func LifecycleFingerprint(config Config) string {
+	commands := make([]Rule, 0)
+	for _, rule := range config.Rules {
+		if rule.CommentCommand != "" || rule.Execution != "" {
+			commands = append(commands, rule)
+		}
+	}
+	payload, _ := json.Marshal(struct {
+		Worktree *WorktreeConfig `json:"worktree"`
+		Commands []Rule          `json:"commands"`
+	}{Worktree: config.Worktree, Commands: commands})
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
 
 // validateLoadedLifecycle rejects invalid opt-in fields before yaml.v3 can
 // coerce them. Legacy configuration retains its historical permissive scope.

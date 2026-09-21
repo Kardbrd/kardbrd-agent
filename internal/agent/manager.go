@@ -31,8 +31,18 @@ type BoardClient interface {
 }
 
 type Worktree interface {
-	Create(cardID string) (string, error)
 	Remove(cardID string, force bool) error
+}
+
+type legacyWorktree interface {
+	Create(cardID string) (string, error)
+}
+
+// lifecycleWorktree is optional so the legacy manager remains binary- and
+// behavior-compatible when the reviewed opt-in block is absent.
+type lifecycleWorktree interface {
+	Prepare(ctx context.Context, cardID, boardID string) (string, error)
+	ExistingOrBase(ctx context.Context, cardID, boardID string) (string, error)
 }
 
 type WebSocketRunner interface {
@@ -40,16 +50,17 @@ type WebSocketRunner interface {
 }
 
 type Config struct {
-	BoardID       string
-	APIURL        string
-	Token         string
-	AgentName     string
-	CWD           string
-	Timeout       time.Duration
-	MaxConcurrent int
-	ExecutorType  string
-	Rules         *rules.Engine
-	Schedules     []rules.Schedule
+	BoardID              string
+	APIURL               string
+	Token                string
+	AgentName            string
+	CWD                  string
+	Timeout              time.Duration
+	MaxConcurrent        int
+	ExecutorType         string
+	Rules                *rules.Engine
+	Schedules            []rules.Schedule
+	LifecycleFingerprint string
 
 	Client    BoardClient
 	Executor  executor.Interface
@@ -59,22 +70,26 @@ type Config struct {
 }
 
 type Manager struct {
-	BoardID       string
-	APIURL        string
-	Token         string
-	AgentName     string
-	Mention       string
-	CWD           string
-	Timeout       time.Duration
-	MaxConcurrent int
-	ExecutorType  string
-	Rules         *rules.Engine
-	Schedules     []rules.Schedule
-	Active        map[string]*ActiveSession
-	pending       map[string]pendingMention
-	Paused        bool
-	BotCardID     string
-	StartTime     time.Time
+	BoardID           string
+	APIURL            string
+	Token             string
+	AgentName         string
+	Mention           string
+	CWD               string
+	Timeout           time.Duration
+	MaxConcurrent     int
+	ExecutorType      string
+	Rules             *rules.Engine
+	Schedules         []rules.Schedule
+	policyFingerprint string
+	Active            map[string]*ActiveSession
+	pending           map[string]pendingMention
+	commandClaims     map[commandDedupKey]*commandClaim
+	commandQueues     map[string][]*commandClaim
+	commandSeq        uint64
+	Paused            bool
+	BotCardID         string
+	StartTime         time.Time
 
 	Client    BoardClient
 	Executor  executor.Interface
@@ -113,28 +128,35 @@ func NewManager(cfg Config) *Manager {
 	if ruleEngine == nil {
 		ruleEngine = &rules.Engine{}
 	}
+	policyFingerprint := cfg.LifecycleFingerprint
+	if policyFingerprint == "" {
+		policyFingerprint = rules.LifecycleFingerprint(rules.Config{Rules: ruleEngine.Rules})
+	}
 
 	return &Manager{
-		BoardID:       cfg.BoardID,
-		APIURL:        cfg.APIURL,
-		Token:         cfg.Token,
-		AgentName:     cfg.AgentName,
-		Mention:       "@" + cfg.AgentName,
-		CWD:           cwd,
-		Timeout:       timeout,
-		MaxConcurrent: maxConcurrent,
-		ExecutorType:  executorType,
-		Rules:         ruleEngine,
-		Schedules:     cfg.Schedules,
-		Active:        map[string]*ActiveSession{},
-		pending:       map[string]pendingMention{},
-		StartTime:     time.Now().UTC(),
-		Client:        cfg.Client,
-		Executor:      cfg.Executor,
-		Worktree:      cfg.Worktree,
-		WebSocket:     cfg.WebSocket,
-		Reload:        cfg.Reload,
-		sem:           make(chan struct{}, maxConcurrent),
+		BoardID:           cfg.BoardID,
+		APIURL:            cfg.APIURL,
+		Token:             cfg.Token,
+		AgentName:         cfg.AgentName,
+		Mention:           "@" + cfg.AgentName,
+		CWD:               cwd,
+		Timeout:           timeout,
+		MaxConcurrent:     maxConcurrent,
+		ExecutorType:      executorType,
+		Rules:             ruleEngine,
+		Schedules:         cfg.Schedules,
+		policyFingerprint: policyFingerprint,
+		Active:            map[string]*ActiveSession{},
+		pending:           map[string]pendingMention{},
+		commandClaims:     map[commandDedupKey]*commandClaim{},
+		commandQueues:     map[string][]*commandClaim{},
+		StartTime:         time.Now().UTC(),
+		Client:            cfg.Client,
+		Executor:          cfg.Executor,
+		Worktree:          cfg.Worktree,
+		WebSocket:         cfg.WebSocket,
+		Reload:            cfg.Reload,
+		sem:               make(chan struct{}, maxConcurrent),
 	}
 }
 
@@ -199,7 +221,7 @@ func (m *Manager) ProcessMention(ctx context.Context, cardID, commentID, content
 		return err
 	}
 
-	execCtx, cancel := context.WithCancel(ctx)
+	execCtx, cancel := context.WithTimeout(ctx, m.Timeout)
 	session := &ActiveSession{CardID: cardID, CommentID: commentID, Cancel: cancel, Done: make(chan struct{})}
 	m.mu.Lock()
 	_, exists := m.Active[cardID]
@@ -249,11 +271,11 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 	}
 
 	worktreePath := m.CWD
-	if m.Worktree != nil {
-		path, err := m.Worktree.Create(session.CardID)
-		if err != nil {
-			return err
-		}
+	path, err := m.selectWorktree(execCtx, session.CardID, rules.ExecutionPrepare)
+	if err != nil {
+		return err
+	}
+	if path != "" {
 		worktreePath = path
 	}
 
@@ -342,6 +364,19 @@ func (m *Manager) finishActiveSession(session *ActiveSession) {
 	session.Stream = nil
 	session.Streaming = false
 	delete(m.Active, session.CardID)
+	if !session.Cleanup {
+		next := m.nextCommandLocked(session.CardID)
+		if next != nil {
+			nextSession := m.newCommandSession(next)
+			m.Active[session.CardID] = nextSession
+			m.mu.Unlock()
+			if stream != nil {
+				_ = stream.Close()
+			}
+			go func() { _ = m.runCommand(nextSession, next) }()
+			return
+		}
+	}
 	pending, queued := m.pending[session.CardID]
 	delete(m.pending, session.CardID)
 	if session.Cleanup {
@@ -355,7 +390,7 @@ func (m *Manager) finishActiveSession(session *ActiveSession) {
 	var pendingExecCtx context.Context
 	var pendingCancel context.CancelFunc
 	if queued {
-		pendingExecCtx, pendingCancel = context.WithCancel(pending.ctx)
+		pendingExecCtx, pendingCancel = context.WithTimeout(pending.ctx, m.Timeout)
 		pendingSession = &ActiveSession{CardID: pending.cardID, CommentID: pending.commentID, Cancel: pendingCancel, Done: make(chan struct{})}
 		m.Active[session.CardID] = pendingSession
 	}
@@ -401,12 +436,16 @@ func (m *Manager) reserveCleanup(ctx context.Context, cardID string) (*ActiveSes
 		current.Streaming = false
 	}
 	delete(m.pending, cardID)
+	canceledCommands := m.drainCommandsLocked(cardID)
 	m.Active[cardID] = cleanup
 	previousDone := currentDone(current)
 	m.mu.Unlock()
 
 	if stream != nil {
 		_ = stream.Close()
+	}
+	for range canceledCommands {
+		_, _ = m.Client.AddComment(ctx, cardID, "**Command canceled**\n\nThe card entered Done before this queued command could run.")
 	}
 	return cleanup, previousDone
 }
@@ -587,9 +626,40 @@ func (m *Manager) makeOnChunk(cardID string) func(content string, chunkType stri
 	}
 }
 
-func (m *Manager) ApplyRulesConfig(cfg rules.Config) {
+func (m *Manager) ValidateRulesConfig(cfg rules.Config) error {
+	if rules.LifecycleFingerprint(cfg) != m.policyFingerprint {
+		return errors.New("lifecycle and command-rule changes require an agent restart")
+	}
+	return nil
+}
+
+func (m *Manager) ApplyRulesConfig(cfg rules.Config) error {
+	if err := m.ValidateRulesConfig(cfg); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.Rules = &rules.Engine{Rules: append([]rules.Rule(nil), cfg.Rules...)}
 	m.Schedules = append([]rules.Schedule(nil), cfg.Schedules...)
+	return nil
+}
+
+func (m *Manager) selectWorktree(ctx context.Context, cardID string, policy rules.ExecutionPolicy) (string, error) {
+	if m.Worktree == nil {
+		return "", nil
+	}
+	if lifecycle, ok := m.Worktree.(lifecycleWorktree); ok {
+		if policy == rules.ExecutionExistingOrBase {
+			return lifecycle.ExistingOrBase(ctx, cardID, m.BoardID)
+		}
+		return lifecycle.Prepare(ctx, cardID, m.BoardID)
+	}
+	if policy == rules.ExecutionExistingOrBase {
+		return "", errors.New("existing_or_base requires opt-in lifecycle worktree configuration")
+	}
+	legacy, ok := m.Worktree.(legacyWorktree)
+	if !ok {
+		return "", errors.New("worktree implementation cannot prepare")
+	}
+	return legacy.Create(cardID)
 }

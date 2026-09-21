@@ -95,6 +95,15 @@ func ValidateFile(path string) ValidationResult {
 	if schedulesNode, ok := top["schedules"]; ok {
 		validateSchedulesNode(&result, schedulesNode)
 	}
+	// LoadFile performs normalization-time relationship checks (for example the
+	// full/delegated pairing) using the same strict candidate bytes used at
+	// startup and reload. Keep legacy warnings intact while making opt-in
+	// lifecycle validation equally strict at `agent validate`.
+	if result.IsValid() {
+		if _, err := LoadFile(path); err != nil {
+			result.addError(err.Error())
+		}
+	}
 	return result
 }
 
