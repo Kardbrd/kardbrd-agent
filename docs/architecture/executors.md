@@ -64,7 +64,8 @@ result, so the manager can show its existing bounded recovery outcome rather tha
 false success.
 
 On Unix, the shared subprocess runner owns a separate process group plus parent-owned stdout and
-stderr and stdin pipes. It terminates descendants on every terminal path, bounds captured
+stderr and stdin pipes. It terminates descendants that remain in that process group on every
+terminal path, bounds captured
 diagnostics, and drains output after the child exits, so a slow progress callback or an inherited
 input descriptor cannot discard a terminal JSONL line or make completion wait indefinitely.
 Progress delivery is bounded and best-effort under backlog; scanner/read errors remain executor
@@ -75,6 +76,10 @@ into compact protocol state before that retained diagnostic cap, so verbose tool
 a later completion or failed-turn record into malformed JSONL. For Codex, hitting a retained-log
 cap annotates the diagnostic; it is not by itself an execution failure. Other executors retain the
 shared runner's existing limit-failure behavior.
+
+Progress buffering has both item and byte caps, and oversized assistant progress is skipped rather
+than retained. Known executor credentials are redacted from Codex progress and terminal text before
+they reach board-visible result handling.
 
 Nested assistant messages continue to stream as progress, with repeated item snapshots
 suppressed. Reasoning, command execution, and raw tool payloads are never forwarded as Codex

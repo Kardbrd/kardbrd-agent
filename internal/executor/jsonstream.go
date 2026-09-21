@@ -1,10 +1,18 @@
 package executor
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
+)
+
+const (
+	maxCodexProgressTextBytes   = 1 << 20
+	maxCodexProgressSnapshots   = 256
+	maxCodexProgressItemIDBytes = 1024
+	maxCodexSessionIDBytes      = 1024
 )
 
 func emitChunks(stdout string, executorName string, onChunk func(content string, chunkType string)) {
@@ -62,8 +70,8 @@ func emitCodexChunk(item map[string]any, onChunk func(content string, chunkType 
 }
 
 func newCodexChunkEmitter(onChunk func(content string, chunkType string)) func(string) {
-	seenByItemID := map[string]string{}
-	lastAnonymousText := ""
+	seenByItemID := map[string]codexProgressSnapshot{}
+	lastAnonymousText := codexProgressSnapshot{}
 	return func(line string) {
 		var event map[string]any
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
@@ -73,7 +81,7 @@ func newCodexChunkEmitter(onChunk func(content string, chunkType string)) func(s
 	}
 }
 
-func emitCodexAssistantChunk(event map[string]any, onChunk func(content string, chunkType string), seenByItemID map[string]string, lastAnonymousText *string) {
+func emitCodexAssistantChunk(event map[string]any, onChunk func(content string, chunkType string), seenByItemID map[string]codexProgressSnapshot, lastAnonymousText *codexProgressSnapshot) {
 	eventType := stringFromAny(event["type"])
 	if nested, ok := event["item"].(map[string]any); ok {
 		if eventType != "item.started" && eventType != "item.updated" && eventType != "item.completed" {
@@ -104,17 +112,32 @@ func emitCodexAssistantChunk(event map[string]any, onChunk func(content string, 
 	_ = emitCodexText(text, stringFromAny(event["id"]), onChunk, seenByItemID, lastAnonymousText)
 }
 
-func emitCodexText(text, itemID string, onChunk func(content string, chunkType string), seenByItemID map[string]string, lastAnonymousText *string) bool {
+type codexProgressSnapshot struct {
+	length int
+	digest [sha256.Size]byte
+}
+
+func emitCodexText(text, itemID string, onChunk func(content string, chunkType string), seenByItemID map[string]codexProgressSnapshot, lastAnonymousText *codexProgressSnapshot) bool {
+	if len(text) > maxCodexProgressTextBytes {
+		return false
+	}
+	snapshot := codexProgressSnapshot{length: len(text), digest: sha256.Sum256([]byte(text))}
 	if seenByItemID != nil && itemID != "" {
-		if seenByItemID[itemID] == text {
+		if len(itemID) > maxCodexProgressItemIDBytes {
 			return false
 		}
-		seenByItemID[itemID] = text
+		if seenByItemID[itemID] == snapshot {
+			return false
+		}
+		if _, exists := seenByItemID[itemID]; !exists && len(seenByItemID) >= maxCodexProgressSnapshots {
+			clear(seenByItemID)
+		}
+		seenByItemID[itemID] = snapshot
 	} else if lastAnonymousText != nil {
-		if *lastAnonymousText == text {
+		if *lastAnonymousText == snapshot {
 			return false
 		}
-		*lastAnonymousText = text
+		*lastAnonymousText = snapshot
 	}
 	safeChunk(onChunk, text, "assistant")
 	return true
@@ -195,7 +218,7 @@ func parseClaudeOutput(stdout string, stderr string, returnCode int, cmd []strin
 }
 
 func parseCodexOutput(stdout string, stderr string, returnCode int, cmd []string) Result {
-	stream := newCodexOutputState()
+	stream := newCodexOutputState(true)
 	for _, line := range strings.Split(stdout, "\n") {
 		stream.consume(line)
 	}
@@ -209,9 +232,11 @@ func parseCodexOutput(stdout string, stderr string, returnCode int, cmd []string
 type codexOutputState struct {
 	mu sync.Mutex
 
+	retainFallback   bool
 	sessionID        string
 	legacyText       strings.Builder
 	terminalFallback string
+	fallbackTooLarge bool
 	sawModernEvent   bool
 	turnCompleted    bool
 	parseError       string
@@ -219,8 +244,8 @@ type codexOutputState struct {
 	failureError     string
 }
 
-func newCodexOutputState() *codexOutputState {
-	return &codexOutputState{}
+func newCodexOutputState(retainFallback bool) *codexOutputState {
+	return &codexOutputState{retainFallback: retainFallback}
 }
 
 func (stream *codexOutputState) consume(line string) {
@@ -245,7 +270,13 @@ func (stream *codexOutputState) consumeLocked(line string) {
 	case "thread.started":
 		stream.sawModernEvent = true
 		if threadID := stringFromAny(event["thread_id"]); threadID != "" {
-			stream.sessionID = threadID
+			if len(threadID) > maxCodexSessionIDBytes {
+				if stream.parseError == "" {
+					stream.parseError = fmt.Sprintf("Codex thread ID exceeds %d bytes", maxCodexSessionIDBytes)
+				}
+			} else {
+				stream.sessionID = threadID
+			}
 		}
 	case "turn.started":
 		stream.sawModernEvent = true
@@ -261,12 +292,16 @@ func (stream *codexOutputState) consumeLocked(line string) {
 		if nestedItem {
 			stream.sawModernEvent = true
 		}
-		if nestedItem && stringFromAny(nested["type"]) == "agent_message" && isCodexTerminalPhase(event, nested) {
+		if stream.retainFallback && nestedItem && stringFromAny(nested["type"]) == "agent_message" && isCodexTerminalPhase(event, nested) {
 			if text := codexMessageText(nested); text != "" {
 				// The documented JSONL stream has no phase. Its completed agent
 				// message is a compatibility fallback only; Execute replaces it
 				// with --output-last-message for real subprocesses.
-				stream.terminalFallback = text
+				if len(text) > maxCodexFinalMessageBytes {
+					stream.fallbackTooLarge = true
+				} else {
+					stream.terminalFallback = text
+				}
 			}
 		}
 	case "turn.failed", "error":
@@ -276,8 +311,12 @@ func (stream *codexOutputState) consumeLocked(line string) {
 			stream.failureError = message
 		}
 	default:
-		if isLegacyCodexMessageEvent(eventType) && event["item"] == nil {
+		if stream.retainFallback && isLegacyCodexMessageEvent(eventType) && event["item"] == nil && !stream.fallbackTooLarge {
 			appendContent(&stream.legacyText, event["content"])
+			if stream.legacyText.Len() > maxCodexFinalMessageBytes {
+				stream.legacyText.Reset()
+				stream.fallbackTooLarge = true
+			}
 		}
 	}
 }
@@ -289,6 +328,12 @@ func (stream *codexOutputState) result(stderr string, returnCode int, cmd []stri
 	if stream.parseError != "" {
 		result.Success = false
 		result.Error = stream.parseError
+	}
+	if stream.fallbackTooLarge {
+		result.Success = false
+		if result.Error == "" {
+			result.Error = fmt.Sprintf("Codex JSONL fallback exceeds %d bytes", maxCodexFinalMessageBytes)
+		}
 	}
 	if stream.failed {
 		result.Success = false

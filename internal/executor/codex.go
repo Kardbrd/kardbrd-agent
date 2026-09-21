@@ -59,9 +59,11 @@ func (e Codex) Execute(ctx context.Context, req Request) (result Result) {
 
 	var onStdoutLine func(string)
 	if req.OnChunk != nil {
-		onStdoutLine = newCodexChunkEmitter(req.OnChunk)
+		onStdoutLine = newCodexChunkEmitter(func(content string, chunkType string) {
+			req.OnChunk(redactExecutorContent(content, e.cfg), chunkType)
+		})
 	}
-	stream := newCodexOutputState()
+	stream := newCodexOutputState(false)
 	stdout, stderr, code, runErr := runCommandWithStdoutObserver(ctx, e.cfg, e.cwd(req), cmd, req.Prompt, req.CardID, req.BoardID, "Codex execution timed out", true, stream.consume, onStdoutLine)
 	result = resultFromRun(func(_ string, stderr string, returnCode int, cmd []string) Result {
 		return stream.result(stderr, returnCode, cmd)
@@ -76,6 +78,6 @@ func (e Codex) Execute(ctx context.Context, req Request) (result Result) {
 		result.Error = err.Error()
 		return result
 	}
-	result.ResultText = finalMessage
+	result.ResultText = redactExecutorContent(finalMessage, e.cfg)
 	return result
 }

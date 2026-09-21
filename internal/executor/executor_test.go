@@ -381,6 +381,7 @@ func TestSupervisorBlockedCallbackHasBoundedDrain(t *testing.T) {
 func TestSupervisorInheritedStdinCannotHoldParentCompletion(t *testing.T) {
 	pidPath := filepath.Join(t.TempDir(), "stdin-child-pid")
 	promptPath := filepath.Join(t.TempDir(), "stdin-prompt")
+	t.Cleanup(func() { cleanupSupervisorChild(pidPath) })
 	t.Setenv("SUPERVISOR_CHILD_PID", pidPath)
 	t.Setenv("SUPERVISOR_PROMPT", promptPath)
 	dir := fakeBinary(t, "inherited-input", `#!/bin/sh
@@ -390,18 +391,43 @@ sleep 30 <&3 >/dev/null 2>&1 &
 printf '%s' "$!" > "$SUPERVISOR_CHILD_PID"
 exit 0
 `)
-	done := make(chan struct{})
+	type commandOutcome struct {
+		code *int
+		err  error
+	}
+	done := make(chan commandOutcome, 1)
 	go func() {
-		_, _, _, _ = runCommand(context.Background(), Config{Timeout: testCommandTimeout}, t.TempDir(), []string{filepath.Join(dir, "inherited-input")}, strings.Repeat("long prompt ", 32768), "card", "board", "timeout", nil)
-		close(done)
+		_, _, code, err := runCommand(context.Background(), Config{Timeout: testCommandTimeout}, t.TempDir(), []string{filepath.Join(dir, "inherited-input")}, strings.Repeat("long prompt ", 32768), "card", "board", "timeout", nil)
+		done <- commandOutcome{code: code, err: err}
 	}()
 	select {
-	case <-done:
+	case outcome := <-done:
+		if outcome.err != nil {
+			t.Fatalf("normal parent exit returned an error: %v", outcome.err)
+		}
+		if outcome.code == nil {
+			t.Fatal("normal parent exit returned no exit code")
+		}
+		assertEqual(t, 0, *outcome.code)
 	case <-time.After(2 * time.Second):
 		t.Error("direct child exited but inherited stdin held runner completion")
 	}
 	assertEqual(t, "long prompt ", readFile(t, promptPath))
 	assertSupervisorChildStopped(t, pidPath)
+}
+
+func cleanupSupervisorChild(pidPath string) {
+	rawPID, err := os.ReadFile(pidPath)
+	if err != nil {
+		return
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(rawPID)))
+	if err != nil {
+		return
+	}
+	if process, err := os.FindProcess(pid); err == nil {
+		_ = process.Kill()
+	}
 }
 
 func TestSupervisorManySlowCallbacksCannotExtendDrain(t *testing.T) {
@@ -419,6 +445,24 @@ while [ "$i" -lt 100 ]; do printf 'line\n'; i=$((i + 1)); done
 	case <-time.After(2 * time.Second):
 		t.Error("many individually responsive progress callbacks extended runner completion")
 	}
+}
+
+func TestStdoutLineDispatcherRejectsOversizedProgress(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	dispatcher := newStdoutLineDispatcher(func(string) {
+		close(started)
+		<-release
+	})
+
+	dispatcher.emit(strings.Repeat("x", maxPendingProgressBytes+1))
+	select {
+	case <-started:
+		t.Fatal("oversized progress record reached the callback")
+	case <-time.After(100 * time.Millisecond):
+	}
+	dispatcher.finish(true)
 }
 
 func TestRunCommandBoundsAndRedactsFailureDiagnostics(t *testing.T) {
@@ -460,6 +504,18 @@ done
 		t.Fatal("non-Codex runner accepted diagnostics beyond its configured limit")
 	}
 	assertContains(t, err.Error(), "subprocess output exceeds configured diagnostic limit")
+}
+
+func TestResultFromRunRetainsCaptureFailureAlongsideProtocolFailure(t *testing.T) {
+	exitCode := 0
+	captureErr := errors.New("synthetic stdout reader failure")
+	result := resultFromRun(func(string, string, int, []string) Result {
+		return Result{Success: false, Error: "synthetic failed turn"}
+	}, "", "", &exitCode, []string{"codex"}, captureErr, Config{})
+
+	assertEqual(t, false, result.Success)
+	assertContains(t, result.Error, "synthetic failed turn")
+	assertContains(t, result.Error, "synthetic stdout reader failure")
 }
 
 func TestCodexExecutorAcceptsVerboseSuccessfulOutput(t *testing.T) {
@@ -520,6 +576,42 @@ with open(output, 'w') as f:
 	})
 	assertEqual(t, false, result.Success)
 	assertContains(t, result.Error, "synthetic verbose failure")
+}
+
+func TestCodexExecutorRedactsSensitiveFinalAndProgress(t *testing.T) {
+	dir := fakeBinary(t, "codex", `#!/bin/sh
+output_path=""
+expect_output_path=0
+for arg in "$@"; do
+  if [ "$expect_output_path" = 1 ]; then
+    output_path="$arg"
+    expect_output_path=0
+  elif [ "$arg" = "--output-last-message" ]; then
+    expect_output_path=1
+  fi
+done
+cat >/dev/null
+printf '{"type":"item.updated","item":{"id":"progress","type":"agent_message","text":"working tok_sensitive"}}\n'
+printf '{"type":"turn.completed"}\n'
+printf 'final tok_sensitive response' > "$output_path"
+`)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var chunks []string
+
+	result := NewCodex(Config{Timeout: testCommandTimeout, APIURL: "https://api.test", Token: "tok_sensitive"}).Execute(context.Background(), Request{
+		CWD:     t.TempDir(),
+		Prompt:  "synthetic",
+		CardID:  "card",
+		BoardID: "board",
+		OnChunk: func(content string, _ string) { chunks = append(chunks, content) },
+	})
+
+	assertEqual(t, true, result.Success)
+	assertNotContains(t, result.ResultText, "tok_sensitive")
+	assertContains(t, result.ResultText, "[REDACTED]")
+	assertEqual(t, 1, len(chunks))
+	assertNotContains(t, chunks[0], "tok_sensitive")
+	assertContains(t, chunks[0], "[REDACTED]")
 }
 
 func TestRunCommandDoesNotStartWithCancelledContext(t *testing.T) {

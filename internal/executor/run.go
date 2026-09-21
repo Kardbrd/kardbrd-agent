@@ -19,6 +19,7 @@ const (
 	maxSubprocessStderrBytes = 64 << 10
 	stdoutDrainTimeout       = time.Second
 	maxPendingProgressLines  = 128
+	maxPendingProgressBytes  = 1 << 20
 )
 
 // runCommand owns the process group and both output pipes. Keeping the parent
@@ -42,8 +43,15 @@ func runCommandWithStdoutObserver(ctx context.Context, cfg Config, cwd string, a
 		return "", "", nil, err
 	}
 
-	cmd := exec.Command(args[0], args[1:]...)
+	cmd := exec.CommandContext(commandCtx, args[0], args[1:]...)
 	configureExecutorProcessGroup(cmd)
+	cmd.Cancel = func() error {
+		if cmd.Process == nil || (cmd.ProcessState != nil && cmd.ProcessState.Exited()) {
+			return os.ErrProcessDone
+		}
+		killExecutorProcessGroup(cmd)
+		return nil
+	}
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
@@ -190,11 +198,18 @@ func scanStdout(reader io.Reader, stdout io.Writer, onStdoutLine func(string)) e
 }
 
 type stdoutLineDispatcher struct {
-	lines     chan string
-	stop      chan struct{}
-	done      chan struct{}
-	closeLine sync.Once
-	closeStop sync.Once
+	lines        chan progressLine
+	stop         chan struct{}
+	done         chan struct{}
+	closeLine    sync.Once
+	closeStop    sync.Once
+	pendingMu    sync.Mutex
+	pendingBytes int
+}
+
+type progressLine struct {
+	content string
+	bytes   int
 }
 
 func newStdoutLineDispatcher(onStdoutLine func(string)) *stdoutLineDispatcher {
@@ -202,7 +217,7 @@ func newStdoutLineDispatcher(onStdoutLine func(string)) *stdoutLineDispatcher {
 		return nil
 	}
 	dispatcher := &stdoutLineDispatcher{
-		lines: make(chan string, maxPendingProgressLines),
+		lines: make(chan progressLine, maxPendingProgressLines),
 		stop:  make(chan struct{}),
 		done:  make(chan struct{}),
 	}
@@ -216,7 +231,8 @@ func newStdoutLineDispatcher(onStdoutLine func(string)) *stdoutLineDispatcher {
 				if !ok {
 					return
 				}
-				onStdoutLine(line)
+				onStdoutLine(line.content)
+				dispatcher.release(line.bytes)
 			}
 		}
 	}()
@@ -232,12 +248,39 @@ func (dispatcher *stdoutLineDispatcher) emit(line string) {
 		return
 	default:
 	}
+	lineBytes := len(line)
+	if !dispatcher.reserve(lineBytes) {
+		return
+	}
+	progress := progressLine{content: line, bytes: lineBytes}
 	select {
-	case dispatcher.lines <- line:
+	case <-dispatcher.stop:
+		dispatcher.release(lineBytes)
+	case dispatcher.lines <- progress:
 	default:
+		dispatcher.release(lineBytes)
 		// Progress is best-effort. Capturing terminal protocol data must never
 		// wait on a slow receiver or an unbounded progress backlog.
 	}
+}
+
+func (dispatcher *stdoutLineDispatcher) reserve(bytes int) bool {
+	if bytes > maxPendingProgressBytes {
+		return false
+	}
+	dispatcher.pendingMu.Lock()
+	defer dispatcher.pendingMu.Unlock()
+	if dispatcher.pendingBytes+bytes > maxPendingProgressBytes {
+		return false
+	}
+	dispatcher.pendingBytes += bytes
+	return true
+}
+
+func (dispatcher *stdoutLineDispatcher) release(bytes int) {
+	dispatcher.pendingMu.Lock()
+	dispatcher.pendingBytes -= bytes
+	dispatcher.pendingMu.Unlock()
 }
 
 func (dispatcher *stdoutLineDispatcher) finish(outputDrained bool) {
@@ -406,20 +449,30 @@ func resultFromRun(parse func(string, string, int, []string) Result, stdout stri
 		exitCode = *code
 	}
 	result := parse(stdout, stderr, exitCode, cmd)
-	if runErr != nil && result.Error == "" {
-		result.Error = runErr.Error()
+	if runErr != nil {
+		if result.Error == "" {
+			result.Error = runErr.Error()
+		} else {
+			result.Error = errors.Join(errors.New(result.Error), runErr).Error()
+		}
 		result.Success = false
 	}
 	return redactResultDiagnostics(result, cfg)
 }
 
 func redactResultDiagnostics(result Result, cfg Config) Result {
-	for _, secret := range executorSensitiveValues(cfg) {
-		result.Error = strings.ReplaceAll(result.Error, secret, "[REDACTED]")
-		result.Stderr = strings.ReplaceAll(result.Stderr, secret, "[REDACTED]")
-		result.Logs = strings.ReplaceAll(result.Logs, secret, "[REDACTED]")
-	}
+	result.Error = redactExecutorContent(result.Error, cfg)
+	result.Stderr = redactExecutorContent(result.Stderr, cfg)
+	result.Logs = redactExecutorContent(result.Logs, cfg)
+	result.ResultText = redactExecutorContent(result.ResultText, cfg)
 	return result
+}
+
+func redactExecutorContent(value string, cfg Config) string {
+	for _, secret := range executorSensitiveValues(cfg) {
+		value = strings.ReplaceAll(value, secret, "[REDACTED]")
+	}
+	return value
 }
 
 func executorSensitiveValues(cfg Config) []string {

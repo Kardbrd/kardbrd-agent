@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -99,6 +101,12 @@ func TestParseCodexOutputFailsForTurnAndJSONLErrors(t *testing.T) {
 	}
 }
 
+func TestParseCodexOutputBoundsLegacyFallback(t *testing.T) {
+	result := parseCodexOutput(`{"type":"item.message","content":"`+strings.Repeat("x", maxCodexFinalMessageBytes+1)+`"}`+"\n", "", 0, []string{"codex"})
+	assertEqual(t, false, result.Success)
+	assertContains(t, result.Error, "fallback exceeds")
+}
+
 func TestParseGooseOutputAggregatesChunks(t *testing.T) {
 	result := parseGooseOutput(`{"type":"AgentMessageChunk","content":"hello"}`+"\n", "", 0, []string{"goose"})
 	assertEqual(t, true, result.Success)
@@ -151,6 +159,51 @@ func TestEmitCodexChunksStreamsOnlyChangedAssistantMessages(t *testing.T) {
 	assertEqual(t, "assistant:final answer", chunks[3])
 	if strings.Contains(strings.Join(chunks, "\n"), "secret") || strings.Contains(strings.Join(chunks, "\n"), "private") {
 		t.Fatalf("Codex stream leaked non-assistant content: %v", chunks)
+	}
+}
+
+func TestCodexChunkEmitterBoundsProgressDedupState(t *testing.T) {
+	var chunks []string
+	emit := newCodexChunkEmitter(func(content string, _ string) { chunks = append(chunks, content) })
+	for index := 0; index < 257; index++ {
+		event, err := json.Marshal(map[string]any{
+			"type": "item.updated",
+			"item": map[string]any{"id": strconv.Itoa(index), "type": "agent_message", "text": "progress"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		emit(string(event))
+	}
+	if len(chunks) != 257 {
+		t.Fatalf("initial progress chunks = %d, want 257", len(chunks))
+	}
+	duplicate, err := json.Marshal(map[string]any{
+		"type": "item.updated",
+		"item": map[string]any{"id": "0", "type": "agent_message", "text": "progress"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emit(string(duplicate))
+	if len(chunks) != 258 {
+		t.Fatalf("bounded emitter did not evict old progress state: chunks = %d, want 258", len(chunks))
+	}
+}
+
+func TestCodexChunkEmitterDropsOversizedProgress(t *testing.T) {
+	var chunks []string
+	emit := newCodexChunkEmitter(func(content string, _ string) { chunks = append(chunks, content) })
+	event, err := json.Marshal(map[string]any{
+		"type": "item.updated",
+		"item": map[string]any{"id": "large", "type": "agent_message", "text": strings.Repeat("x", maxPendingProgressBytes+1)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emit(string(event))
+	if len(chunks) != 0 {
+		t.Fatalf("oversized progress was emitted: %d chunks", len(chunks))
 	}
 }
 
