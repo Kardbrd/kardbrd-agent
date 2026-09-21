@@ -5,11 +5,32 @@ import "strings"
 func (e Engine) Match(eventType string, message map[string]any) []Rule {
 	var matched []Rule
 	for _, rule := range e.Rules {
+		// Exact commands are claimed by the agent's dedicated command router.
+		// They must never become fuzzy generic rules for prose, other-agent
+		// mentions, or non-exact slash text.
+		if rule.CommentCommand != "" {
+			continue
+		}
 		if matches(rule, eventType, message) {
 			matched = append(matched, rule)
 		}
 	}
 	return matched
+}
+
+// Command returns the sole configured exact command rule. Loader validation
+// rejects duplicates, so this lookup never has fuzzy-rule ambiguity.
+func (e Engine) Command(command string) (Rule, bool) {
+	for _, rule := range e.Rules {
+		if rule.CommentCommand != "" && strings.EqualFold(rule.CommentCommand, command) {
+			return rule, true
+		}
+	}
+	return Rule{}, false
+}
+
+func RuleMatches(rule Rule, eventType string, message map[string]any) bool {
+	return matches(rule, eventType, message)
 }
 
 func matches(rule Rule, eventType string, message map[string]any) bool {

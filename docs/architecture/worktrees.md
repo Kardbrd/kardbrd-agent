@@ -1,5 +1,10 @@
 # Worktree Management
 
+This page describes the legacy manager used when no `worktree` block is present.
+The opt-in portable lifecycle uses full card IDs, immutable fetched remote
+objects, verified ownership records, and never mutates the base checkout; see
+[Portable worktree lifecycle](../configuration/worktree-lifecycle.md).
+
 Each card gets its own isolated git worktree, preventing conflicts between concurrent agent sessions. The `WorktreeManager` handles creation, configuration, and cleanup of worktrees.
 
 ## Directory layout

@@ -62,6 +62,7 @@ nav:
       - CLI Reference: configuration/cli.md
       - Environment Variables: configuration/env-vars.md
       - Rules (kardbrd.yml): configuration/rules.md
+      - Worktree Lifecycle: configuration/worktree-lifecycle.md
       - Schedules: configuration/schedules.md
       - Personal worker: configuration/personal-worker.md
       - Bot Commands: configuration/bot-commands.md

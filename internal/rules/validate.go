@@ -44,17 +44,25 @@ var knownEvents = set(
 	"list_created", "list_deleted",
 )
 
-var knownTopFields = set("board_id", "agent", "api_url", "executor", "rules", "schedules")
-var knownRuleFields = set("name", "event", "action", "model", "list", "title", "label", "content_contains", "exclude_label", "require_label", "emoji", "require_user", "assignee", "comment_author", "cleanup_command")
+var knownTopFields = set("board_id", "agent", "api_url", "executor", "worktree", "rules", "schedules")
+var knownRuleFields = set("name", "event", "action", "model", "list", "title", "label", "content_contains", "exclude_label", "require_label", "emoji", "require_user", "assignee", "comment_author", "cleanup_command", "comment_command", "execution")
 var knownScheduleFields = set("name", "card_id", "cron", "action", "model", "assignee", "list", "publish_result")
 
 func ValidateFile(path string) ValidationResult {
-	var result ValidationResult
 	data, err := os.ReadFile(path)
 	if err != nil {
+		var result ValidationResult
 		result.addError("File not found: " + path)
 		return result
 	}
+	return ValidateBytes(data)
+}
+
+// ValidateBytes performs the complete schema and semantic validation against
+// one immutable candidate. Reload uses this companion to LoadBytes so it can
+// never validate one file revision and install another.
+func ValidateBytes(data []byte) ValidationResult {
+	var result ValidationResult
 	if strings.TrimSpace(string(data)) == "" {
 		result.addError("File is empty")
 		return result
@@ -83,6 +91,11 @@ func ValidateFile(path string) ValidationResult {
 	if scalar(top["agent"]) == "" {
 		result.addError("Missing required field 'agent'")
 	}
+	if lifecycle, ok := top["worktree"]; ok {
+		if err := validateWorktreeNode(lifecycle); err != nil {
+			result.addError("worktree: " + err.Error())
+		}
+	}
 
 	if rulesNode, ok := top["rules"]; ok {
 		validateRulesNode(&result, rulesNode)
@@ -90,7 +103,40 @@ func ValidateFile(path string) ValidationResult {
 	if schedulesNode, ok := top["schedules"]; ok {
 		validateSchedulesNode(&result, schedulesNode)
 	}
+	// LoadBytes performs normalization-time relationship checks (for example the
+	// full/delegated pairing) using the same strict candidate bytes used at
+	// startup and reload. Keep legacy warnings intact while making opt-in
+	// lifecycle validation equally strict at `agent validate`.
+	if result.IsValid() {
+		if _, err := LoadBytes(data); err != nil {
+			result.addError(err.Error())
+		}
+	}
 	return result
+}
+
+// LoadValidatedFile reads a candidate once, validates every ordinary rule and
+// schedule semantically from those bytes, and only then normalizes it. It is
+// intentionally separate from LoadFile for legacy callers that historically
+// load partially specified ordinary rules.
+func LoadValidatedFile(path string) (Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Config{}, err
+	}
+	return LoadValidatedBytes(data)
+}
+
+func LoadValidatedBytes(data []byte) (Config, error) {
+	result := ValidateBytes(data)
+	if !result.IsValid() {
+		messages := make([]string, 0, len(result.Errors))
+		for _, issue := range result.Errors {
+			messages = append(messages, issue.Message)
+		}
+		return Config{}, fmt.Errorf("invalid rules candidate: %s", strings.Join(messages, "; "))
+	}
+	return LoadBytes(data)
 }
 
 func validateRulesNode(result *ValidationResult, node *yaml.Node) {
@@ -107,7 +153,11 @@ func validateRulesNode(result *ValidationResult, node *yaml.Node) {
 		name := scalar(fields["name"])
 		for key := range fields {
 			if !knownRuleFields[key] {
-				result.addRuleWarning(i, name, "unknown field '"+key+"'")
+				if fields["comment_command"] != nil || fields["execution"] != nil {
+					result.addRuleError(i, name, "unknown command-rule field '"+key+"'")
+				} else {
+					result.addRuleWarning(i, name, "unknown field '"+key+"'")
+				}
 			}
 		}
 		if name == "" {
@@ -131,6 +181,43 @@ func validateRulesNode(result *ValidationResult, node *yaml.Node) {
 		if assignee, ok := fields["assignee"]; ok && assignee.Kind != yaml.SequenceNode {
 			result.addRuleError(i, name, "assignee must be a YAML list")
 		}
+		if fields["comment_command"] != nil || fields["execution"] != nil {
+			if fields["comment_command"] == nil {
+				result.addRuleError(i, name, "execution requires comment_command")
+				continue
+			}
+			if err := exactString(fields["comment_command"], "comment_command"); err != nil {
+				result.addRuleError(i, name, err.Error())
+			} else {
+				command := scalar(fields["comment_command"])
+				if !strings.HasPrefix(command, "/") || strings.TrimSpace(command) != command || strings.ContainsAny(command, " \t\n") || len(command) == 1 {
+					result.addRuleError(i, name, "comment_command must be one exact slash command")
+				}
+			}
+			if execution := fields["execution"]; execution != nil {
+				if err := exactString(execution, "execution"); err != nil {
+					result.addRuleError(i, name, err.Error())
+				} else if value := scalar(execution); value != string(ExecutionPrepare) && value != string(ExecutionExistingOrBase) {
+					result.addRuleError(i, name, "execution must be prepare or existing_or_base")
+				}
+			}
+		}
+	}
+	seenCommands := map[string]bool{}
+	for i, entry := range node.Content {
+		if entry.Kind != yaml.MappingNode {
+			continue
+		}
+		fields := mapping(entry)
+		command := scalar(fields["comment_command"])
+		if command == "" {
+			continue
+		}
+		key := strings.ToLower(command)
+		if seenCommands[key] {
+			result.addRuleError(i, scalar(fields["name"]), "duplicate comment_command '"+command+"'")
+		}
+		seenCommands[key] = true
 	}
 }
 

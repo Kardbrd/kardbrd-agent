@@ -38,7 +38,7 @@ Reports current agent state including uptime, active card count, executor type, 
 
 ### `/pause`
 
-Pauses automation rule processing. While paused, the agent **skips all rule-triggered actions** (card moves, reactions, new cards, etc.) but still responds to direct **@mentions**.
+Pauses automation rule processing. While paused, the agent **skips all rule-triggered actions** (card moves, reactions, new cards, etc.) but still responds to direct **@mentions**. Authorized exact normal-card commands (for example configured `/up` and `/down`) also continue to work: they are explicit command routes rather than generic rule dispatch, and their own configured authorization still applies.
 
 **Response:** ⏸️ Paused — automation rules are now skipped. @mentions still work.
 
@@ -50,7 +50,11 @@ Re-enables automation rule processing after a pause.
 
 ### `/reload`
 
-Hot-reloads rules and schedules from `kardbrd.yml` without restarting the agent. Requires a `ReloadableRuleEngine` (the default when using a `kardbrd.yml` file). After reloading, the bot card description is updated to reflect the new configuration.
+Hot-reloads ordinary rules and schedules from `kardbrd.yml` without restarting
+the agent. Lifecycle configuration and exact command policy are restart-only;
+an incompatible candidate is rejected intact. Requires a `ReloadableRuleEngine`
+(the default when using a `kardbrd.yml` file). After reloading, the bot card
+description is updated to reflect the new configuration.
 
 **Response:** 🔄 Reloaded 5 rule(s) from kardbrd.yml
 

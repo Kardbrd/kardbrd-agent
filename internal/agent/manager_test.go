@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,6 +101,420 @@ func TestHandleBoardEventProcessesMention(t *testing.T) {
 	assertContains(t, client.comments[0].content, "Done")
 	assertContains(t, client.comments[0].content, "@Paul")
 	assertEqual(t, 0, len(manager.Active))
+}
+
+func TestExactCommandUsesExistingOrBaseBeforeMentionDispatch(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Client.(*fakeBoardClient).card = rawJSON(t, map[string]any{"list": map[string]any{"name": "In Progress"}})
+	manager.Rules = &rules.Engine{Rules: []rules.Rule{{
+		Name:           "Stop preview",
+		Events:         []string{"comment_created"},
+		CommentCommand: "/down",
+		Execution:      rules.ExecutionExistingOrBase,
+		Action:         "/down",
+	}}}
+	worktrees := manager.Worktree.(*fakeWorktree)
+	lifecycle := &fakeLifecycleWorktree{fakeWorktree: worktrees, existingPath: "/tmp/base"}
+	manager.Worktree = lifecycle
+
+	if err := manager.HandleBoardEvent(context.Background(), map[string]any{
+		"event_type":  "comment_created",
+		"card_id":     "card1",
+		"comment_id":  "comment1",
+		"content":     "@coder /down",
+		"author_name": "Paul",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	assertEqual(t, 1, lifecycle.existingCalls)
+	assertEqual(t, 0, worktrees.createCalls)
+	assertEqual(t, "/tmp/base", manager.Executor.(*fakeExecutor).lastExecuteRequest.CWD)
+	assertEqual(t, "/down", manager.Executor.(*fakeExecutor).lastPromptRequest.Command)
+}
+
+func TestNonExactCommandTextNeverFallsThroughToGenericRuleDispatch(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Client.(*fakeBoardClient).card = rawJSON(t, map[string]any{"list": map[string]any{"name": "In Progress"}})
+	legacy := manager.Worktree.(*fakeWorktree)
+	lifecycle := &fakeLifecycleWorktree{fakeWorktree: legacy, existingPath: "/tmp/base"}
+	manager.Worktree = lifecycle
+	manager.Rules = &rules.Engine{Rules: []rules.Rule{{
+		Name:           "Stop preview",
+		Events:         []string{"comment_created"},
+		CommentCommand: "/down",
+		Execution:      rules.ExecutionExistingOrBase,
+		Action:         "/down",
+	}}}
+	if err := manager.HandleBoardEvent(context.Background(), map[string]any{
+		"event_type": "comment_created", "card_id": "card1", "comment_id": "comment1", "content": "@OtherAgent /down",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, 0, manager.Executor.(*fakeExecutor).executionCount())
+	assertEqual(t, 0, lifecycle.prepareCalls)
+	assertEqual(t, 0, lifecycle.existingCalls)
+}
+
+func TestExactCommandQueuesBehindActiveCodingAndRunsInOrder(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Client.(*fakeBoardClient).card = rawJSON(t, map[string]any{"list": map[string]any{"name": "In Progress"}})
+	legacy := manager.Worktree.(*fakeWorktree)
+	manager.Worktree = &fakeLifecycleWorktree{fakeWorktree: legacy, existingPath: "/tmp/base"}
+	manager.Rules = &rules.Engine{Rules: []rules.Rule{{
+		Name:           "Stop preview",
+		Events:         []string{"comment_created"},
+		CommentCommand: "/down",
+		Execution:      rules.ExecutionExistingOrBase,
+		Action:         "/down",
+	}}}
+	exec := manager.Executor.(*fakeExecutor)
+	exec.started = make(chan struct{})
+	exec.blockUntilRelease = make(chan struct{})
+	exec.blockOnExecute = 1
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- manager.ProcessMention(context.Background(), "card1", "mention1", "@coder work", "Paul")
+	}()
+	select {
+	case <-exec.started:
+	case <-time.After(time.Second):
+		t.Fatal("coding execution did not start")
+	}
+	if err := manager.HandleBoardEvent(context.Background(), map[string]any{
+		"event_type": "comment_created", "card_id": "card1", "comment_id": "command1", "content": "/down",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	comments := manager.Client.(*fakeBoardClient).commentsSnapshot()
+	assertContains(t, comments[0].content, "Command queued")
+	close(exec.blockUntilRelease)
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("coding execution did not finish")
+	}
+	waitFor(t, time.Second, func() bool { return exec.executionCount() == 2 })
+	assertEqual(t, "/down", exec.lastPromptRequest.Command)
+}
+
+func TestDoneCleanupDrainsQueuedCommandBeforeItCanRun(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Client.(*fakeBoardClient).card = rawJSON(t, map[string]any{"list": map[string]any{"name": "In Progress"}})
+	legacy := manager.Worktree.(*fakeWorktree)
+	manager.Worktree = &fakeLifecycleWorktree{fakeWorktree: legacy, existingPath: "/tmp/base"}
+	manager.Rules = &rules.Engine{Rules: []rules.Rule{{Name: "Publish", Events: []string{"comment_created"}, CommentCommand: "/up", Action: "/up"}}}
+	exec := manager.Executor.(*fakeExecutor)
+	exec.started = make(chan struct{})
+	exec.blockUntilRelease = make(chan struct{})
+	exec.blockOnExecute = 1
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- manager.ProcessMention(context.Background(), "card1", "mention1", "@coder work", "Paul")
+	}()
+	select {
+	case <-exec.started:
+	case <-time.After(time.Second):
+		t.Fatal("coding execution did not start")
+	}
+	if err := manager.HandleBoardEvent(context.Background(), map[string]any{
+		"event_type": "comment_created", "card_id": "card1", "comment_id": "up1", "content": "/up",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cleanup, _ := manager.reserveCleanup(context.Background(), "card1")
+	if cleanup == nil {
+		t.Fatal("expected Done cleanup to claim the card")
+	}
+	close(exec.blockUntilRelease)
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("canceled coding execution did not finish")
+	}
+	time.Sleep(25 * time.Millisecond)
+	assertEqual(t, 1, exec.executionCount())
+	cleanup.Cancel()
+	manager.finishActiveSession(cleanup)
+	comments := manager.Client.(*fakeBoardClient).commentsSnapshot()
+	assertContains(t, comments[len(comments)-1].content, "Command canceled")
+}
+
+func TestQueuedCommandRechecksCurrentLabelAuthorization(t *testing.T) {
+	manager := newTestManager(t)
+	client := manager.Client.(*fakeBoardClient)
+	client.card = rawJSON(t, map[string]any{"title": "Publish preview", "list": map[string]any{"name": "In Progress"}, "labels": []any{map[string]any{"name": "Preview"}}})
+	legacy := manager.Worktree.(*fakeWorktree)
+	manager.Worktree = &fakeLifecycleWorktree{fakeWorktree: legacy, existingPath: "/tmp/base"}
+	manager.Rules = &rules.Engine{Rules: []rules.Rule{{Name: "Publish", Events: []string{"comment_created"}, CommentCommand: "/up", Title: "Publish preview", RequireLabel: "Preview", Action: "/up"}}}
+	exec := manager.Executor.(*fakeExecutor)
+	exec.started = make(chan struct{})
+	exec.blockUntilRelease = make(chan struct{})
+	exec.blockOnExecute = 1
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- manager.ProcessMention(context.Background(), "card1", "mention1", "@coder work", "Paul")
+	}()
+	select {
+	case <-exec.started:
+	case <-time.After(time.Second):
+		t.Fatal("coding execution did not start")
+	}
+	if err := manager.HandleBoardEvent(context.Background(), map[string]any{
+		"event_type": "comment_created", "card_id": "card1", "card_title": "Publish preview", "comment_id": "up1", "content": "/up",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client.mu.Lock()
+	client.card = rawJSON(t, map[string]any{"title": "Preview retired", "list": map[string]any{"name": "In Progress"}, "labels": []any{}})
+	client.mu.Unlock()
+	close(exec.blockUntilRelease)
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("coding execution did not finish")
+	}
+	time.Sleep(25 * time.Millisecond)
+	assertEqual(t, 1, exec.executionCount())
+	comments := client.commentsSnapshot()
+	assertContains(t, comments[len(comments)-1].content, "no longer authorized")
+}
+
+func TestQueuedCommandReportsLifecycleFailure(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Client.(*fakeBoardClient).card = rawJSON(t, map[string]any{"list": map[string]any{"name": "In Progress"}})
+	legacy := manager.Worktree.(*fakeWorktree)
+	lifecycle := &fakeLifecycleWorktree{fakeWorktree: legacy, existingPath: "/tmp/base"}
+	manager.Worktree = lifecycle
+	manager.Rules = &rules.Engine{Rules: []rules.Rule{{Name: "Stop", Events: []string{"comment_created"}, CommentCommand: "/down", Execution: rules.ExecutionExistingOrBase, Action: "/down"}}}
+	exec := manager.Executor.(*fakeExecutor)
+	exec.started = make(chan struct{})
+	exec.blockUntilRelease = make(chan struct{})
+	exec.blockOnExecute = 1
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- manager.ProcessMention(context.Background(), "card1", "mention1", "@coder work", "Paul")
+	}()
+	select {
+	case <-exec.started:
+	case <-time.After(time.Second):
+		t.Fatal("coding execution did not start")
+	}
+	if err := manager.HandleBoardEvent(context.Background(), map[string]any{
+		"event_type": "comment_created", "card_id": "card1", "comment_id": "down1", "content": "/down",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle.existingErr = errors.New("foreign ``` worktree")
+	close(exec.blockUntilRelease)
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("coding execution did not finish")
+	}
+	waitFor(t, time.Second, func() bool {
+		comments := manager.Client.(*fakeBoardClient).commentsSnapshot()
+		return len(comments) >= 2 && strings.Contains(comments[len(comments)-1].content, "Command Error")
+	})
+	comments := manager.Client.(*fakeBoardClient).commentsSnapshot()
+	assertContains(t, comments[len(comments)-1].content, "foreign ''' worktree")
+}
+
+func TestExactCommandDeduplicatesAndBoundsPerCardQueue(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Rules = &rules.Engine{Rules: []rules.Rule{{Name: "Publish", Events: []string{"comment_created"}, CommentCommand: "/up", Action: "/up"}}}
+	manager.Active["card1"] = &ActiveSession{CardID: "card1", Done: make(chan struct{})}
+	for index := 0; index < 8; index++ {
+		if err := manager.HandleBoardEvent(context.Background(), map[string]any{
+			"event_type": "comment_created", "card_id": "card1", "comment_id": fmt.Sprintf("up-%d", index), "content": "/up",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := manager.HandleBoardEvent(context.Background(), map[string]any{
+		"event_type": "comment_created", "card_id": "card1", "comment_id": "up-0", "content": "/up",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.HandleBoardEvent(context.Background(), map[string]any{
+		"event_type": "comment_created", "card_id": "card1", "comment_id": "up-overflow", "content": "/up",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	queued := append([]*commandClaim(nil), manager.commandQueues["card1"]...)
+	manager.mu.Unlock()
+	assertEqual(t, 8, len(queued))
+	for index, claim := range queued {
+		assertEqual(t, uint64(index+1), claim.sequence)
+	}
+	comments := manager.Client.(*fakeBoardClient).commentsSnapshot()
+	assertEqual(t, 9, len(comments))
+	assertContains(t, comments[len(comments)-1].content, "queue is full")
+}
+
+func TestConcurrentQueuedCommandsReportTheirReservedFIFOPosition(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Active["card1"] = &ActiveSession{CardID: "card1", Done: make(chan struct{})}
+	rule := rules.Rule{Name: "Publish", Events: []string{"comment_created"}, CommentCommand: "/up", Action: "/up"}
+	start := make(chan struct{})
+	var group sync.WaitGroup
+	for _, id := range []string{"up-1", "up-2"} {
+		id := id
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			<-start
+			if err := manager.ProcessCommentCommand(context.Background(), "card1", rule, map[string]any{"card_id": "card1", "comment_id": id, "content": "/up"}); err != nil {
+				t.Errorf("queue command: %v", err)
+			}
+		}()
+	}
+	close(start)
+	group.Wait()
+	comments := manager.Client.(*fakeBoardClient).commentsSnapshot()
+	if len(comments) != 2 {
+		t.Fatalf("expected two queued acknowledgements, got %d", len(comments))
+	}
+	positions := map[string]bool{}
+	for _, comment := range comments {
+		positions[comment.content] = true
+	}
+	if !positions["**Command queued** (position 1)"] || !positions["**Command queued** (position 2)"] {
+		t.Fatalf("expected distinct reserved queue positions, got %#v", comments)
+	}
+}
+
+func TestDeniedExactCommandIsDeduplicated(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Client.(*fakeBoardClient).card = rawJSON(t, map[string]any{"labels": []any{}})
+	manager.Rules = &rules.Engine{Rules: []rules.Rule{{Name: "Publish", Events: []string{"comment_created"}, CommentCommand: "/up", RequireLabel: "Preview", Action: "/up"}}}
+	event := map[string]any{"event_type": "comment_created", "card_id": "card1", "comment_id": "up1", "content": "/up"}
+	if err := manager.HandleBoardEvent(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.HandleBoardEvent(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, 1, manager.Client.(*fakeBoardClient).commentCount())
+}
+
+func TestExactCommandRejectsCurrentDoneStateBeforePreparation(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Client.(*fakeBoardClient).card = rawJSON(t, map[string]any{"list": map[string]any{"name": "Done"}})
+	manager.Rules = &rules.Engine{Rules: []rules.Rule{{Name: "Publish", Events: []string{"comment_created"}, CommentCommand: "/up", Action: "/up"}}}
+	if err := manager.HandleBoardEvent(context.Background(), map[string]any{
+		"event_type": "comment_created", "card_id": "card1", "comment_id": "up1", "content": "/up",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, 0, manager.Executor.(*fakeExecutor).executionCount())
+	assertEqual(t, 0, manager.Worktree.(*fakeWorktree).createCalls)
+	comments := manager.Client.(*fakeBoardClient).commentsSnapshot()
+	assertContains(t, comments[len(comments)-1].content, "in Done")
+}
+
+func TestExactCommandReportsPreparationFailure(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Client.(*fakeBoardClient).card = rawJSON(t, map[string]any{"list": map[string]any{"name": "In Progress"}})
+	legacy := manager.Worktree.(*fakeWorktree)
+	manager.Worktree = &fakeLifecycleWorktree{fakeWorktree: legacy, existingPath: "/tmp/base", existingErr: errors.New("foreign ``` worktree")}
+	manager.Rules = &rules.Engine{Rules: []rules.Rule{{Name: "Stop", Events: []string{"comment_created"}, CommentCommand: "/down", Execution: rules.ExecutionExistingOrBase, Action: "/down"}}}
+	if err := manager.HandleBoardEvent(context.Background(), map[string]any{
+		"event_type": "comment_created", "card_id": "card1", "comment_id": "down1", "content": "/down",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	comments := manager.Client.(*fakeBoardClient).commentsSnapshot()
+	assertContains(t, comments[len(comments)-1].content, "Command Error")
+	assertContains(t, comments[len(comments)-1].content, "foreign ''' worktree")
+}
+
+func TestReloadRejectsLifecycleCommandPolicyChangeWithoutMutation(t *testing.T) {
+	current := rules.Config{Rules: []rules.Rule{{Name: "Stop", Events: []string{"comment_created"}, CommentCommand: "/down", Action: "/down", Execution: rules.ExecutionExistingOrBase}}}
+	manager := NewManager(Config{Rules: &rules.Engine{Rules: current.Rules}})
+	changed := current
+	changed.Rules = append([]rules.Rule(nil), current.Rules...)
+	changed.Rules[0].Action = "/different"
+	if err := manager.ApplyRulesConfig(changed); err == nil {
+		t.Fatal("expected restart-only policy rejection")
+	}
+	assertEqual(t, "/down", manager.Rules.Rules[0].Action)
+}
+
+func TestReloadAndApplySerializesRuleAndScheduleCandidates(t *testing.T) {
+	initial := rules.Config{
+		Rules:     []rules.Rule{{Name: "Old", Events: []string{"comment_created"}, Action: "old"}},
+		Schedules: []rules.Schedule{{Name: "Old", Cron: "0 8 * * *", Action: "old"}},
+	}
+	manager := NewManager(Config{
+		Rules:                &rules.Engine{Rules: initial.Rules},
+		Schedules:            initial.Schedules,
+		LifecycleFingerprint: rules.LifecycleFingerprint(initial),
+	})
+	candidates := []rules.Config{
+		{Rules: []rules.Rule{{Name: "A", Events: []string{"comment_created"}, Action: "A"}}, Schedules: []rules.Schedule{{Name: "A", Cron: "0 9 * * *", Action: "A"}}},
+		{Rules: []rules.Rule{{Name: "B", Events: []string{"comment_created"}, Action: "B"}}, Schedules: []rules.Schedule{{Name: "B", Cron: "0 10 * * *", Action: "B"}}},
+	}
+	firstUpdated := make(chan struct{})
+	allowFirstReturn := make(chan struct{})
+	secondEntered := make(chan struct{})
+	var scheduleName string
+	var calls int
+	manager.Reload = func(context.Context) (rules.Config, error) {
+		candidate := candidates[calls]
+		calls++
+		// This is the scheduler update performed by the runtime loader. It
+		// must stay paired with the manager's rule swap below.
+		scheduleName = candidate.Schedules[0].Name
+		if candidate.Rules[0].Action == "A" {
+			close(firstUpdated)
+			<-allowFirstReturn
+		} else {
+			close(secondEntered)
+		}
+		return candidate, nil
+	}
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := manager.ReloadAndApply(context.Background())
+		firstDone <- err
+	}()
+	select {
+	case <-firstUpdated:
+	case <-time.After(time.Second):
+		t.Fatal("first reload did not update its candidate schedules")
+	}
+	secondStarted := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		close(secondStarted)
+		_, err := manager.ReloadAndApply(context.Background())
+		secondDone <- err
+	}()
+	<-secondStarted
+	select {
+	case <-secondEntered:
+		t.Fatal("second reload entered before first candidate rules were applied")
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(allowFirstReturn)
+	for _, done := range []<-chan error{firstDone, secondDone} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("serialized reload did not complete")
+		}
+	}
+	assertEqual(t, "B", manager.Rules.Rules[0].Action)
+	assertEqual(t, "B", manager.Schedules[0].Name)
+	assertEqual(t, "B", scheduleName)
 }
 
 func TestProcessSchedulePassesSelectedCardIdentity(t *testing.T) {
@@ -1139,6 +1554,27 @@ func (w *fakeWorktree) Remove(cardID string, force bool) error {
 	w.removedCard = cardID
 	w.forced = force
 	return nil
+}
+
+type fakeLifecycleWorktree struct {
+	*fakeWorktree
+	existingPath  string
+	existingCalls int
+	prepareCalls  int
+	prepareErr    error
+	existingErr   error
+}
+
+func (w *fakeLifecycleWorktree) Prepare(_ context.Context, cardID, _ string) (string, error) {
+	w.prepareCalls++
+	w.createdCard = cardID
+	return w.path, w.prepareErr
+}
+
+func (w *fakeLifecycleWorktree) ExistingOrBase(_ context.Context, cardID, _ string) (string, error) {
+	w.existingCalls++
+	w.createdCard = cardID
+	return w.existingPath, w.existingErr
 }
 
 type fakeStream struct {

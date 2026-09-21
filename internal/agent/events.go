@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/Kardbrd/kardbrd-agent/internal/api"
 	"github.com/Kardbrd/kardbrd-agent/internal/executor"
@@ -33,6 +34,12 @@ func (m *Manager) HandleBoardEvent(ctx context.Context, message map[string]any) 
 		content := stringField(message, "content")
 		if m.isBotCard(message) && strings.HasPrefix(strings.TrimSpace(content), "/") {
 			return m.HandleBotCardCommand(ctx, cardID, content, stringField(message, "author_name"))
+		}
+		if rule, claimed := m.exactCommentCommand(content); claimed {
+			if cardID == "" {
+				return nil
+			}
+			return m.ProcessCommentCommand(ctx, cardID, rule, message)
 		}
 		if !strings.Contains(strings.ToLower(content), strings.ToLower(m.Mention)) {
 			break
@@ -103,9 +110,13 @@ func (m *Manager) HandleCardMoved(ctx context.Context, message map[string]any) e
 	}
 	delete(m.Active, cardID)
 	delete(m.pending, cardID)
+	canceledCommands := m.drainCommandsLocked(cardID)
 	m.mu.Unlock()
 	if stream != nil {
 		_ = stream.Close()
+	}
+	for range canceledCommands {
+		_, _ = m.Client.AddComment(ctx, cardID, "**Command canceled**\n\nThe card entered Done before this queued command could run.")
 	}
 	if m.Worktree != nil {
 		return m.Worktree.Remove(cardID, false)
@@ -178,6 +189,27 @@ func (m *Manager) CheckRules(ctx context.Context, eventType string, message map[
 
 func (m *Manager) ProcessRule(ctx context.Context, cardID string, rule rules.Rule, message map[string]any) error {
 	return m.processRule(ctx, cardID, rule, message, true)
+}
+
+func (m *Manager) exactCommentCommand(content string) (rules.Rule, bool) {
+	if m.Rules == nil {
+		return rules.Rule{}, false
+	}
+	trimmed := strings.TrimSpace(content)
+	command := ""
+	if strings.HasPrefix(trimmed, "/") {
+		command = trimmed
+	} else if strings.HasPrefix(trimmed, "@") {
+		index := strings.IndexFunc(trimmed, unicode.IsSpace)
+		if index <= 0 || !strings.EqualFold(trimmed[:index], m.Mention) || strings.TrimSpace(trimmed[index:]) == "" {
+			return rules.Rule{}, false
+		}
+		command = strings.TrimSpace(trimmed[index:])
+	}
+	if command == "" {
+		return rules.Rule{}, false
+	}
+	return m.Rules.Command(command)
 }
 
 // runCleanup executes a validated Done cleanup command without involving the
@@ -393,12 +425,16 @@ func (o *limitedCleanupOutput) String() string {
 }
 
 func (m *Manager) processRule(ctx context.Context, cardID string, rule rules.Rule, message map[string]any, publishResult bool) error {
+	return m.processRuleWithExecution(ctx, cardID, rule, message, publishResult, rules.ExecutionPrepare)
+}
+
+func (m *Manager) processRuleWithExecution(ctx context.Context, cardID string, rule rules.Rule, message map[string]any, publishResult bool, policy rules.ExecutionPolicy) error {
 	if err := m.acquire(ctx); err != nil {
 		return err
 	}
 	defer m.release()
 
-	execCtx, cancel := context.WithCancel(ctx)
+	execCtx, cancel := context.WithTimeout(ctx, m.Timeout)
 	session := &ActiveSession{CardID: cardID, Cancel: cancel, Done: make(chan struct{})}
 	m.mu.Lock()
 	if _, exists := m.Active[cardID]; exists {
@@ -423,16 +459,16 @@ func (m *Manager) processRule(ctx context.Context, cardID string, rule rules.Rul
 	}
 
 	worktreePath := m.CWD
-	if m.Worktree != nil {
-		path, err := m.Worktree.Create(cardID)
-		if err != nil {
-			return err
-		}
+	path, err := m.selectWorktree(execCtx, cardID, policy)
+	if err != nil {
+		return err
+	}
+	if path != "" {
 		worktreePath = path
 	}
 	session.WorktreePath = worktreePath
 
-	cardMarkdown, err := m.Client.GetCardMarkdown(ctx, cardID)
+	cardMarkdown, err := m.Client.GetCardMarkdown(execCtx, cardID)
 	if err != nil {
 		return err
 	}
@@ -619,12 +655,11 @@ func (m *Manager) HandleBotCardCommand(ctx context.Context, cardID string, conte
 			_, _ = m.Client.AddComment(ctx, cardID, "⚠️ Rule engine is not reloadable (static rules)\n\n@"+authorName)
 			return nil
 		}
-		loaded, err := m.Reload(ctx)
+		loaded, err := m.ReloadAndApply(ctx)
 		if err != nil {
 			_, _ = m.Client.AddComment(ctx, cardID, "**Reload failed**\n\n```\n"+err.Error()+"\n```\n\n@"+authorName)
 			return nil
 		}
-		m.ApplyRulesConfig(loaded)
 		_ = m.EnsureBotCard(ctx)
 		_, _ = m.Client.AddComment(ctx, cardID, reloadMessage(loaded, authorName))
 	}

@@ -28,6 +28,7 @@ type agentRuntime struct {
 	NoRetry          bool
 	WorktreesEnabled bool
 	GitRoot          string
+	WorktreeConfig   *rules.WorktreeConfig
 }
 
 var runAgentRuntime = realRunAgentRuntime
@@ -47,6 +48,7 @@ func NewAgentCommand(root *rootOptions) *cobra.Command {
 		},
 	}
 	cmd.AddCommand(newAgentStartCommand(root))
+	cmd.AddCommand(newAgentAdoptWorktreeCommand(root))
 	cmd.AddCommand(&cobra.Command{
 		Use:   "validate [kardbrd.yml]",
 		Short: "Validate a kardbrd.yml rules file",
@@ -70,6 +72,74 @@ func NewAgentCommand(root *rootOptions) *cobra.Command {
 		},
 	})
 	return cmd
+}
+
+func newAgentAdoptWorktreeCommand(root *rootOptions) *cobra.Command {
+	flags := config.AgentFlagValues{}
+	cmd := &cobra.Command{
+		Use:   "adopt-worktree CARD_ID",
+		Short: "Verify and record one configured existing worktree without changing source",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, _, err := config.LoadAgentConfig(environMap(), flags)
+			if err != nil {
+				return err
+			}
+			rulesCfg, loaded, err := loadAgentRules(cmd, cfg)
+			if err != nil {
+				return err
+			}
+			if !loaded || rulesCfg.Worktree == nil {
+				return fmt.Errorf("adopt-worktree requires an opt-in worktree block in kardbrd.yml")
+			}
+			applyRulesConfig(&cfg, rulesCfg)
+			if strings.TrimSpace(cfg.SetupCommand) != "" {
+				return fmt.Errorf("worktree lifecycle conflicts with legacy setup command")
+			}
+			gitRoot, gitEnabled := findGitRoot(cfg.CWD)
+			if !gitEnabled {
+				return fmt.Errorf("adopt-worktree requires a Git working directory")
+			}
+			manager, err := worktree.NewLifecycleManager(gitRoot, cfg.WorktreesDir, cfg.Executor, *rulesCfg.Worktree)
+			if err != nil {
+				return err
+			}
+			if err := verifyAdoptionCardID(cmd.Context(), api.NewClient(cfg.APIURL, cfg.Token), args[0]); err != nil {
+				return err
+			}
+			if err := manager.Adopt(cmd.Context(), args[0]); err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Adopted verified worktree for card %s\n", args[0])
+			return err
+		},
+	}
+	cmd.Flags().StringVarP(&flags.CWD, "cwd", "C", "", "Base Git working directory")
+	cmd.Flags().StringVarP(&flags.WorktreesDir, "worktrees-dir", "w", "", "Directory for worktrees")
+	cmd.Flags().StringVarP(&flags.RulesFile, "rules", "r", "", "Path to kardbrd.yml rules file")
+	cmd.Flags().StringVarP(&flags.Executor, "executor", "e", "", "Executor type used for lifecycle sharing")
+	return cmd
+}
+
+// verifyAdoptionCardID makes administrative adoption fail closed when the API
+// does not confirm the exact, case-preserving card ID named in the manifest.
+// It deliberately runs before LifecycleManager.Adopt, whose successful path
+// writes the origin: adopted ownership record.
+func verifyAdoptionCardID(ctx context.Context, client *api.Client, expected string) error {
+	raw, err := client.GetCard(ctx, expected)
+	if err != nil {
+		return fmt.Errorf("fetch adoption card %q: %w", expected, err)
+	}
+	var card struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &card); err != nil {
+		return fmt.Errorf("decode adoption card %q: %w", expected, err)
+	}
+	if card.ID != expected {
+		return fmt.Errorf("canonical API card ID %q does not exactly match configured adoption card_id %q", card.ID, expected)
+	}
+	return nil
 }
 
 func newAgentStartCommand(root *rootOptions) *cobra.Command {
@@ -101,6 +171,12 @@ func newAgentStartCommand(root *rootOptions) *cobra.Command {
 				if cfg.RulesFile == "" {
 					cfg.RulesFile = filepath.Join(cfg.CWD, "kardbrd.yml")
 				}
+				if rulesCfg.Worktree != nil && strings.TrimSpace(cfg.SetupCommand) != "" {
+					return fmt.Errorf("worktree lifecycle conflicts with legacy setup command")
+				}
+				if err := validateLifecycleDeadline(cfg, rulesCfg); err != nil {
+					return err
+				}
 			}
 
 			missing := missingAgentConfig(cfg)
@@ -125,6 +201,7 @@ func newAgentStartCommand(root *rootOptions) *cobra.Command {
 				NoRetry:          root.noRetry,
 				WorktreesEnabled: worktreesEnabled,
 				GitRoot:          gitRoot,
+				WorktreeConfig:   rulesCfg.Worktree,
 			})
 		},
 	}
@@ -228,44 +305,42 @@ func realRunAgentRuntime(ctx context.Context, runtime agentRuntime) error {
 	}
 
 	var wt agent.Worktree
-	if runtime.WorktreesEnabled {
+	if runtime.WorktreeConfig != nil {
+		if !runtime.WorktreesEnabled {
+			wt = baseOnlyWorktreeAdapter{base: cfg.CWD}
+		} else {
+			lifecycle, err := worktree.NewLifecycleManager(runtime.GitRoot, cfg.WorktreesDir, cfg.Executor, *runtime.WorktreeConfig)
+			if err != nil {
+				return err
+			}
+			wt = lifecycleWorktreeAdapter{manager: lifecycle}
+		}
+	} else if runtime.WorktreesEnabled {
 		wt = worktreeAdapter{worktree.NewManager(runtime.GitRoot, cfg.WorktreesDir, cfg.SetupCommand, cfg.Executor)}
 	}
 	ws := api.NewWebSocketClient(cfg.APIURL, cfg.Token)
 	var scheduleManager *scheduler.Manager
-	var reload func(context.Context) (rules.Config, error)
-	if cfg.RulesFile != "" {
-		reload = func(ctx context.Context) (rules.Config, error) {
-			loaded, err := rules.LoadFile(cfg.RulesFile)
-			if err != nil {
-				return rules.Config{}, err
-			}
-			if scheduleManager != nil {
-				if err := scheduleManager.UpdateSchedules(loaded.Schedules); err != nil {
-					return rules.Config{}, err
-				}
-			}
-			return loaded, nil
-		}
-	}
 	manager := agent.NewManager(agent.Config{
-		BoardID:       cfg.BoardID,
-		APIURL:        cfg.APIURL,
-		Token:         cfg.Token,
-		AgentName:     cfg.AgentName,
-		CWD:           cfg.CWD,
-		Timeout:       time.Duration(cfg.TimeoutSeconds) * time.Second,
-		MaxConcurrent: cfg.MaxConcurrent,
-		ExecutorType:  cfg.Executor,
-		Rules:         &runtime.Rules,
-		Schedules:     runtime.Schedules,
-		Client:        client,
-		Executor:      exec,
-		Worktree:      wt,
-		WebSocket:     ws,
-		Reload:        reload,
+		BoardID:              cfg.BoardID,
+		APIURL:               cfg.APIURL,
+		Token:                cfg.Token,
+		AgentName:            cfg.AgentName,
+		CWD:                  cfg.CWD,
+		Timeout:              time.Duration(cfg.TimeoutSeconds) * time.Second,
+		MaxConcurrent:        cfg.MaxConcurrent,
+		ExecutorType:         cfg.Executor,
+		Rules:                &runtime.Rules,
+		Schedules:            runtime.Schedules,
+		LifecycleFingerprint: rules.LifecycleFingerprint(rules.Config{Worktree: runtime.WorktreeConfig, Rules: runtime.Rules.Rules}),
+		Client:               client,
+		Executor:             exec,
+		Worktree:             wt,
+		WebSocket:            ws,
 	})
 	scheduleManager = scheduler.NewManager(runtime.Schedules, cfg.BoardID, client, manager.ProcessSchedule)
+	if cfg.RulesFile != "" {
+		manager.Reload = newRuntimeRulesReload(cfg.RulesFile, cfg, manager, scheduleManager)
+	}
 
 	ws.OnBoardEvent = func(raw json.RawMessage) {
 		var message map[string]any
@@ -299,6 +374,45 @@ func realRunAgentRuntime(ctx context.Context, runtime agentRuntime) error {
 	}
 }
 
+// newRuntimeRulesReload validates a complete candidate before it can change
+// either running schedule entries or the ordinary rule engine. The candidate
+// loader reads the rules file once; policy validation and scheduler staging
+// therefore operate on exactly the bytes that passed semantic validation.
+func newRuntimeRulesReload(path string, cfg config.AgentConfig, manager *agent.Manager, scheduleManager *scheduler.Manager) func(context.Context) (rules.Config, error) {
+	return func(_ context.Context) (rules.Config, error) {
+		loaded, err := rules.LoadValidatedFile(path)
+		if err != nil {
+			return rules.Config{}, err
+		}
+		if err := manager.ValidateRulesConfig(loaded); err != nil {
+			return rules.Config{}, err
+		}
+		if err := validateLifecycleDeadline(cfg, loaded); err != nil {
+			return rules.Config{}, err
+		}
+		if err := scheduleManager.UpdateSchedules(loaded.Schedules); err != nil {
+			return rules.Config{}, err
+		}
+		return loaded, nil
+	}
+}
+
+func validateLifecycleDeadline(cfg config.AgentConfig, rulesCfg rules.Config) error {
+	if rulesCfg.Worktree == nil {
+		return nil
+	}
+	limit := cfg.TimeoutSeconds
+	for _, hook := range []*rules.Hook{rulesCfg.Worktree.Checkout.Bootstrap} {
+		if hook != nil && hook.TimeoutSeconds > limit {
+			return fmt.Errorf("worktree hook timeout_seconds must not exceed agent timeout")
+		}
+	}
+	if rulesCfg.Worktree.Prepare != nil && rulesCfg.Worktree.Prepare.TimeoutSeconds > limit {
+		return fmt.Errorf("worktree hook timeout_seconds must not exceed agent timeout")
+	}
+	return nil
+}
+
 func rulesReloadLoop(ctx context.Context, path string, manager *agent.Manager) {
 	lastMod, _ := fileModTime(path)
 	ticker := time.NewTicker(60 * time.Second)
@@ -312,11 +426,9 @@ func rulesReloadLoop(ctx context.Context, path string, manager *agent.Manager) {
 			if !ok || !modTime.After(lastMod) || manager.Reload == nil {
 				continue
 			}
-			loaded, err := manager.Reload(ctx)
-			if err != nil {
+			if _, err := manager.ReloadAndApply(ctx); err != nil {
 				continue
 			}
-			manager.ApplyRulesConfig(loaded)
 			_ = manager.EnsureBotCard(ctx)
 			lastMod = modTime
 		}
@@ -354,6 +466,39 @@ func newExecutor(cfg config.AgentConfig) (executor.Interface, error) {
 
 type worktreeAdapter struct {
 	manager *worktree.Manager
+}
+
+type lifecycleWorktreeAdapter struct {
+	manager *worktree.LifecycleManager
+}
+
+// baseOnlyWorktreeAdapter is the explicit non-Git portion of the contract:
+// existing_or_base may select the trusted CWD, while ordinary preparation
+// cannot accidentally create or set up source outside Git lifecycle support.
+type baseOnlyWorktreeAdapter struct {
+	base string
+}
+
+func (a baseOnlyWorktreeAdapter) Prepare(context.Context, string, string) (string, error) {
+	return "", fmt.Errorf("prepare requires a Git worktree lifecycle")
+}
+
+func (a baseOnlyWorktreeAdapter) ExistingOrBase(context.Context, string, string) (string, error) {
+	return a.base, nil
+}
+
+func (baseOnlyWorktreeAdapter) Remove(string, bool) error { return nil }
+
+func (a lifecycleWorktreeAdapter) Prepare(ctx context.Context, cardID, boardID string) (string, error) {
+	return a.manager.Prepare(ctx, worktree.LifecycleRequest{CardID: cardID, BoardID: boardID})
+}
+
+func (a lifecycleWorktreeAdapter) ExistingOrBase(ctx context.Context, cardID, boardID string) (string, error) {
+	return a.manager.ExistingOrBase(ctx, worktree.LifecycleRequest{CardID: cardID, BoardID: boardID})
+}
+
+func (a lifecycleWorktreeAdapter) Remove(cardID string, force bool) error {
+	return a.manager.Remove(cardID, force)
 }
 
 func (a worktreeAdapter) Create(cardID string) (string, error) {

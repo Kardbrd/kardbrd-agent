@@ -7,6 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Kardbrd/kardbrd-agent/internal/agent"
+	"github.com/Kardbrd/kardbrd-agent/internal/config"
+	"github.com/Kardbrd/kardbrd-agent/internal/rules"
+	"github.com/Kardbrd/kardbrd-agent/internal/scheduler"
 )
 
 func TestAgentStartReportsMissingNewEnvNames(t *testing.T) {
@@ -77,6 +82,16 @@ func TestAgentValidateReportsValidRulesFile(t *testing.T) {
 	stdout, stderr, err := executeRoot("agent", "validate", path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v\nstderr: %s", err, stderr)
+	}
+	assertCLIContains(t, stdout, "Valid")
+}
+
+func TestAgentValidateAcceptsLifecycleFixture(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "rules", "worktree-lifecycle.yml")
+
+	stdout, stderr, err := executeRoot("agent", "validate", path)
+	if err != nil {
+		t.Fatalf("unexpected lifecycle fixture validation error: %v\nstderr: %s", err, stderr)
 	}
 	assertCLIContains(t, stdout, "Valid")
 }
@@ -230,6 +245,80 @@ func TestAgentStartRulesFileOverridesExecutor(t *testing.T) {
 
 	assertEqual(t, "board-from-rules", captured.Config.BoardID)
 	assertEqual(t, "codex", captured.Config.Executor)
+}
+
+func TestAgentStartRejectsLifecycleAndLegacySetupConflict(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kardbrd.yml")
+	if err := os.WriteFile(path, []byte("board_id: board1\nagent: coder\nworktree: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, err := executeRoot(
+		"--token", "tok",
+		"agent", "start",
+		"--board-id", "board1",
+		"--name", "coder",
+		"--cwd", dir,
+		"--rules", path,
+		"--setup-cmd", "npm install",
+	)
+	if err == nil {
+		t.Fatal("expected lifecycle/legacy setup conflict")
+	}
+	assertCLIContains(t, stderr, "worktree lifecycle conflicts with legacy setup command")
+}
+
+func TestBaseOnlyLifecycleAdapterPermitsExistingOrBaseWithoutGit(t *testing.T) {
+	adapter := baseOnlyWorktreeAdapter{base: "/non-git/base"}
+	path, err := adapter.ExistingOrBase(context.Background(), "card1", "board1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, "/non-git/base", path)
+	if _, err := adapter.Prepare(context.Background(), "card1", "board1"); err == nil {
+		t.Fatal("expected non-Git prepare to be rejected")
+	}
+}
+
+func TestLifecycleHookTimeoutCannotExceedAgentDeadline(t *testing.T) {
+	cfg := config.AgentConfig{TimeoutSeconds: 60}
+	rulesCfg := rules.Config{Worktree: &rules.WorktreeConfig{
+		Checkout: rules.WorktreeCheckout{Mode: rules.CheckoutFull},
+		Prepare:  &rules.PrepareHook{Hook: rules.Hook{TimeoutSeconds: 61}},
+	}}
+	if err := validateLifecycleDeadline(cfg, rulesCfg); err == nil {
+		t.Fatal("expected lifecycle timeout validation error")
+	}
+}
+
+func TestRuntimeReloadRejectsSemanticCandidateWithoutMutatingRulesOrSchedules(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kardbrd.yml")
+	if err := os.WriteFile(path, []byte("board_id: board1\nagent: Bot\nrules:\n  - name: Broken rule\n    event: card_created\nschedules:\n  - name: Broken schedule\n    cron: '* * * * *'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldRules := []rules.Rule{{Name: "Old rule", Events: []string{"card_created"}, Action: "/old"}}
+	oldSchedules := []rules.Schedule{{Name: "Old schedule", Cron: "0 * * * *", Action: "/old"}}
+	manager := agent.NewManager(agent.Config{
+		Rules:                &rules.Engine{Rules: oldRules},
+		Schedules:            oldSchedules,
+		LifecycleFingerprint: rules.LifecycleFingerprint(rules.Config{Rules: oldRules}),
+	})
+	scheduleManager := scheduler.NewManager(oldSchedules, "board1", nil, nil)
+	cfg := config.AgentConfig{TimeoutSeconds: 60}
+	manager.Reload = newRuntimeRulesReload(path, cfg, manager, scheduleManager)
+
+	if _, err := manager.ReloadAndApply(context.Background()); err == nil {
+		t.Fatal("parseable candidate missing required actions was accepted")
+	}
+	if got := manager.Rules.Rules[0].Name; got != "Old rule" {
+		t.Fatalf("failed reload replaced ordinary rules with %q", got)
+	}
+	if got := manager.Schedules[0].Name; got != "Old schedule" {
+		t.Fatalf("failed reload replaced manager schedules with %q", got)
+	}
+	if got := scheduleManager.Schedules[0].Name; got != "Old schedule" {
+		t.Fatalf("failed reload replaced active scheduler schedules with %q", got)
+	}
 }
 
 func stubAgentRuntime(t *testing.T, fn func(context.Context, agentRuntime) error) func() {

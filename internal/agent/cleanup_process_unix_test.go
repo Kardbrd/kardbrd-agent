@@ -25,12 +25,8 @@ func TestStoppedDoneCleanupKillsForkedDescendants(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- manager.HandleBoardEvent(context.Background(), doneCardMovedEvent("card1")) }()
 	childOutput := outputFile + ".child"
-	waitForFileWithin(t, childOutput, 5*time.Second)
-	pid, err := strconv.Atoi(strings.TrimSpace(readFile(t, childOutput)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = syscall.Kill(pid, syscall.SIGKILL) }()
+	registerCleanupChildKill(t, childOutput)
+	pid := waitForCleanupChildPID(t, childOutput, 5*time.Second)
 	if err := manager.HandleStopReaction(context.Background(), "card1", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -81,12 +77,8 @@ func TestDoneCleanupOwnershipLossKillsForkedDescendants(t *testing.T) {
 		t.Fatal("cleanup command did not start")
 	}
 	childOutput := outputFile + ".child"
-	waitForFileWithin(t, childOutput, 5*time.Second)
-	pid, err := strconv.Atoi(strings.TrimSpace(readFile(t, childOutput)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = syscall.Kill(pid, syscall.SIGKILL) }()
+	registerCleanupChildKill(t, childOutput)
+	pid := waitForCleanupChildPID(t, childOutput, 5*time.Second)
 
 	manager.mu.Lock()
 	manager.Active["card1"] = &ActiveSession{CardID: "card1"}
@@ -101,6 +93,40 @@ func TestDoneCleanupOwnershipLossKillsForkedDescendants(t *testing.T) {
 		t.Fatal("cleanup did not finish after losing ownership")
 	}
 	assertCleanupProcessGone(t, pid)
+}
+
+func registerCleanupChildKill(t *testing.T, path string) {
+	t.Helper()
+	t.Cleanup(func() {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err == nil && pid > 0 {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+}
+
+func waitForCleanupChildPID(t *testing.T, path string, timeout time.Duration) int {
+	t.Helper()
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			if pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data))); parseErr == nil && pid > 0 {
+				return pid
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("cleanup child PID file %q was not populated", path)
+		case <-ticker.C:
+		}
+	}
 }
 
 func assertCleanupProcessGone(t *testing.T, pid int) {

@@ -1,0 +1,20 @@
+board_id: board1
+agent: LifecycleBot
+worktree:
+  base:
+    remote: origin
+    ref: refs/heads/main
+  helpers:
+    stable_root: /usr/local/libexec/project-agent
+  checkout:
+    mode: full
+  prepare:
+    argv: [/usr/local/libexec/project-agent/prepare]
+    on_create: true
+    on_reuse: false
+    timeout_seconds: 900
+  sharing:
+    env: disabled
+    skills: fallback
+  environment:
+    passthrough: []

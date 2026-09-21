@@ -173,6 +173,15 @@ func TestUpdateSchedulesReplacesConfiguredSchedules(t *testing.T) {
 	assertEqual(t, "New", manager.Schedules[0].Name)
 }
 
+func TestUpdateSchedulesRejectsInvalidCandidateWithoutReplacingCurrentSet(t *testing.T) {
+	manager := NewManager([]rules.Schedule{{Name: "Old", Cron: "0 8 * * *", Action: "old"}}, "board1", &fakeScheduleClient{}, nil)
+	if err := manager.UpdateSchedules([]rules.Schedule{{Name: "Broken", Cron: "not cron", Action: "new"}}); err == nil {
+		t.Fatal("expected invalid candidate")
+	}
+	assertEqual(t, 1, len(manager.Schedules))
+	assertEqual(t, "Old", manager.Schedules[0].Name)
+}
+
 type fakeScheduleClient struct {
 	board         json.RawMessage
 	createCalls   int
