@@ -43,3 +43,48 @@ clears. The success reaction is never added until the terminal-comment request s
 If that request fails, the manager reports the failure without retrying the non-idempotent
 summary post or marking the run successful. Only an empty final response can use the bounded
 session-resume recovery path; empty or failed recovery remains visibly non-successful.
+
+### Codex JSONL compatibility
+
+The Codex adapter supports the current `codex exec --json` event stream: it records
+`thread.started.thread_id`, treats nested completed `item.type=agent_message` records as
+the JSONL compatibility fallback, and fails on `turn.failed`, top-level `error`, malformed
+JSONL, a modern stream missing `turn.completed`, or a nonzero process exit. The documented
+phase-less completed-agent-message shape is accepted; explicit commentary-phase messages are
+progress, not a fallback terminal summary. Older top-level `item.message` and
+`response.message` payloads remain supported for legacy CLI fixtures.
+
+For real Codex subprocesses, JSONL is not the terminal-summary source. Each invocation passes
+the CLI a unique private `--output-last-message` path and uses that bounded final-only file for
+`ResultText` after successful process completion. The adapter holds the original file descriptor
+while Codex runs, so replacing the path cannot substitute a file for publication. The private
+directory and file are removed on success, failure, timeout, or cancellation. A missing or
+oversized output file is an adapter failure; a present empty file remains an empty terminal
+result, so the manager can show its existing bounded recovery outcome rather than publishing a
+false success.
+
+On Unix, the shared subprocess runner owns a separate process group plus parent-owned stdout and
+stderr and stdin pipes. It terminates descendants that remain in that process group on every
+terminal path, bounds captured
+diagnostics, and drains output after the child exits, so a slow progress callback or an inherited
+input descriptor cannot discard a terminal JSONL line or make completion wait indefinitely.
+Progress delivery is bounded and best-effort under backlog; scanner/read errors remain executor
+failures.
+
+Diagnostic retention has independent byte caps. For Codex, each complete stdout record is decoded
+into compact protocol state before that retained diagnostic cap, so verbose tool output cannot turn
+a later completion or failed-turn record into malformed JSONL. For Codex, hitting a retained-log
+cap annotates the diagnostic; it is not by itself an execution failure. Claude, Goose, and Pi retain
+their complete stdout protocol stream because they parse it after process exit; stderr remains
+bounded diagnostics and its truncation alone does not change a successful exit into a failure.
+
+Progress buffering has both item and byte caps, and oversized assistant progress is skipped rather
+than retained. Known executor credentials are redacted from Codex progress and terminal text before
+they reach board-visible result handling.
+
+Nested assistant messages continue to stream as progress, with repeated item snapshots
+suppressed. Reasoning, command execution, and raw tool payloads are never forwarded as Codex
+assistant chunks. If the manager needs empty-result recovery and the adapter supplied a thread
+ID, Codex uses `codex exec resume [options] -- <SESSION_ID>` with the original CWD and prompt on
+stdin; it never silently starts a new `codex exec` task. The manager still owns the only terminal
+card publication and never resumes after receiving a non-empty final result.
