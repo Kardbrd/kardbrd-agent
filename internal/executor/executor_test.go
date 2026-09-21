@@ -446,6 +446,22 @@ exit 1
 	assertContains(t, result.Error, "[REDACTED]")
 }
 
+func TestRunCommandRetainsDiagnosticLimitFailureForOtherExecutors(t *testing.T) {
+	dir := fakeBinary(t, "noisy-success", `#!/bin/sh
+i=0
+while [ "$i" -lt 70000 ]; do
+  printf x >&2
+  i=$((i + 1))
+done
+`)
+
+	_, _, _, err := runCommand(context.Background(), Config{Timeout: testCommandTimeout}, t.TempDir(), []string{filepath.Join(dir, "noisy-success")}, "", "card", "board", "timeout", nil)
+	if err == nil {
+		t.Fatal("non-Codex runner accepted diagnostics beyond its configured limit")
+	}
+	assertContains(t, err.Error(), "subprocess output exceeds configured diagnostic limit")
+}
+
 func TestCodexExecutorAcceptsVerboseSuccessfulOutput(t *testing.T) {
 	for _, stream := range []string{"stdout", "stderr"} {
 		t.Run(stream, func(t *testing.T) {

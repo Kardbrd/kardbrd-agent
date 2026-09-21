@@ -25,14 +25,14 @@ const (
 // ends out of os/exec's copy goroutines lets us reap a direct child promptly
 // even when one of its descendants inherited stdout or stderr.
 func runCommand(ctx context.Context, cfg Config, cwd string, args []string, promptText, cardID, boardID, timeoutError string, onStdoutLine func(string)) (stdout string, stderr string, code *int, err error) {
-	return runCommandWithStdoutObserver(ctx, cfg, cwd, args, promptText, cardID, boardID, timeoutError, nil, onStdoutLine)
+	return runCommandWithStdoutObserver(ctx, cfg, cwd, args, promptText, cardID, boardID, timeoutError, false, nil, onStdoutLine)
 }
 
 // runCommandWithStdoutObserver delivers each complete stdout line to observer
 // before bounded diagnostic retention and best-effort progress delivery. An
 // observer is for compact, authoritative protocol state only: it runs on the
 // capture goroutine and must not block on external work.
-func runCommandWithStdoutObserver(ctx context.Context, cfg Config, cwd string, args []string, promptText, cardID, boardID, timeoutError string, observer, onStdoutLine func(string)) (stdout string, stderr string, code *int, err error) {
+func runCommandWithStdoutObserver(ctx context.Context, cfg Config, cwd string, args []string, promptText, cardID, boardID, timeoutError string, allowTruncatedDiagnostics bool, observer, onStdoutLine func(string)) (stdout string, stderr string, code *int, err error) {
 	commandCtx, cancel := context.WithTimeout(ctx, durationOrDefault(cfg.Timeout))
 	defer cancel()
 	if err := commandCtx.Err(); err != nil {
@@ -148,6 +148,14 @@ func runCommandWithStdoutObserver(ctx context.Context, cfg Config, cwd string, a
 			err = drainErr
 		} else {
 			err = errors.Join(err, drainErr)
+		}
+	}
+	if !allowTruncatedDiagnostics && (stdoutBuf.Truncated() || stderrBuf.Truncated()) {
+		outputErr := errors.New("subprocess output exceeds configured diagnostic limit")
+		if err == nil {
+			err = outputErr
+		} else {
+			err = errors.Join(err, outputErr)
 		}
 	}
 	if commandCtx.Err() == context.DeadlineExceeded {

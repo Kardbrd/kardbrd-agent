@@ -72,8 +72,9 @@ failures.
 
 Diagnostic retention has independent byte caps. For Codex, each complete stdout record is decoded
 into compact protocol state before that retained diagnostic cap, so verbose tool output cannot turn
-a later completion or failed-turn record into malformed JSONL. Hitting a retained-log cap annotates
-the diagnostic; it is not by itself an execution failure.
+a later completion or failed-turn record into malformed JSONL. For Codex, hitting a retained-log
+cap annotates the diagnostic; it is not by itself an execution failure. Other executors retain the
+shared runner's existing limit-failure behavior.
 
 Nested assistant messages continue to stream as progress, with repeated item snapshots
 suppressed. Reasoning, command execution, and raw tool payloads are never forwarded as Codex
