@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -203,6 +205,81 @@ func TestProcessMentionPublishesTerminalSummaryAfterProgressUpdates(t *testing.T
 	assertEqual(t, "progress two", client.comments[1].content)
 	assertContains(t, client.comments[2].content, "terminal response")
 	assertContains(t, client.comments[2].content, "@Paul")
+}
+
+func TestProcessMentionWithCodexAdapterPublishesFinalOnce(t *testing.T) {
+	paths := configureManagerCodex(t, "final")
+	manager := newTestManager(t)
+	client := manager.Client.(*fakeBoardClient)
+	worktreePath := t.TempDir()
+	manager.Worktree = &fakeWorktree{path: worktreePath}
+	manager.Executor = executor.NewCodex(executor.Config{
+		CWD:     worktreePath,
+		Timeout: 5 * time.Second,
+		APIURL:  "https://api.test",
+		Token:   "tok",
+	})
+
+	if err := manager.ProcessMention(context.Background(), "card1", "comment1", "@coder do work", "Paul"); err != nil {
+		t.Fatal(err)
+	}
+
+	assertEqual(t, "1", strings.TrimSpace(readManagerFile(t, paths.countFile)))
+	args := strings.Fields(readManagerFile(t, filepath.Join(paths.argsDir, "1")))
+	assertEqual(t, "exec", args[0])
+	if strings.Contains(strings.Join(args, " "), " resume ") {
+		t.Fatalf("successful Codex run unexpectedly resumed: %v", args)
+	}
+	outputPath := managerOutputPath(t, args)
+	if _, err := os.Stat(outputPath); !os.IsNotExist(err) {
+		t.Fatalf("final-message file remains after manager execution: %q, err=%v", outputPath, err)
+	}
+	assertEqual(t, worktreePath+"\n", readManagerFile(t, filepath.Join(paths.cwdDir, "1")))
+	assertEqual(t, "tok|https://api.test|card1|board1\n", readManagerFile(t, filepath.Join(paths.envDir, "1")))
+	if strings.TrimSpace(readManagerFile(t, filepath.Join(paths.promptDir, "1"))) == "" {
+		t.Fatal("manager did not send a prompt to Codex stdin")
+	}
+
+	comments := client.commentsSnapshot()
+	assertEqual(t, 1, len(comments))
+	assertContains(t, comments[0].content, "manager authoritative final")
+	assertNotContains(t, comments[0].content, "No terminal response received")
+	assertReaction(t, client.reactionsSnapshot(), "comment1", "✅")
+	assertNoReaction(t, client.reactionsSnapshot(), "comment1", "⚠️")
+	assertEqual(t, 0, len(manager.ActiveCardIDs()))
+}
+
+func TestProcessMentionWithCodexAdapterUsesBoundedResume(t *testing.T) {
+	paths := configureManagerCodex(t, "recover")
+	manager := newTestManager(t)
+	client := manager.Client.(*fakeBoardClient)
+	worktreePath := t.TempDir()
+	manager.Worktree = &fakeWorktree{path: worktreePath}
+	manager.Executor = executor.NewCodex(executor.Config{CWD: worktreePath, Timeout: 5 * time.Second})
+
+	if err := manager.ProcessMention(context.Background(), "card1", "comment1", "@coder do work", "Paul"); err != nil {
+		t.Fatal(err)
+	}
+
+	assertEqual(t, "2", strings.TrimSpace(readManagerFile(t, paths.countFile)))
+	freshArgs := strings.Fields(readManagerFile(t, filepath.Join(paths.argsDir, "1")))
+	resumeArgs := strings.Fields(readManagerFile(t, filepath.Join(paths.argsDir, "2")))
+	assertEqual(t, "exec", freshArgs[0])
+	assertEqual(t, "exec", resumeArgs[0])
+	assertEqual(t, "resume", resumeArgs[1])
+	assertEqual(t, "thread-manager", resumeArgs[len(resumeArgs)-1])
+	assertEqual(t, worktreePath+"\n", readManagerFile(t, filepath.Join(paths.cwdDir, "2")))
+	comments := client.commentsSnapshot()
+	assertEqual(t, 1, len(comments))
+	assertContains(t, comments[0].content, "manager resumed final")
+	assertReaction(t, client.reactionsSnapshot(), "comment1", "✅")
+	assertNoReaction(t, client.reactionsSnapshot(), "comment1", "⚠️")
+	if _, err := os.Stat(managerOutputPath(t, freshArgs)); !os.IsNotExist(err) {
+		t.Fatalf("first final-message file remains after recovery: %v", err)
+	}
+	if _, err := os.Stat(managerOutputPath(t, resumeArgs)); !os.IsNotExist(err) {
+		t.Fatalf("resumed final-message file remains after recovery: %v", err)
+	}
 }
 
 func TestProcessMentionQueuesFollowUpDuringTerminalPublication(t *testing.T) {
@@ -682,6 +759,100 @@ func newTestManager(t *testing.T) *Manager {
 		Executor:  exec,
 		Worktree:  worktrees,
 	})
+}
+
+type managerCodexPaths struct {
+	argsDir   string
+	promptDir string
+	cwdDir    string
+	envDir    string
+	countFile string
+}
+
+func configureManagerCodex(t *testing.T, scenario string) managerCodexPaths {
+	t.Helper()
+	dir := t.TempDir()
+	paths := managerCodexPaths{
+		argsDir:   filepath.Join(dir, "args"),
+		promptDir: filepath.Join(dir, "prompts"),
+		cwdDir:    filepath.Join(dir, "cwd"),
+		envDir:    filepath.Join(dir, "env"),
+		countFile: filepath.Join(dir, "count"),
+	}
+	for _, path := range []string{paths.argsDir, paths.promptDir, paths.cwdDir, paths.envDir} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script := `#!/bin/sh
+if [ "$1" = "login" ] && [ "$2" = "status" ]; then
+  exit 0
+fi
+count=0
+if [ -f "$FAKE_MANAGER_COUNT" ]; then
+  count=$(cat "$FAKE_MANAGER_COUNT")
+fi
+count=$((count + 1))
+printf '%s' "$count" > "$FAKE_MANAGER_COUNT"
+output_path=""
+expect_output_path=0
+for arg in "$@"; do
+  if [ "$expect_output_path" = 1 ]; then
+    output_path="$arg"
+    expect_output_path=0
+  elif [ "$arg" = "--output-last-message" ] || [ "$arg" = "-o" ]; then
+    expect_output_path=1
+  fi
+done
+printf '%s\n' "$@" > "$FAKE_MANAGER_ARGS/$count"
+cat > "$FAKE_MANAGER_PROMPTS/$count"
+pwd > "$FAKE_MANAGER_CWD/$count"
+printf '%s\n' "$KARDBRD_TOKEN|$KARDBRD_API_URL|$KARDBRD_CARD_ID|$KARDBRD_BOARD_ID" > "$FAKE_MANAGER_ENV/$count"
+printf '{"type":"thread.started","thread_id":"thread-manager"}\n'
+printf '{"type":"item.updated","item":{"id":"progress","type":"agent_message","text":"manager progress"}}\n'
+printf '{"type":"item.completed","item":{"id":"final","type":"agent_message","text":"manager JSONL fallback"}}\n'
+if [ "$FAKE_MANAGER_SCENARIO" = "recover" ] && [ "$count" = 1 ]; then
+  : > "$output_path"
+else
+  if [ "$count" = 1 ]; then
+    printf 'manager authoritative final' > "$output_path"
+  else
+    printf 'manager resumed final' > "$output_path"
+  fi
+fi
+`
+	path := filepath.Join(dir, "codex")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_MANAGER_ARGS", paths.argsDir)
+	t.Setenv("FAKE_MANAGER_PROMPTS", paths.promptDir)
+	t.Setenv("FAKE_MANAGER_CWD", paths.cwdDir)
+	t.Setenv("FAKE_MANAGER_ENV", paths.envDir)
+	t.Setenv("FAKE_MANAGER_COUNT", paths.countFile)
+	t.Setenv("FAKE_MANAGER_SCENARIO", scenario)
+	return paths
+}
+
+func readManagerFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func managerOutputPath(t *testing.T, args []string) string {
+	t.Helper()
+	for index, arg := range args {
+		if (arg == "--output-last-message" || arg == "-o") && index+1 < len(args) {
+			return args[index+1]
+		}
+	}
+	t.Fatalf("Codex argv has no final-output flag: %v", args)
+	return ""
 }
 
 type fakeBoardClient struct {
