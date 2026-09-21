@@ -20,6 +20,7 @@ func TestClientCommandPathParity(t *testing.T) {
 	want := []string{
 		"activity",
 		"agent",
+		"agent adopt-worktree",
 		"agent start",
 		"agent validate",
 		"attachment",

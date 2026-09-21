@@ -253,6 +253,18 @@ func TestAgentStartRejectsLifecycleAndLegacySetupConflict(t *testing.T) {
 	assertCLIContains(t, stderr, "worktree lifecycle conflicts with legacy setup command")
 }
 
+func TestBaseOnlyLifecycleAdapterPermitsExistingOrBaseWithoutGit(t *testing.T) {
+	adapter := baseOnlyWorktreeAdapter{base: "/non-git/base"}
+	path, err := adapter.ExistingOrBase(context.Background(), "card1", "board1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, "/non-git/base", path)
+	if _, err := adapter.Prepare(context.Background(), "card1", "board1"); err == nil {
+		t.Fatal("expected non-Git prepare to be rejected")
+	}
+}
+
 func stubAgentRuntime(t *testing.T, fn func(context.Context, agentRuntime) error) func() {
 	t.Helper()
 	previous := runAgentRuntime

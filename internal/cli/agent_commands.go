@@ -48,6 +48,7 @@ func NewAgentCommand(root *rootOptions) *cobra.Command {
 		},
 	}
 	cmd.AddCommand(newAgentStartCommand(root))
+	cmd.AddCommand(newAgentAdoptWorktreeCommand(root))
 	cmd.AddCommand(&cobra.Command{
 		Use:   "validate [kardbrd.yml]",
 		Short: "Validate a kardbrd.yml rules file",
@@ -70,6 +71,50 @@ func NewAgentCommand(root *rootOptions) *cobra.Command {
 			return err
 		},
 	})
+	return cmd
+}
+
+func newAgentAdoptWorktreeCommand(root *rootOptions) *cobra.Command {
+	flags := config.AgentFlagValues{}
+	cmd := &cobra.Command{
+		Use:   "adopt-worktree CARD_ID",
+		Short: "Verify and record one configured existing worktree without changing source",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, _, err := config.LoadAgentConfig(environMap(), flags)
+			if err != nil {
+				return err
+			}
+			rulesCfg, loaded, err := loadAgentRules(cmd, cfg)
+			if err != nil {
+				return err
+			}
+			if !loaded || rulesCfg.Worktree == nil {
+				return fmt.Errorf("adopt-worktree requires an opt-in worktree block in kardbrd.yml")
+			}
+			applyRulesConfig(&cfg, rulesCfg)
+			if strings.TrimSpace(cfg.SetupCommand) != "" {
+				return fmt.Errorf("worktree lifecycle conflicts with legacy setup command")
+			}
+			gitRoot, gitEnabled := findGitRoot(cfg.CWD)
+			if !gitEnabled {
+				return fmt.Errorf("adopt-worktree requires a Git working directory")
+			}
+			manager, err := worktree.NewLifecycleManager(gitRoot, cfg.WorktreesDir, cfg.Executor, *rulesCfg.Worktree)
+			if err != nil {
+				return err
+			}
+			if err := manager.Adopt(cmd.Context(), args[0]); err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Adopted verified worktree for card %s\n", args[0])
+			return err
+		},
+	}
+	cmd.Flags().StringVarP(&flags.CWD, "cwd", "C", "", "Base Git working directory")
+	cmd.Flags().StringVarP(&flags.WorktreesDir, "worktrees-dir", "w", "", "Directory for worktrees")
+	cmd.Flags().StringVarP(&flags.RulesFile, "rules", "r", "", "Path to kardbrd.yml rules file")
+	cmd.Flags().StringVarP(&flags.Executor, "executor", "e", "", "Executor type used for lifecycle sharing")
 	return cmd
 }
 
@@ -235,13 +280,14 @@ func realRunAgentRuntime(ctx context.Context, runtime agentRuntime) error {
 	var wt agent.Worktree
 	if runtime.WorktreeConfig != nil {
 		if !runtime.WorktreesEnabled {
-			return fmt.Errorf("worktree lifecycle requires a Git working directory")
+			wt = baseOnlyWorktreeAdapter{base: cfg.CWD}
+		} else {
+			lifecycle, err := worktree.NewLifecycleManager(runtime.GitRoot, cfg.WorktreesDir, cfg.Executor, *runtime.WorktreeConfig)
+			if err != nil {
+				return err
+			}
+			wt = lifecycleWorktreeAdapter{manager: lifecycle}
 		}
-		lifecycle, err := worktree.NewLifecycleManager(runtime.GitRoot, cfg.WorktreesDir, cfg.Executor, *runtime.WorktreeConfig)
-		if err != nil {
-			return err
-		}
-		wt = lifecycleWorktreeAdapter{manager: lifecycle}
 	} else if runtime.WorktreesEnabled {
 		wt = worktreeAdapter{worktree.NewManager(runtime.GitRoot, cfg.WorktreesDir, cfg.SetupCommand, cfg.Executor)}
 	}
@@ -391,6 +437,23 @@ type worktreeAdapter struct {
 type lifecycleWorktreeAdapter struct {
 	manager *worktree.LifecycleManager
 }
+
+// baseOnlyWorktreeAdapter is the explicit non-Git portion of the contract:
+// existing_or_base may select the trusted CWD, while ordinary preparation
+// cannot accidentally create or set up source outside Git lifecycle support.
+type baseOnlyWorktreeAdapter struct {
+	base string
+}
+
+func (a baseOnlyWorktreeAdapter) Prepare(context.Context, string, string) (string, error) {
+	return "", fmt.Errorf("prepare requires a Git worktree lifecycle")
+}
+
+func (a baseOnlyWorktreeAdapter) ExistingOrBase(context.Context, string, string) (string, error) {
+	return a.base, nil
+}
+
+func (baseOnlyWorktreeAdapter) Remove(string, bool) error { return nil }
 
 func (a lifecycleWorktreeAdapter) Prepare(ctx context.Context, cardID, boardID string) (string, error) {
 	return a.manager.Prepare(ctx, worktree.LifecycleRequest{CardID: cardID, BoardID: boardID})
