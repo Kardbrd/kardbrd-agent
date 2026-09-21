@@ -61,6 +61,10 @@ success, failure, timeout, or cancellation. A missing or oversized output file i
 failure; a present empty file remains an empty terminal result, so the manager can show its
 existing bounded recovery outcome rather than publishing a false success.
 
+The shared subprocess runner uses a parent-owned stdout pipe and drains it after the child exits,
+so a slow progress callback cannot discard a terminal JSONL line. That drain is bounded when an
+inherited descendant stdout handle stays open, and scanner/read errors remain executor failures.
+
 Nested assistant messages continue to stream as progress, with repeated item snapshots
 suppressed. Reasoning, command execution, and raw tool payloads are never forwarded as Codex
 assistant chunks. If the manager needs empty-result recovery and the adapter supplied a thread

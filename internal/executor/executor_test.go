@@ -1,7 +1,9 @@
 package executor
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -272,6 +274,42 @@ printf '{"type":"item.completed","item":{"id":"final","type":"agent_message","te
 	assertEqual(t, "thread-at-exit", result.SessionID)
 }
 
+func TestSupervisorCaptureDrainsAfterChildExit(t *testing.T) {
+	barrier := filepath.Join(t.TempDir(), "first-line-seen")
+	t.Setenv("SUPERVISOR_BARRIER", barrier)
+	dir := fakeBinary(t, "capture-fixture", `#!/bin/sh
+printf 'first\n'
+while [ ! -e "$SUPERVISOR_BARRIER" ]; do sleep 0.01; done
+printf 'terminal-record\n'
+`)
+
+	stdout, _, _, err := runCommand(context.Background(), Config{Timeout: time.Second}, t.TempDir(), []string{filepath.Join(dir, "capture-fixture")}, "", "testcard", "testboard", "timeout", func(line string) {
+		if line == "first" {
+			if err := os.WriteFile(barrier, []byte("ready"), 0o600); err != nil {
+				t.Error(err)
+			}
+			time.Sleep(150 * time.Millisecond)
+		}
+	})
+	if err != nil {
+		t.Fatalf("capture error: %v", err)
+	}
+	if !strings.Contains(stdout, "terminal-record") {
+		t.Fatalf("successful process lost terminal output: %q", stdout)
+	}
+}
+
+func TestScanStdoutReturnsReaderError(t *testing.T) {
+	readErr := errors.New("synthetic stdout read failure")
+	reader := &failingStdoutReader{err: readErr}
+	var stdout bytes.Buffer
+
+	err := scanStdout(reader, &stdout, nil)
+	if !errors.Is(err, readErr) {
+		t.Fatalf("scanStdout error = %v, want %v", err, readErr)
+	}
+}
+
 func TestReadCodexFinalMessageBoundsOutput(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "final.txt")
 	if err := os.WriteFile(path, []byte(strings.Repeat("x", maxCodexFinalMessageBytes+1)), 0o600); err != nil {
@@ -398,6 +436,19 @@ func fakeBinary(t *testing.T, name string, script string) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+type failingStdoutReader struct {
+	err   error
+	first bool
+}
+
+func (r *failingStdoutReader) Read(data []byte) (int, error) {
+	if !r.first {
+		r.first = true
+		return copy(data, "first\n"), nil
+	}
+	return 0, r.err
 }
 
 func fakeCodexBinary(t *testing.T) string {

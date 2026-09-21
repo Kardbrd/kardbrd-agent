@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -27,33 +28,42 @@ func runCommand(ctx context.Context, cfg Config, cwd string, args []string, prom
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
 
-	stdoutPipe, err := cmd.StdoutPipe()
+	stdoutReader, stdoutWriter, err := os.Pipe()
 	if err != nil {
 		return "", stderrBuf.String(), nil, err
 	}
+	cmd.Stdout = stdoutWriter
 	if err = cmd.Start(); err != nil {
+		_ = stdoutReader.Close()
+		_ = stdoutWriter.Close()
 		return "", stderrBuf.String(), nil, err
 	}
 
 	scanDone := make(chan error, 1)
 	go func() {
-		scanner := bufio.NewScanner(stdoutPipe)
-		scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
-		for scanner.Scan() {
-			line := scanner.Text()
-			stdoutBuf.WriteString(line)
-			stdoutBuf.WriteByte('\n')
-			if onStdoutLine != nil {
-				onStdoutLine(line)
-			}
-		}
-		scanDone <- scanner.Err()
+		defer stdoutReader.Close()
+		scanDone <- scanStdout(stdoutReader, &stdoutBuf, onStdoutLine)
 	}()
+	if closeErr := stdoutWriter.Close(); closeErr != nil {
+		_ = stdoutReader.Close()
+		_ = cmd.Process.Kill()
+		waitErr := cmd.Wait()
+		scanErr := <-scanDone
+		if scanErr != nil && !errors.Is(scanErr, os.ErrClosed) {
+			closeErr = errors.Join(closeErr, scanErr)
+		}
+		if waitErr != nil {
+			closeErr = errors.Join(closeErr, waitErr)
+		}
+		return "", stderrBuf.String(), nil, closeErr
+	}
 
 	err = cmd.Wait()
-	if scanErr := <-scanDone; err == nil && scanErr != nil {
-		if !errors.Is(scanErr, os.ErrClosed) {
+	if scanErr := waitForStdoutDrain(scanDone, stdoutReader); scanErr != nil && !errors.Is(scanErr, os.ErrClosed) {
+		if err == nil {
 			err = scanErr
+		} else {
+			err = errors.Join(err, scanErr)
 		}
 	}
 	if commandCtx.Err() == context.DeadlineExceeded {
@@ -65,6 +75,38 @@ func runCommand(ctx context.Context, cfg Config, cwd string, args []string, prom
 		code = &exitCode
 	}
 	return stdoutBuf.String(), stderrBuf.String(), code, err
+}
+
+const stdoutDrainTimeout = time.Second
+
+func scanStdout(reader io.Reader, stdout *bytes.Buffer, onStdoutLine func(string)) error {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		stdout.WriteString(line)
+		stdout.WriteByte('\n')
+		if onStdoutLine != nil {
+			onStdoutLine(line)
+		}
+	}
+	return scanner.Err()
+}
+
+func waitForStdoutDrain(scanDone <-chan error, reader io.Closer) error {
+	timer := time.NewTimer(stdoutDrainTimeout)
+	defer timer.Stop()
+	select {
+	case err := <-scanDone:
+		return err
+	case <-timer.C:
+		_ = reader.Close()
+		err := <-scanDone
+		if err != nil && !errors.Is(err, os.ErrClosed) {
+			return errors.Join(errors.New("timed out draining subprocess stdout"), err)
+		}
+		return errors.New("timed out draining subprocess stdout")
+	}
 }
 
 func executorEnvironment(parent []string, cfg Config, cardID, boardID string) []string {
