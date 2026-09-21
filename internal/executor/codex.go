@@ -64,7 +64,7 @@ func (e Codex) Execute(ctx context.Context, req Request) (result Result) {
 		})
 	}
 	stream := newCodexOutputState(false)
-	stdout, stderr, code, runErr := runCommandWithStdoutObserver(ctx, e.cfg, e.cwd(req), cmd, req.Prompt, req.CardID, req.BoardID, "Codex execution timed out", true, stream.consume, onStdoutLine)
+	stdout, stderr, code, runErr := runCommandWithStdoutObserver(ctx, e.cfg, e.cwd(req), cmd, req.Prompt, req.CardID, req.BoardID, "Codex execution timed out", stream.consume, onStdoutLine)
 	result = resultFromRun(func(_ string, stderr string, returnCode int, cmd []string) Result {
 		return stream.result(stderr, returnCode, cmd)
 	}, stdout, stderr, code, cmd, runErr, e.cfg)

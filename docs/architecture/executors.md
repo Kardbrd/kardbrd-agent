@@ -74,8 +74,9 @@ failures.
 Diagnostic retention has independent byte caps. For Codex, each complete stdout record is decoded
 into compact protocol state before that retained diagnostic cap, so verbose tool output cannot turn
 a later completion or failed-turn record into malformed JSONL. For Codex, hitting a retained-log
-cap annotates the diagnostic; it is not by itself an execution failure. Other executors retain the
-shared runner's existing limit-failure behavior.
+cap annotates the diagnostic; it is not by itself an execution failure. Claude, Goose, and Pi retain
+their complete stdout protocol stream because they parse it after process exit; stderr remains
+bounded diagnostics and its truncation alone does not change a successful exit into a failure.
 
 Progress buffering has both item and byte caps, and oversized assistant progress is skipped rather
 than retained. Known executor credentials are redacted from Codex progress and terminal text before

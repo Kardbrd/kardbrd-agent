@@ -490,7 +490,7 @@ exit 1
 	assertContains(t, result.Error, "[REDACTED]")
 }
 
-func TestRunCommandRetainsDiagnosticLimitFailureForOtherExecutors(t *testing.T) {
+func TestRunCommandTruncatesDiagnosticsWithoutFailing(t *testing.T) {
 	dir := fakeBinary(t, "noisy-success", `#!/bin/sh
 i=0
 while [ "$i" -lt 70000 ]; do
@@ -499,11 +499,15 @@ while [ "$i" -lt 70000 ]; do
 done
 `)
 
-	_, _, _, err := runCommand(context.Background(), Config{Timeout: testCommandTimeout}, t.TempDir(), []string{filepath.Join(dir, "noisy-success")}, "", "card", "board", "timeout", nil)
-	if err == nil {
-		t.Fatal("non-Codex runner accepted diagnostics beyond its configured limit")
+	_, stderr, code, err := runCommand(context.Background(), Config{Timeout: testCommandTimeout}, t.TempDir(), []string{filepath.Join(dir, "noisy-success")}, "", "card", "board", "timeout", nil)
+	if err != nil || code == nil || *code != 0 {
+		t.Fatalf("diagnostic truncation changed successful exit: code=%v err=%v", code, err)
 	}
-	assertContains(t, err.Error(), "subprocess output exceeds configured diagnostic limit")
+	if len(stderr) > maxSubprocessStderrBytes+len("\n... (output truncated)") {
+		t.Fatalf("stderr was not bounded: %d bytes", len(stderr))
+	}
+	assertContains(t, stderr, "x")
+	assertContains(t, stderr, "... (output truncated)")
 }
 
 func TestResultFromRunRetainsCaptureFailureAlongsideProtocolFailure(t *testing.T) {

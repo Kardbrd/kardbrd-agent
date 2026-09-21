@@ -26,14 +26,14 @@ const (
 // ends out of os/exec's copy goroutines lets us reap a direct child promptly
 // even when one of its descendants inherited stdout or stderr.
 func runCommand(ctx context.Context, cfg Config, cwd string, args []string, promptText, cardID, boardID, timeoutError string, onStdoutLine func(string)) (stdout string, stderr string, code *int, err error) {
-	return runCommandWithStdoutObserver(ctx, cfg, cwd, args, promptText, cardID, boardID, timeoutError, false, nil, onStdoutLine)
+	return runCommandWithStdoutObserver(ctx, cfg, cwd, args, promptText, cardID, boardID, timeoutError, nil, onStdoutLine)
 }
 
 // runCommandWithStdoutObserver delivers each complete stdout line to observer
 // before bounded diagnostic retention and best-effort progress delivery. An
 // observer is for compact, authoritative protocol state only: it runs on the
 // capture goroutine and must not block on external work.
-func runCommandWithStdoutObserver(ctx context.Context, cfg Config, cwd string, args []string, promptText, cardID, boardID, timeoutError string, allowTruncatedDiagnostics bool, observer, onStdoutLine func(string)) (stdout string, stderr string, code *int, err error) {
+func runCommandWithStdoutObserver(ctx context.Context, cfg Config, cwd string, args []string, promptText, cardID, boardID, timeoutError string, observer, onStdoutLine func(string)) (stdout string, stderr string, code *int, err error) {
 	commandCtx, cancel := context.WithTimeout(ctx, durationOrDefault(cfg.Timeout))
 	defer cancel()
 	if err := commandCtx.Err(); err != nil {
@@ -46,9 +46,12 @@ func runCommandWithStdoutObserver(ctx context.Context, cfg Config, cwd string, a
 	cmd := exec.CommandContext(commandCtx, args[0], args[1:]...)
 	configureExecutorProcessGroup(cmd)
 	cmd.Cancel = func() error {
-		if cmd.Process == nil || (cmd.ProcessState != nil && cmd.ProcessState.Exited()) {
+		if cmd.Process == nil {
 			return os.ErrProcessDone
 		}
+		// Cmd.Wait writes ProcessState while CommandContext may invoke Cancel.
+		// ProcessState is therefore not safe to inspect here. Killing the process
+		// group remains idempotent and also cleans descendants after a parent exit.
 		killExecutorProcessGroup(cmd)
 		return nil
 	}
@@ -96,7 +99,13 @@ func runCommandWithStdoutObserver(ctx context.Context, cfg Config, cwd string, a
 	}()
 	_ = stdinReader.Close()
 
-	stdoutBuf := limitedOutput{limit: maxSubprocessStdoutBytes}
+	// Existing adapters parse the returned stdout after process exit, so retain
+	// their complete protocol stream. Codex consumes records through observer,
+	// allowing its retained diagnostic stdout to stay bounded independently.
+	stdoutBuf := limitedOutput{limit: -1}
+	if observer != nil {
+		stdoutBuf.limit = maxSubprocessStdoutBytes
+	}
 	stderrBuf := limitedOutput{limit: maxSubprocessStderrBytes}
 	progress := newStdoutLineDispatcher(onStdoutLine)
 	stdoutDone := make(chan error, 1)
@@ -156,14 +165,6 @@ func runCommandWithStdoutObserver(ctx context.Context, cfg Config, cwd string, a
 			err = drainErr
 		} else {
 			err = errors.Join(err, drainErr)
-		}
-	}
-	if !allowTruncatedDiagnostics && (stdoutBuf.Truncated() || stderrBuf.Truncated()) {
-		outputErr := errors.New("subprocess output exceeds configured diagnostic limit")
-		if err == nil {
-			err = outputErr
-		} else {
-			err = errors.Join(err, outputErr)
 		}
 	}
 	if commandCtx.Err() == context.DeadlineExceeded {
@@ -364,6 +365,10 @@ type limitedOutput struct {
 func (o *limitedOutput) Write(value []byte) (int, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.limit < 0 {
+		_, _ = o.buffer.Write(value)
+		return len(value), nil
+	}
 	remaining := o.limit - o.buffer.Len()
 	if remaining > 0 {
 		if remaining > len(value) {
@@ -377,13 +382,13 @@ func (o *limitedOutput) Write(value []byte) (int, error) {
 	return len(value), nil
 }
 
-// WriteLine keeps a retained stdout diagnostic parseable by discarding a whole
-// record once it would exceed the cap. stderr is intentionally byte-oriented
-// because it is only surfaced as diagnostics, never decoded as a protocol.
+// WriteLine retains complete records. A negative limit preserves the complete
+// protocol for adapters that parse stdout after exit; a positive limit bounds
+// diagnostics when a separate observer parses every record.
 func (o *limitedOutput) WriteLine(value string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if len(value) <= o.limit-o.buffer.Len() {
+	if o.limit < 0 || len(value) <= o.limit-o.buffer.Len() {
 		_, _ = o.buffer.WriteString(value)
 		return
 	}
