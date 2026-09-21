@@ -359,33 +359,7 @@ exit 0
 	case <-time.After(2 * time.Second):
 		t.Error("runner exceeded its bound while a descendant held stderr open")
 	}
-	if runtime.GOOS != "linux" {
-		return
-	}
-	rawPID, err := os.ReadFile(pidPath)
-	if err != nil {
-		t.Fatalf("fixture did not record descendant pid: %v", err)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(rawPID)))
-	if err != nil {
-		t.Fatalf("invalid descendant pid %q: %v", rawPID, err)
-	}
-	procPath := filepath.Join("/proc", strconv.Itoa(pid))
-	deadline := time.Now().Add(time.Second)
-	for {
-		if _, statErr := os.Stat(procPath); errors.Is(statErr, os.ErrNotExist) {
-			break
-		}
-		if time.Now().After(deadline) {
-			if commandLine, readErr := os.ReadFile(filepath.Join(procPath, "cmdline")); readErr == nil && strings.Contains(string(commandLine), "sleep") {
-				if process, findErr := os.FindProcess(pid); findErr == nil {
-					_ = process.Kill()
-				}
-			}
-			t.Fatalf("descendant process %d survived runner cleanup", pid)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	assertSupervisorChildStopped(t, pidPath)
 }
 
 func TestSupervisorBlockedCallbackHasBoundedDrain(t *testing.T) {
@@ -402,6 +376,45 @@ func TestSupervisorBlockedCallbackHasBoundedDrain(t *testing.T) {
 		t.Error("stdout callback prevented bounded process completion")
 	}
 	close(release)
+}
+
+func TestSupervisorInheritedStdinCannotHoldParentCompletion(t *testing.T) {
+	pidPath := filepath.Join(t.TempDir(), "stdin-child-pid")
+	t.Setenv("SUPERVISOR_CHILD_PID", pidPath)
+	dir := fakeBinary(t, "inherited-input", `#!/bin/sh
+exec 3<&0
+sleep 30 <&3 >/dev/null 2>&1 &
+printf '%s' "$!" > "$SUPERVISOR_CHILD_PID"
+exit 0
+`)
+	done := make(chan struct{})
+	go func() {
+		_, _, _, _ = runCommand(context.Background(), Config{Timeout: testCommandTimeout}, t.TempDir(), []string{filepath.Join(dir, "inherited-input")}, strings.Repeat("long prompt ", 32768), "card", "board", "timeout", nil)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Error("direct child exited but inherited stdin held runner completion")
+	}
+	assertSupervisorChildStopped(t, pidPath)
+}
+
+func TestSupervisorManySlowCallbacksCannotExtendDrain(t *testing.T) {
+	dir := fakeBinary(t, "slow-callbacks", `#!/bin/sh
+i=0
+while [ "$i" -lt 100 ]; do printf 'line\n'; i=$((i + 1)); done
+`)
+	done := make(chan struct{})
+	go func() {
+		_, _, _, _ = runCommand(context.Background(), Config{Timeout: 100 * time.Millisecond}, t.TempDir(), []string{filepath.Join(dir, "slow-callbacks")}, "", "card", "board", "timeout", func(string) { time.Sleep(40 * time.Millisecond) })
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Error("many individually responsive progress callbacks extended runner completion")
+	}
 }
 
 func TestRunCommandBoundsAndRedactsFailureDiagnostics(t *testing.T) {
@@ -445,6 +458,37 @@ printf started > "$STARTED_MARKER"
 	}
 	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("cancelled command started: %v", statErr)
+	}
+}
+
+func assertSupervisorChildStopped(t *testing.T, pidPath string) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		return
+	}
+	rawPID, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatalf("fixture did not record descendant pid: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(rawPID)))
+	if err != nil {
+		t.Fatalf("invalid descendant pid %q: %v", rawPID, err)
+	}
+	procPath := filepath.Join("/proc", strconv.Itoa(pid))
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, statErr := os.Stat(procPath); errors.Is(statErr, os.ErrNotExist) {
+			return
+		}
+		if time.Now().After(deadline) {
+			if commandLine, readErr := os.ReadFile(filepath.Join(procPath, "cmdline")); readErr == nil && strings.Contains(string(commandLine), "sleep") {
+				if process, findErr := os.FindProcess(pid); findErr == nil {
+					_ = process.Kill()
+				}
+			}
+			t.Fatalf("descendant process %d survived runner cleanup", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

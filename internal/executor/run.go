@@ -18,6 +18,7 @@ const (
 	maxSubprocessStdoutBytes = 4 << 20
 	maxSubprocessStderrBytes = 64 << 10
 	stdoutDrainTimeout       = time.Second
+	maxPendingProgressLines  = 128
 )
 
 // runCommand owns the process group and both output pipes. Keeping the parent
@@ -38,8 +39,14 @@ func runCommand(ctx context.Context, cfg Config, cwd string, args []string, prom
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
-	cmd.Stdin = strings.NewReader(promptText)
 	cmd.Env = executorEnvironment(os.Environ(), cfg, cardID, boardID)
+	stdinReader, stdinWriter, err := os.Pipe()
+	if err != nil {
+		return "", "", nil, err
+	}
+	defer stdinReader.Close()
+	defer stdinWriter.Close()
+	cmd.Stdin = stdinReader
 
 	stdoutReader, stdoutWriter, err := os.Pipe()
 	if err != nil {
@@ -56,17 +63,30 @@ func runCommand(ctx context.Context, cfg Config, cwd string, args []string, prom
 	cmd.Stderr = stderrWriter
 
 	if err = cmd.Start(); err != nil {
+		_ = stdinReader.Close()
+		_ = stdinWriter.Close()
 		_ = stdoutWriter.Close()
 		_ = stderrWriter.Close()
 		return "", "", nil, err
 	}
+	// Use a parent-owned input pipe too. os/exec otherwise starts an input copy
+	// goroutine and Wait can block when a descendant retains stdin after the
+	// direct child exits.
+	inputDone := make(chan error, 1)
+	go func() {
+		_, writeErr := io.WriteString(stdinWriter, promptText)
+		_ = stdinWriter.Close()
+		inputDone <- writeErr
+	}()
+	_ = stdinReader.Close()
 
 	stdoutBuf := limitedOutput{limit: maxSubprocessStdoutBytes}
 	stderrBuf := limitedOutput{limit: maxSubprocessStderrBytes}
+	progress := newStdoutLineDispatcher(onStdoutLine)
 	stdoutDone := make(chan error, 1)
 	go func() {
 		defer stdoutReader.Close()
-		stdoutDone <- scanStdout(stdoutReader, &stdoutBuf, onStdoutLine)
+		stdoutDone <- scanStdout(stdoutReader, &stdoutBuf, progress.emit)
 	}()
 	stderrDone := make(chan error, 1)
 	go func() {
@@ -80,7 +100,9 @@ func runCommand(ctx context.Context, cfg Config, cwd string, args []string, prom
 	if closeErr := errors.Join(stdoutWriter.Close(), stderrWriter.Close()); closeErr != nil {
 		killExecutorProcessGroup(cmd)
 		_ = cmd.Wait()
-		_ = waitForOutputDrain(stdoutDone, stderrDone, stdoutReader, stderrReader)
+		_ = stopInputWriter(stdinWriter, inputDone)
+		_, _ = waitForOutputDrain(stdoutDone, stderrDone, stdoutReader, stderrReader)
+		progress.finish(false)
 		return stdoutBuf.String(), stderrBuf.String(), nil, closeErr
 	}
 
@@ -98,8 +120,17 @@ func runCommand(ctx context.Context, cfg Config, cwd string, args []string, prom
 	// A parent exit is not permission for a forked subprocess with executor
 	// credentials to continue running or hold one of our output descriptors.
 	killExecutorProcessGroup(cmd)
+	if inputErr := stopInputWriter(stdinWriter, inputDone); inputErr != nil {
+		if err == nil {
+			err = inputErr
+		} else {
+			err = errors.Join(err, inputErr)
+		}
+	}
 
-	if drainErr := waitForOutputDrain(stdoutDone, stderrDone, stdoutReader, stderrReader); drainErr != nil {
+	outputDrained, drainErr := waitForOutputDrain(stdoutDone, stderrDone, stdoutReader, stderrReader)
+	progress.finish(outputDrained)
+	if drainErr != nil {
 		if err == nil {
 			err = drainErr
 		} else {
@@ -131,36 +162,113 @@ func runCommand(ctx context.Context, cfg Config, cwd string, args []string, prom
 func scanStdout(reader io.Reader, stdout io.Writer, onStdoutLine func(string)) error {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
-	callbacksEnabled := onStdoutLine != nil
 	for scanner.Scan() {
 		line := scanner.Text()
 		_, _ = io.WriteString(stdout, line+"\n")
-		if callbacksEnabled && !callStdoutLine(onStdoutLine, line) {
-			// A progress receiver must not prevent terminal capture or process
-			// cleanup. Do not start concurrent callbacks after one is stuck.
-			callbacksEnabled = false
+		if onStdoutLine != nil {
+			onStdoutLine(line)
 		}
 	}
 	return scanner.Err()
 }
 
-func callStdoutLine(onStdoutLine func(string), line string) bool {
-	done := make(chan struct{})
+type stdoutLineDispatcher struct {
+	lines     chan string
+	stop      chan struct{}
+	done      chan struct{}
+	closeLine sync.Once
+	closeStop sync.Once
+}
+
+func newStdoutLineDispatcher(onStdoutLine func(string)) *stdoutLineDispatcher {
+	if onStdoutLine == nil {
+		return nil
+	}
+	dispatcher := &stdoutLineDispatcher{
+		lines: make(chan string, maxPendingProgressLines),
+		stop:  make(chan struct{}),
+		done:  make(chan struct{}),
+	}
 	go func() {
-		onStdoutLine(line)
-		close(done)
+		defer close(dispatcher.done)
+		for {
+			select {
+			case <-dispatcher.stop:
+				return
+			case line, ok := <-dispatcher.lines:
+				if !ok {
+					return
+				}
+				onStdoutLine(line)
+			}
+		}
 	}()
-	timer := time.NewTimer(stdoutDrainTimeout)
-	defer timer.Stop()
+	return dispatcher
+}
+
+func (dispatcher *stdoutLineDispatcher) emit(line string) {
+	if dispatcher == nil {
+		return
+	}
 	select {
-	case <-done:
-		return true
-	case <-timer.C:
-		return false
+	case <-dispatcher.stop:
+		return
+	default:
+	}
+	select {
+	case dispatcher.lines <- line:
+	default:
+		// Progress is best-effort. Capturing terminal protocol data must never
+		// wait on a slow receiver or an unbounded progress backlog.
 	}
 }
 
-func waitForOutputDrain(stdoutDone, stderrDone <-chan error, stdoutReader, stderrReader io.Closer) error {
+func (dispatcher *stdoutLineDispatcher) finish(outputDrained bool) {
+	if dispatcher == nil {
+		return
+	}
+	if !outputDrained {
+		dispatcher.stopNow()
+		return
+	}
+	dispatcher.closeLine.Do(func() { close(dispatcher.lines) })
+	timer := time.NewTimer(stdoutDrainTimeout)
+	defer timer.Stop()
+	select {
+	case <-dispatcher.done:
+	case <-timer.C:
+		dispatcher.stopNow()
+	}
+}
+
+func (dispatcher *stdoutLineDispatcher) stopNow() {
+	if dispatcher == nil {
+		return
+	}
+	dispatcher.closeStop.Do(func() { close(dispatcher.stop) })
+}
+
+func stopInputWriter(writer io.Closer, inputDone <-chan error) error {
+	select {
+	case err := <-inputDone:
+		return err
+	default:
+	}
+	_ = writer.Close()
+	timer := time.NewTimer(stdoutDrainTimeout)
+	defer timer.Stop()
+	select {
+	case err := <-inputDone:
+		if errors.Is(err, os.ErrClosed) {
+			return nil
+		}
+		return err
+	case <-timer.C:
+		return errors.New("timed out stopping subprocess stdin writer")
+	}
+}
+
+func waitForOutputDrain(stdoutDone, stderrDone <-chan error, stdoutReader, stderrReader io.Closer) (bool, error) {
 	timer := time.NewTimer(stdoutDrainTimeout)
 	defer timer.Stop()
 	remaining := 2
@@ -180,10 +288,10 @@ func waitForOutputDrain(stdoutDone, stderrDone <-chan error, stdoutReader, stder
 		case <-timer.C:
 			_ = stdoutReader.Close()
 			_ = stderrReader.Close()
-			return errors.Join(errors.New("timed out draining subprocess output"), drainErr)
+			return false, errors.Join(errors.New("timed out draining subprocess output"), drainErr)
 		}
 	}
-	return drainErr
+	return true, drainErr
 }
 
 type limitedOutput struct {

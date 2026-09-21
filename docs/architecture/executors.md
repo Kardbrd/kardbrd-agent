@@ -64,9 +64,11 @@ result, so the manager can show its existing bounded recovery outcome rather tha
 false success.
 
 On Unix, the shared subprocess runner owns a separate process group plus parent-owned stdout and
-stderr pipes. It terminates descendants on every terminal path, bounds captured diagnostics, and
-drains output after the child exits, so a slow progress callback cannot discard a terminal JSONL
-line or make completion wait indefinitely. Scanner/read errors remain executor failures.
+stderr and stdin pipes. It terminates descendants on every terminal path, bounds captured
+diagnostics, and drains output after the child exits, so a slow progress callback or an inherited
+input descriptor cannot discard a terminal JSONL line or make completion wait indefinitely.
+Progress delivery is bounded and best-effort under backlog; scanner/read errors remain executor
+failures.
 
 Nested assistant messages continue to stream as progress, with repeated item snapshots
 suppressed. Reasoning, command execution, and raw tool payloads are never forwarded as Codex
