@@ -267,6 +267,7 @@ func TestProcessMentionWithCodexAdapterUsesBoundedResume(t *testing.T) {
 	assertEqual(t, "exec", freshArgs[0])
 	assertEqual(t, "exec", resumeArgs[0])
 	assertEqual(t, "resume", resumeArgs[1])
+	assertEqual(t, "--", resumeArgs[len(resumeArgs)-2])
 	assertEqual(t, "thread-manager", resumeArgs[len(resumeArgs)-1])
 	assertEqual(t, worktreePath+"\n", readManagerFile(t, filepath.Join(paths.cwdDir, "2")))
 	comments := client.commentsSnapshot()
@@ -738,6 +739,24 @@ func TestStreamFailureClosesConnection(t *testing.T) {
 	assertEqual(t, api.StreamConn(nil), manager.Active["card1"].Stream)
 }
 
+func TestStreamChunkUsesBoundedWriteDeadline(t *testing.T) {
+	manager := newTestManager(t)
+	stream := &fakeStream{}
+	manager.Active["card1"] = &ActiveSession{CardID: "card1", Stream: stream, Streaming: true}
+	before := time.Now()
+
+	manager.makeOnChunk("card1")("hello", "assistant")
+
+	if len(stream.writeDeadlines) < 2 {
+		t.Fatalf("stream write did not set and clear a deadline: %v", stream.writeDeadlines)
+	}
+	deadline := stream.writeDeadlines[0]
+	if !deadline.After(before) || deadline.After(before.Add(streamChunkWriteTimeout+time.Second)) {
+		t.Fatalf("unexpected stream write deadline: %v", deadline)
+	}
+	assertEqual(t, time.Time{}, stream.writeDeadlines[len(stream.writeDeadlines)-1])
+}
+
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()
 	client := &fakeBoardClient{
@@ -820,6 +839,7 @@ else
     printf 'manager resumed final' > "$output_path"
   fi
 fi
+printf '{"type":"turn.completed"}\n'
 `
 	path := filepath.Join(dir, "codex")
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
@@ -1122,9 +1142,10 @@ func (w *fakeWorktree) Remove(cardID string, force bool) error {
 }
 
 type fakeStream struct {
-	payloads []any
-	closed   bool
-	writeErr error
+	payloads       []any
+	closed         bool
+	writeErr       error
+	writeDeadlines []time.Time
 }
 
 func (s *fakeStream) WriteJSON(value any) error {
@@ -1136,6 +1157,7 @@ func (s *fakeStream) WriteJSON(value any) error {
 }
 
 func (s *fakeStream) SetWriteDeadline(t time.Time) error {
+	s.writeDeadlines = append(s.writeDeadlines, t)
 	return nil
 }
 

@@ -16,6 +16,8 @@ import (
 	"github.com/Kardbrd/kardbrd-agent/internal/rules"
 )
 
+const streamChunkWriteTimeout = time.Second
+
 type BoardClient interface {
 	GetBoard(ctx context.Context, boardID string, includeArchived bool) (json.RawMessage, error)
 	GetCard(ctx context.Context, cardID string) (json.RawMessage, error)
@@ -568,7 +570,9 @@ func (m *Manager) makeOnChunk(cardID string) func(content string, chunkType stri
 		if session == nil || stream == nil {
 			return
 		}
-		err := api.SendStreamChunk(context.Background(), stream, cardID, content, chunkType, sequence)
+		streamCtx, cancel := context.WithTimeout(context.Background(), streamChunkWriteTimeout)
+		err := api.SendStreamChunk(streamCtx, stream, cardID, content, chunkType, sequence)
+		cancel()
 		if err != nil {
 			m.mu.Lock()
 			if m.Active[cardID] == session {

@@ -39,5 +39,5 @@ func (e Goose) Execute(ctx context.Context, req Request) Result {
 	stdout, stderr, code, err := runCommand(ctx, e.cfg, e.cwd(req), cmd, req.Prompt, req.CardID, req.BoardID, "Goose execution timed out", func(line string) {
 		emitChunkLine(line, "goose", req.OnChunk)
 	})
-	return resultFromRun(parseGooseOutput, stdout, stderr, code, cmd, err)
+	return resultFromRun(parseGooseOutput, stdout, stderr, code, cmd, err, e.cfg)
 }

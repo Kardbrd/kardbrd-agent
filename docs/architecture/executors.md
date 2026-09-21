@@ -49,25 +49,28 @@ session-resume recovery path; empty or failed recovery remains visibly non-succe
 The Codex adapter supports the current `codex exec --json` event stream: it records
 `thread.started.thread_id`, treats nested completed `item.type=agent_message` records as
 the JSONL compatibility fallback, and fails on `turn.failed`, top-level `error`, malformed
-JSONL, or a nonzero process exit. The documented phase-less completed-agent-message shape is
-accepted; explicit commentary-phase messages are progress, not a fallback terminal summary.
-Older top-level `item.message` and `response.message` payloads remain supported for legacy
-CLI fixtures.
+JSONL, a modern stream missing `turn.completed`, or a nonzero process exit. The documented
+phase-less completed-agent-message shape is accepted; explicit commentary-phase messages are
+progress, not a fallback terminal summary. Older top-level `item.message` and
+`response.message` payloads remain supported for legacy CLI fixtures.
 
 For real Codex subprocesses, JSONL is not the terminal-summary source. Each invocation passes
 the CLI a unique private `--output-last-message` path and uses that bounded final-only file for
-`ResultText` after successful process completion. The private directory and file are removed on
-success, failure, timeout, or cancellation. A missing or oversized output file is an adapter
-failure; a present empty file remains an empty terminal result, so the manager can show its
-existing bounded recovery outcome rather than publishing a false success.
+`ResultText` after successful process completion. The adapter holds the original file descriptor
+while Codex runs, so replacing the path cannot substitute a file for publication. The private
+directory and file are removed on success, failure, timeout, or cancellation. A missing or
+oversized output file is an adapter failure; a present empty file remains an empty terminal
+result, so the manager can show its existing bounded recovery outcome rather than publishing a
+false success.
 
-The shared subprocess runner uses a parent-owned stdout pipe and drains it after the child exits,
-so a slow progress callback cannot discard a terminal JSONL line. That drain is bounded when an
-inherited descendant stdout handle stays open, and scanner/read errors remain executor failures.
+On Unix, the shared subprocess runner owns a separate process group plus parent-owned stdout and
+stderr pipes. It terminates descendants on every terminal path, bounds captured diagnostics, and
+drains output after the child exits, so a slow progress callback cannot discard a terminal JSONL
+line or make completion wait indefinitely. Scanner/read errors remain executor failures.
 
 Nested assistant messages continue to stream as progress, with repeated item snapshots
 suppressed. Reasoning, command execution, and raw tool payloads are never forwarded as Codex
 assistant chunks. If the manager needs empty-result recovery and the adapter supplied a thread
-ID, Codex uses `codex exec resume <SESSION_ID>` with the original CWD and prompt on stdin; it
-never silently starts a new `codex exec` task. The manager still owns the only terminal card
-publication and never resumes after receiving a non-empty final result.
+ID, Codex uses `codex exec resume [options] -- <SESSION_ID>` with the original CWD and prompt on
+stdin; it never silently starts a new `codex exec` task. The manager still owns the only terminal
+card publication and never resumes after receiving a non-empty final result.

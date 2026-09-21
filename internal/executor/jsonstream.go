@@ -75,7 +75,7 @@ func newCodexChunkEmitter(onChunk func(content string, chunkType string)) func(s
 func emitCodexAssistantChunk(event map[string]any, onChunk func(content string, chunkType string), seenByItemID map[string]string, lastAnonymousText *string) {
 	eventType := stringFromAny(event["type"])
 	if nested, ok := event["item"].(map[string]any); ok {
-		if eventType != "item.updated" && eventType != "item.completed" {
+		if eventType != "item.started" && eventType != "item.updated" && eventType != "item.completed" {
 			return
 		}
 		if stringFromAny(nested["type"]) != "agent_message" {
@@ -197,6 +197,8 @@ func parseCodexOutput(stdout string, stderr string, returnCode int, cmd []string
 	result := Result{Success: returnCode == 0, ReturnCode: &returnCode, Stderr: emptyToNone(stderr), Command: cmd}
 	var legacyText strings.Builder
 	terminalFallback := ""
+	sawModernEvent := false
+	turnCompleted := false
 	for _, line := range strings.Split(stdout, "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -212,11 +214,25 @@ func parseCodexOutput(stdout string, stderr string, returnCode int, cmd []string
 		eventType := stringFromAny(event["type"])
 		switch eventType {
 		case "thread.started":
+			sawModernEvent = true
 			if threadID := stringFromAny(event["thread_id"]); threadID != "" {
 				result.SessionID = threadID
 			}
+		case "turn.started":
+			sawModernEvent = true
+		case "turn.completed":
+			sawModernEvent = true
+			turnCompleted = true
+		case "item.started", "item.updated":
+			if _, ok := event["item"].(map[string]any); ok {
+				sawModernEvent = true
+			}
 		case "item.completed":
-			if nested, ok := event["item"].(map[string]any); ok && stringFromAny(nested["type"]) == "agent_message" && isCodexTerminalPhase(event, nested) {
+			nested, nestedItem := event["item"].(map[string]any)
+			if nestedItem {
+				sawModernEvent = true
+			}
+			if nestedItem && stringFromAny(nested["type"]) == "agent_message" && isCodexTerminalPhase(event, nested) {
 				if text := codexMessageText(nested); text != "" {
 					// The documented JSONL stream has no phase. Its completed agent
 					// message is a compatibility fallback only; Execute replaces it
@@ -225,6 +241,7 @@ func parseCodexOutput(stdout string, stderr string, returnCode int, cmd []string
 				}
 			}
 		case "turn.failed", "error":
+			sawModernEvent = true
 			result.Success = false
 			if message := codexEventError(event); message != "" {
 				result.Error = message
@@ -245,6 +262,10 @@ func parseCodexOutput(stdout string, stderr string, returnCode int, cmd []string
 	if returnCode != 0 && result.Error == "" {
 		result.Success = false
 		result.Error = exitError("Codex", returnCode, stderr)
+	}
+	if result.Success && sawModernEvent && !turnCompleted {
+		result.Success = false
+		result.Error = "Codex JSONL ended before turn.completed"
 	}
 	return result
 }

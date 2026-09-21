@@ -49,5 +49,5 @@ func (e Claude) Execute(ctx context.Context, req Request) Result {
 	stdout, stderr, code, err := runCommand(ctx, e.cfg, e.cwd(req), cmd, req.Prompt, req.CardID, req.BoardID, "Claude execution timed out", func(line string) {
 		emitChunkLine(line, "claude", req.OnChunk)
 	})
-	return resultFromRun(parseClaudeOutput, stdout, stderr, code, cmd, err)
+	return resultFromRun(parseClaudeOutput, stdout, stderr, code, cmd, err, e.cfg)
 }

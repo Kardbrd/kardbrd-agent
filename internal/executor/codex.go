@@ -26,26 +26,35 @@ func (e Codex) CheckAuth(ctx context.Context) AuthStatus {
 	return status
 }
 
-func (e Codex) Execute(ctx context.Context, req Request) Result {
+func (e Codex) Execute(ctx context.Context, req Request) (result Result) {
 	if _, err := exec.LookPath("codex"); err != nil {
 		return Result{Success: false, Error: "Codex CLI not found. Install: npm install -g @openai/codex"}
 	}
-	outputPath, err := createCodexFinalMessageFile()
+	output, err := createCodexFinalMessageFile()
 	if err != nil {
 		return Result{Success: false, Error: err.Error()}
 	}
-	defer removeCodexFinalMessageFile(outputPath)
+	defer func() {
+		if cleanupErr := output.remove(); cleanupErr != nil {
+			result.Success = false
+			if result.Error == "" {
+				result.Error = cleanupErr.Error()
+			} else {
+				result.Error += "; " + cleanupErr.Error()
+			}
+		}
+	}()
 
 	cmd := []string{"codex", "exec"}
 	if req.ResumeSessionID != "" {
 		cmd = append(cmd, "resume")
 	}
-	cmd = append(cmd, "--dangerously-bypass-approvals-and-sandbox", "--json", "--output-last-message", outputPath)
+	cmd = append(cmd, "--dangerously-bypass-approvals-and-sandbox", "--json", "--output-last-message", output.path)
 	if req.Model != "" {
 		cmd = append(cmd, "--model", req.Model)
 	}
 	if req.ResumeSessionID != "" {
-		cmd = append(cmd, req.ResumeSessionID)
+		cmd = append(cmd, "--", req.ResumeSessionID)
 	}
 
 	var onStdoutLine func(string)
@@ -53,12 +62,12 @@ func (e Codex) Execute(ctx context.Context, req Request) Result {
 		onStdoutLine = newCodexChunkEmitter(req.OnChunk)
 	}
 	stdout, stderr, code, runErr := runCommand(ctx, e.cfg, e.cwd(req), cmd, req.Prompt, req.CardID, req.BoardID, "Codex execution timed out", onStdoutLine)
-	result := resultFromRun(parseCodexOutput, stdout, stderr, code, cmd, runErr)
+	result = resultFromRun(parseCodexOutput, stdout, stderr, code, cmd, runErr, e.cfg)
 	if !result.Success {
 		return result
 	}
 
-	finalMessage, err := readCodexFinalMessage(outputPath)
+	finalMessage, err := output.read()
 	if err != nil {
 		result.Success = false
 		result.Error = err.Error()

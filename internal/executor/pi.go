@@ -39,5 +39,5 @@ func (e Pi) Execute(ctx context.Context, req Request) Result {
 	stdout, stderr, code, err := runCommand(ctx, e.cfg, e.cwd(req), cmd, req.Prompt, req.CardID, req.BoardID, "Pi execution timed out", func(line string) {
 		emitChunkLine(line, "pi", req.OnChunk)
 	})
-	return resultFromRun(parsePiOutput, stdout, stderr, code, cmd, err)
+	return resultFromRun(parsePiOutput, stdout, stderr, code, cmd, err, e.cfg)
 }

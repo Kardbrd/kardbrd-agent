@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -138,7 +140,7 @@ func TestCodexExecutorResumesExplicitSessionInsteadOfStartingFresh(t *testing.T)
 	exec := NewCodex(Config{CWD: cwd, Timeout: testCommandTimeout})
 	result := exec.Execute(context.Background(), Request{
 		Prompt:          "resume prompt",
-		ResumeSessionID: "thread-123",
+		ResumeSessionID: "-thread-123",
 		Model:           "gpt-5.4",
 		CardID:          "card2",
 		BoardID:         "board2",
@@ -147,7 +149,7 @@ func TestCodexExecutorResumesExplicitSessionInsteadOfStartingFresh(t *testing.T)
 	assertEqual(t, true, result.Success)
 	assertEqual(t, "authoritative final response", result.ResultText)
 	outputPath := strings.TrimSpace(readFile(t, outputPathFile))
-	assertEqual(t, "exec\nresume\n--dangerously-bypass-approvals-and-sandbox\n--json\n--output-last-message\n"+outputPath+"\n--model\ngpt-5.4\nthread-123\n", readFile(t, argsFile))
+	assertEqual(t, "exec\nresume\n--dangerously-bypass-approvals-and-sandbox\n--json\n--output-last-message\n"+outputPath+"\n--model\ngpt-5.4\n--\n-thread-123\n", readFile(t, argsFile))
 	assertEqual(t, "resume prompt", readFile(t, promptFile))
 	assertEqual(t, cwd+"\n", readFile(t, cwdFile))
 	if _, err := os.Stat(outputPath); !os.IsNotExist(err) {
@@ -176,6 +178,28 @@ func TestCodexExecutorRejectsMissingFinalMessageFile(t *testing.T) {
 	}
 }
 
+func TestCodexExecutorRejectsReplacedFinalMessagePath(t *testing.T) {
+	dir := fakeCodexBinary(t)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_ARGS", filepath.Join(t.TempDir(), "args"))
+	t.Setenv("FAKE_PROMPT", filepath.Join(t.TempDir(), "prompt"))
+	t.Setenv("FAKE_CWD", filepath.Join(t.TempDir(), "cwd"))
+	t.Setenv("FAKE_ENV", filepath.Join(t.TempDir(), "env"))
+	t.Setenv("FAKE_OUTPUT_PATH", filepath.Join(t.TempDir(), "output-path"))
+	externalPath := filepath.Join(t.TempDir(), "external")
+	if err := os.WriteFile(externalPath, []byte("must not be published"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_EXTERNAL_OUTPUT", externalPath)
+	t.Setenv("FAKE_FINAL_MODE", "replace")
+
+	result := NewCodex(Config{CWD: t.TempDir(), Timeout: testCommandTimeout}).Execute(context.Background(), Request{Prompt: "prompt"})
+
+	assertEqual(t, false, result.Success)
+	assertContains(t, result.Error, "did not write final output")
+	assertNotContains(t, result.ResultText, "must not be published")
+}
+
 func TestCodexExecutorPreservesEmptyFinalMessageFileForBoundedRecovery(t *testing.T) {
 	dir := fakeCodexBinary(t)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -196,6 +220,22 @@ func TestCodexExecutorPreservesEmptyFinalMessageFileForBoundedRecovery(t *testin
 	if _, err := os.Stat(outputPath); !os.IsNotExist(err) {
 		t.Fatalf("empty final-message file remains after execution: %q, err=%v", outputPath, err)
 	}
+}
+
+func TestCodexExecutorRejectsTruncatedModernJSONL(t *testing.T) {
+	dir := fakeCodexBinary(t)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_ARGS", filepath.Join(t.TempDir(), "args"))
+	t.Setenv("FAKE_PROMPT", filepath.Join(t.TempDir(), "prompt"))
+	t.Setenv("FAKE_CWD", filepath.Join(t.TempDir(), "cwd"))
+	t.Setenv("FAKE_ENV", filepath.Join(t.TempDir(), "env"))
+	t.Setenv("FAKE_OUTPUT_PATH", filepath.Join(t.TempDir(), "output-path"))
+	t.Setenv("FAKE_FINAL_MODE", "truncated")
+
+	result := NewCodex(Config{CWD: t.TempDir(), Timeout: testCommandTimeout}).Execute(context.Background(), Request{Prompt: "prompt"})
+
+	assertEqual(t, false, result.Success)
+	assertContains(t, result.Error, "ended before turn.completed")
 }
 
 func TestCodexExecutorCleansFinalMessageFileOnFailureAndCancellation(t *testing.T) {
@@ -256,6 +296,7 @@ func TestRunCommandCapturesTerminalRecordAtProcessExit(t *testing.T) {
 cat >/dev/null
 printf '{"type":"thread.started","thread_id":"thread-at-exit"}\n'
 printf '{"type":"item.completed","item":{"id":"final","type":"agent_message","text":"terminal record"}}\n'
+printf '{"type":"turn.completed"}\n'
 `)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -299,6 +340,114 @@ printf 'terminal-record\n'
 	}
 }
 
+func TestSupervisorInheritedStderrRespectsTimeout(t *testing.T) {
+	pidPath := filepath.Join(t.TempDir(), "child-pid")
+	t.Setenv("SUPERVISOR_CHILD_PID", pidPath)
+	dir := fakeBinary(t, "inherited-pipes", `#!/bin/sh
+sleep 30 &
+printf '%s' "$!" > "$SUPERVISOR_CHILD_PID"
+printf 'parent finished\n'
+exit 0
+`)
+	done := make(chan struct{})
+	go func() {
+		_, _, _, _ = runCommand(context.Background(), Config{Timeout: 100 * time.Millisecond}, t.TempDir(), []string{filepath.Join(dir, "inherited-pipes")}, "", "card", "board", "timeout", nil)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Error("runner exceeded its bound while a descendant held stderr open")
+	}
+	if runtime.GOOS != "linux" {
+		return
+	}
+	rawPID, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatalf("fixture did not record descendant pid: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(rawPID)))
+	if err != nil {
+		t.Fatalf("invalid descendant pid %q: %v", rawPID, err)
+	}
+	procPath := filepath.Join("/proc", strconv.Itoa(pid))
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, statErr := os.Stat(procPath); errors.Is(statErr, os.ErrNotExist) {
+			break
+		}
+		if time.Now().After(deadline) {
+			if commandLine, readErr := os.ReadFile(filepath.Join(procPath, "cmdline")); readErr == nil && strings.Contains(string(commandLine), "sleep") {
+				if process, findErr := os.FindProcess(pid); findErr == nil {
+					_ = process.Kill()
+				}
+			}
+			t.Fatalf("descendant process %d survived runner cleanup", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestSupervisorBlockedCallbackHasBoundedDrain(t *testing.T) {
+	dir := fakeBinary(t, "callback-fixture", "#!/bin/sh\nprintf 'first\\n'\n")
+	release := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		_, _, _, _ = runCommand(context.Background(), Config{Timeout: 100 * time.Millisecond}, t.TempDir(), []string{filepath.Join(dir, "callback-fixture")}, "", "card", "board", "timeout", func(string) { <-release })
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Error("stdout callback prevented bounded process completion")
+	}
+	close(release)
+}
+
+func TestRunCommandBoundsAndRedactsFailureDiagnostics(t *testing.T) {
+	dir := fakeBinary(t, "noisy-failure", `#!/bin/sh
+printf '%s' "$KARDBRD_TOKEN" >&2
+i=0
+while [ "$i" -lt 70000 ]; do
+  printf x >&2
+  i=$((i + 1))
+done
+exit 1
+`)
+	config := Config{Timeout: testCommandTimeout, APIURL: "https://api.test", Token: "tok_sensitive"}
+	stdout, stderr, code, runErr := runCommand(context.Background(), config, t.TempDir(), []string{filepath.Join(dir, "noisy-failure")}, "", "card", "board", "timeout", nil)
+	if code == nil {
+		t.Fatal("runCommand returned no exit code")
+	}
+	if len(stderr) > maxSubprocessStderrBytes+len("\n... (output truncated)") {
+		t.Fatalf("stderr was not bounded: %d bytes", len(stderr))
+	}
+	result := resultFromRun(parseCodexOutput, stdout, stderr, code, []string{"codex"}, runErr, config)
+	assertEqual(t, false, result.Success)
+	assertNotContains(t, result.Error, "tok_sensitive")
+	assertNotContains(t, result.Stderr, "tok_sensitive")
+	assertContains(t, result.Error, "[REDACTED]")
+}
+
+func TestRunCommandDoesNotStartWithCancelledContext(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "started")
+	dir := fakeBinary(t, "cancelled-fixture", `#!/bin/sh
+printf started > "$STARTED_MARKER"
+`)
+	t.Setenv("STARTED_MARKER", marker)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, _, err := runCommand(ctx, Config{Timeout: testCommandTimeout}, t.TempDir(), []string{filepath.Join(dir, "cancelled-fixture")}, "", "card", "board", "timeout", nil)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("runCommand error = %v, want context cancellation", err)
+	}
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("cancelled command started: %v", statErr)
+	}
+}
+
 func TestScanStdoutReturnsReaderError(t *testing.T) {
 	readErr := errors.New("synthetic stdout read failure")
 	reader := &failingStdoutReader{err: readErr}
@@ -311,16 +460,55 @@ func TestScanStdoutReturnsReaderError(t *testing.T) {
 }
 
 func TestReadCodexFinalMessageBoundsOutput(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "final.txt")
-	if err := os.WriteFile(path, []byte(strings.Repeat("x", maxCodexFinalMessageBytes+1)), 0o600); err != nil {
+	output, err := createCodexFinalMessageFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = output.remove() }()
+	if err := output.file.Truncate(0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := output.file.Write([]byte(strings.Repeat("x", maxCodexFinalMessageBytes+1))); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := readCodexFinalMessage(path)
+	_, err = output.read()
 	if err == nil {
 		t.Fatal("oversized final output was accepted")
 	}
 	assertContains(t, err.Error(), "exceeds")
+}
+
+func TestCodexFinalMessageCleanupRejectsDirectoryReplacement(t *testing.T) {
+	output, err := createCodexFinalMessageFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	movedDir := output.dir + "-moved"
+	defer func() {
+		_ = os.RemoveAll(movedDir)
+		_ = os.RemoveAll(output.dir)
+	}()
+	if err := os.Rename(output.dir, movedDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(output.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(output.dir, "must-remain")
+	if err := os.WriteFile(marker, []byte("replacement content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err = output.remove()
+
+	if err == nil {
+		t.Fatal("cleanup accepted a replacement directory")
+	}
+	assertContains(t, err.Error(), "identity changed")
+	if _, statErr := os.Stat(marker); statErr != nil {
+		t.Fatalf("cleanup removed replacement content: %v", statErr)
+	}
 }
 
 func TestCodexAuthHintMentionsOpenAIAPIKey(t *testing.T) {
@@ -484,7 +672,12 @@ case "$FAKE_FINAL_MODE" in
   final) printf 'authoritative final response' > "$output_path" ;;
   empty) : > "$output_path" ;;
   missing) : ;;
+  replace) rm -f "$output_path"; ln -s "$FAKE_EXTERNAL_OUTPUT" "$output_path" ;;
+  truncated) printf 'untrusted final output' > "$output_path" ;;
 esac
+if [ "$FAKE_FINAL_MODE" != "truncated" ]; then
+  printf '{"type":"turn.completed"}\n'
+fi
 `)
 }
 
@@ -513,5 +706,12 @@ func assertContains(t *testing.T, got string, want string) {
 	t.Helper()
 	if !strings.Contains(got, want) {
 		t.Fatalf("expected %q to contain %q", got, want)
+	}
+}
+
+func assertNotContains(t *testing.T, got string, want string) {
+	t.Helper()
+	if strings.Contains(got, want) {
+		t.Fatalf("expected %q not to contain %q", got, want)
 	}
 }

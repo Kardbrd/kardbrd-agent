@@ -40,11 +40,13 @@ func TestParseCodexOutputCurrentJSONL(t *testing.T) {
 }
 
 func TestParseCodexOutputKeepsOnlyLatestCompletedMessageAsFallback(t *testing.T) {
-	stdout := `{"type":"item.started","item":{"id":"progress","type":"agent_message","text":"draft"}}` + "\n" +
+	stdout := `{"type":"turn.started"}` + "\n" +
+		`{"type":"item.started","item":{"id":"progress","type":"agent_message","text":"draft"}}` + "\n" +
 		`{"type":"item.updated","item":{"id":"progress","type":"agent_message","text":"working"}}` + "\n" +
 		`{"type":"item.updated","item":{"id":"progress","type":"agent_message","text":"working"}}` + "\n" +
 		`{"type":"item.completed","item":{"id":"progress","type":"agent_message","phase":"commentary","text":"progress complete"}}` + "\n" +
-		`{"type":"item.completed","item":{"id":"final","type":"agent_message","text":"final answer"}}` + "\n"
+		`{"type":"item.completed","item":{"id":"final","type":"agent_message","text":"final answer"}}` + "\n" +
+		`{"type":"turn.completed"}` + "\n"
 
 	result := parseCodexOutput(stdout, "", 0, []string{"codex"})
 
@@ -74,6 +76,11 @@ func TestParseCodexOutputFailsForTurnAndJSONLErrors(t *testing.T) {
 			name:      "malformed jsonl",
 			stdout:    `{"type":"turn.started"}` + "\n" + `{"type":"item.completed"` + "\n",
 			wantError: "malformed Codex JSONL",
+		},
+		{
+			name:      "truncated after complete item",
+			stdout:    `{"type":"thread.started","thread_id":"thread"}` + "\n" + `{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"partial"}}` + "\n",
+			wantError: "ended before turn.completed",
 		},
 		{
 			name:       "nonzero exit",
@@ -125,7 +132,8 @@ func TestEmitChunksForAssistantAndToolEvents(t *testing.T) {
 func TestEmitCodexChunksStreamsOnlyChangedAssistantMessages(t *testing.T) {
 	var chunks []string
 	emitChunks(
-		`{"type":"item.updated","item":{"id":"progress","type":"agent_message","text":"working"}}`+"\n"+
+		`{"type":"item.started","item":{"id":"progress","type":"agent_message","text":"draft"}}`+"\n"+
+			`{"type":"item.updated","item":{"id":"progress","type":"agent_message","text":"working"}}`+"\n"+
 			`{"type":"item.updated","item":{"id":"progress","type":"agent_message","text":"working"}}`+"\n"+
 			`{"type":"item.completed","item":{"id":"progress","type":"agent_message","text":"done"}}`+"\n"+
 			`{"type":"item.completed","item":{"id":"reasoning","type":"reasoning","text":"private chain"}}`+"\n"+
@@ -136,10 +144,11 @@ func TestEmitCodexChunksStreamsOnlyChangedAssistantMessages(t *testing.T) {
 		func(content string, chunkType string) { chunks = append(chunks, chunkType+":"+content) },
 	)
 
-	assertEqual(t, 3, len(chunks))
-	assertEqual(t, "assistant:working", chunks[0])
-	assertEqual(t, "assistant:done", chunks[1])
-	assertEqual(t, "assistant:final answer", chunks[2])
+	assertEqual(t, 4, len(chunks))
+	assertEqual(t, "assistant:draft", chunks[0])
+	assertEqual(t, "assistant:working", chunks[1])
+	assertEqual(t, "assistant:done", chunks[2])
+	assertEqual(t, "assistant:final answer", chunks[3])
 	if strings.Contains(strings.Join(chunks, "\n"), "secret") || strings.Contains(strings.Join(chunks, "\n"), "private") {
 		t.Fatalf("Codex stream leaked non-assistant content: %v", chunks)
 	}
