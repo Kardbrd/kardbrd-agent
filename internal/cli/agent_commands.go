@@ -104,6 +104,9 @@ func newAgentAdoptWorktreeCommand(root *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := verifyAdoptionCardID(cmd.Context(), api.NewClient(cfg.APIURL, cfg.Token), args[0]); err != nil {
+				return err
+			}
 			if err := manager.Adopt(cmd.Context(), args[0]); err != nil {
 				return err
 			}
@@ -116,6 +119,27 @@ func newAgentAdoptWorktreeCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().StringVarP(&flags.RulesFile, "rules", "r", "", "Path to kardbrd.yml rules file")
 	cmd.Flags().StringVarP(&flags.Executor, "executor", "e", "", "Executor type used for lifecycle sharing")
 	return cmd
+}
+
+// verifyAdoptionCardID makes administrative adoption fail closed when the API
+// does not confirm the exact, case-preserving card ID named in the manifest.
+// It deliberately runs before LifecycleManager.Adopt, whose successful path
+// writes the origin: adopted ownership record.
+func verifyAdoptionCardID(ctx context.Context, client *api.Client, expected string) error {
+	raw, err := client.GetCard(ctx, expected)
+	if err != nil {
+		return fmt.Errorf("fetch adoption card %q: %w", expected, err)
+	}
+	var card struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &card); err != nil {
+		return fmt.Errorf("decode adoption card %q: %w", expected, err)
+	}
+	if card.ID != expected {
+		return fmt.Errorf("canonical API card ID %q does not exactly match configured adoption card_id %q", card.ID, expected)
+	}
+	return nil
 }
 
 func newAgentStartCommand(root *rootOptions) *cobra.Command {
@@ -296,21 +320,6 @@ func realRunAgentRuntime(ctx context.Context, runtime agentRuntime) error {
 	}
 	ws := api.NewWebSocketClient(cfg.APIURL, cfg.Token)
 	var scheduleManager *scheduler.Manager
-	var reload func(context.Context) (rules.Config, error)
-	if cfg.RulesFile != "" {
-		reload = func(ctx context.Context) (rules.Config, error) {
-			loaded, err := rules.LoadFile(cfg.RulesFile)
-			if err != nil {
-				return rules.Config{}, err
-			}
-			if scheduleManager != nil {
-				if err := scheduleManager.UpdateSchedules(loaded.Schedules); err != nil {
-					return rules.Config{}, err
-				}
-			}
-			return loaded, nil
-		}
-	}
 	manager := agent.NewManager(agent.Config{
 		BoardID:              cfg.BoardID,
 		APIURL:               cfg.APIURL,
@@ -327,26 +336,10 @@ func realRunAgentRuntime(ctx context.Context, runtime agentRuntime) error {
 		Executor:             exec,
 		Worktree:             wt,
 		WebSocket:            ws,
-		Reload:               reload,
 	})
 	scheduleManager = scheduler.NewManager(runtime.Schedules, cfg.BoardID, client, manager.ProcessSchedule)
 	if cfg.RulesFile != "" {
-		manager.Reload = func(ctx context.Context) (rules.Config, error) {
-			loaded, err := rules.LoadFile(cfg.RulesFile)
-			if err != nil {
-				return rules.Config{}, err
-			}
-			if err := manager.ValidateRulesConfig(loaded); err != nil {
-				return rules.Config{}, err
-			}
-			if err := validateLifecycleDeadline(cfg, loaded); err != nil {
-				return rules.Config{}, err
-			}
-			if err := scheduleManager.UpdateSchedules(loaded.Schedules); err != nil {
-				return rules.Config{}, err
-			}
-			return loaded, nil
-		}
+		manager.Reload = newRuntimeRulesReload(cfg.RulesFile, cfg, manager, scheduleManager)
 	}
 
 	ws.OnBoardEvent = func(raw json.RawMessage) {
@@ -378,6 +371,29 @@ func realRunAgentRuntime(ctx context.Context, runtime agentRuntime) error {
 	case err := <-errCh:
 		_ = manager.Stop(context.Background())
 		return err
+	}
+}
+
+// newRuntimeRulesReload validates a complete candidate before it can change
+// either running schedule entries or the ordinary rule engine. The candidate
+// loader reads the rules file once; policy validation and scheduler staging
+// therefore operate on exactly the bytes that passed semantic validation.
+func newRuntimeRulesReload(path string, cfg config.AgentConfig, manager *agent.Manager, scheduleManager *scheduler.Manager) func(context.Context) (rules.Config, error) {
+	return func(_ context.Context) (rules.Config, error) {
+		loaded, err := rules.LoadValidatedFile(path)
+		if err != nil {
+			return rules.Config{}, err
+		}
+		if err := manager.ValidateRulesConfig(loaded); err != nil {
+			return rules.Config{}, err
+		}
+		if err := validateLifecycleDeadline(cfg, loaded); err != nil {
+			return rules.Config{}, err
+		}
+		if err := scheduleManager.UpdateSchedules(loaded.Schedules); err != nil {
+			return rules.Config{}, err
+		}
+		return loaded, nil
 	}
 }
 

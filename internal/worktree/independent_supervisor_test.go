@@ -257,3 +257,26 @@ func TestIndependentSupervisorNormalHelperExitReapsInheritedPipes(t *testing.T) 
 		}
 	}
 }
+
+func TestExternalSupervisorSuccessfulHooksCloseOutputDescriptors(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("uses Linux process descriptor inventory")
+	}
+	before, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &LifecycleManager{}
+	for range 10 {
+		if _, err := manager.run(context.Background(), t.TempDir(), []string{"/bin/true"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	after, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) > len(before)+1 {
+		t.Fatalf("successful helpers leaked output descriptors: before=%d after=%d", len(before), len(after))
+	}
+}

@@ -759,17 +759,17 @@ func (m *LifecycleManager) runWithEnv(ctx context.Context, dir string, args, env
 	if err != nil {
 		return RunResult{}, fmt.Errorf("create command output pipe: %w", err)
 	}
+	defer reader.Close()
 	cmd.Stdout, cmd.Stderr = writer, writer
 	if err := cmd.Start(); err != nil {
-		_ = reader.Close()
 		_ = writer.Close()
 		return RunResult{Stderr: output.String()}, err
 	}
 	_ = writer.Close()
-	outputDone := make(chan struct{})
+	outputDone := make(chan error, 1)
 	go func() {
-		_, _ = io.Copy(output, reader)
-		close(outputDone)
+		_, copyErr := io.Copy(output, reader)
+		outputDone <- copyErr
 	}()
 	done := make(chan struct{})
 	go func() {
@@ -782,22 +782,37 @@ func (m *LifecycleManager) runWithEnv(ctx context.Context, dir string, args, env
 	err = cmd.Wait()
 	close(done)
 	terminateLifecycleProcessGroup(cmd)
+	var outputErr error
 	select {
-	case <-outputDone:
+	case outputErr = <-outputDone:
 		_ = reader.Close()
 	case <-time.After(100 * time.Millisecond):
 		_ = reader.Close()
 		select {
-		case <-outputDone:
+		case outputErr = <-outputDone:
 		case <-time.After(100 * time.Millisecond):
+			outputErr = errors.New("timed out draining command output")
 		}
 	}
 	result := RunResult{Stdout: output.String(), Stderr: output.String()}
+	if outputErr != nil {
+		outputErr = fmt.Errorf("copy command output: %w", outputErr)
+	}
 	if err != nil {
-		return result, commandError{args: args, stderr: result.Stderr, err: err}
+		commandErr := commandError{args: args, stderr: result.Stderr, err: err}
+		if outputErr != nil {
+			return result, errors.Join(commandErr, outputErr)
+		}
+		return result, commandErr
 	}
 	if ctx.Err() != nil {
+		if outputErr != nil {
+			return result, errors.Join(ctx.Err(), outputErr)
+		}
 		return result, ctx.Err()
+	}
+	if outputErr != nil {
+		return result, outputErr
 	}
 	return result, nil
 }

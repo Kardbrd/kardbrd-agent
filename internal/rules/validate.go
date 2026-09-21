@@ -49,12 +49,20 @@ var knownRuleFields = set("name", "event", "action", "model", "list", "title", "
 var knownScheduleFields = set("name", "card_id", "cron", "action", "model", "assignee", "list", "publish_result")
 
 func ValidateFile(path string) ValidationResult {
-	var result ValidationResult
 	data, err := os.ReadFile(path)
 	if err != nil {
+		var result ValidationResult
 		result.addError("File not found: " + path)
 		return result
 	}
+	return ValidateBytes(data)
+}
+
+// ValidateBytes performs the complete schema and semantic validation against
+// one immutable candidate. Reload uses this companion to LoadBytes so it can
+// never validate one file revision and install another.
+func ValidateBytes(data []byte) ValidationResult {
+	var result ValidationResult
 	if strings.TrimSpace(string(data)) == "" {
 		result.addError("File is empty")
 		return result
@@ -95,16 +103,40 @@ func ValidateFile(path string) ValidationResult {
 	if schedulesNode, ok := top["schedules"]; ok {
 		validateSchedulesNode(&result, schedulesNode)
 	}
-	// LoadFile performs normalization-time relationship checks (for example the
+	// LoadBytes performs normalization-time relationship checks (for example the
 	// full/delegated pairing) using the same strict candidate bytes used at
 	// startup and reload. Keep legacy warnings intact while making opt-in
 	// lifecycle validation equally strict at `agent validate`.
 	if result.IsValid() {
-		if _, err := LoadFile(path); err != nil {
+		if _, err := LoadBytes(data); err != nil {
 			result.addError(err.Error())
 		}
 	}
 	return result
+}
+
+// LoadValidatedFile reads a candidate once, validates every ordinary rule and
+// schedule semantically from those bytes, and only then normalizes it. It is
+// intentionally separate from LoadFile for legacy callers that historically
+// load partially specified ordinary rules.
+func LoadValidatedFile(path string) (Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Config{}, err
+	}
+	return LoadValidatedBytes(data)
+}
+
+func LoadValidatedBytes(data []byte) (Config, error) {
+	result := ValidateBytes(data)
+	if !result.IsValid() {
+		messages := make([]string, 0, len(result.Errors))
+		for _, issue := range result.Errors {
+			messages = append(messages, issue.Message)
+		}
+		return Config{}, fmt.Errorf("invalid rules candidate: %s", strings.Join(messages, "; "))
+	}
+	return LoadBytes(data)
 }
 
 func validateRulesNode(result *ValidationResult, node *yaml.Node) {

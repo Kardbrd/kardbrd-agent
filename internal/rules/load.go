@@ -106,6 +106,13 @@ func LoadFile(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	return LoadBytes(data)
+}
+
+// LoadBytes preserves LoadFile's legacy direct-loading behavior for callers
+// which intentionally handle ordinary-rule validation themselves. Lifecycle,
+// command-rule, and cleanup-command strict decoding still applies here.
+func LoadBytes(data []byte) (Config, error) {
 	if err := validateLoadedCleanupCommands(data); err != nil {
 		return Config{}, err
 	}

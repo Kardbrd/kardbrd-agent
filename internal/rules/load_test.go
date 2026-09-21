@@ -49,6 +49,28 @@ schedules:
 	assertEqual(t, "card-fixed", cfg.Schedules[0].CardID)
 }
 
+func TestLoadValidatedFileRejectsParseableRulesAndSchedulesMissingActions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "semantically-invalid.yml")
+	if err := os.WriteFile(path, []byte(`
+board_id: board1
+agent: BotName
+rules:
+  - name: Missing rule action
+    event: card_created
+schedules:
+  - name: Missing schedule action
+    cron: "* * * * *"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFile(path); err != nil {
+		t.Fatalf("legacy LoadFile compatibility changed: %v", err)
+	}
+	if _, err := LoadValidatedFile(path); err == nil {
+		t.Fatal("expected semantically invalid candidate to be rejected")
+	}
+}
+
 func TestLoadSchedulePublishResultDefaultsToTrueAndAcceptsFalse(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "publish-result.yml")
 	if err := os.WriteFile(path, []byte(`

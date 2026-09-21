@@ -8,8 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Kardbrd/kardbrd-agent/internal/agent"
 	"github.com/Kardbrd/kardbrd-agent/internal/config"
 	"github.com/Kardbrd/kardbrd-agent/internal/rules"
+	"github.com/Kardbrd/kardbrd-agent/internal/scheduler"
 )
 
 func TestAgentStartReportsMissingNewEnvNames(t *testing.T) {
@@ -286,6 +288,36 @@ func TestLifecycleHookTimeoutCannotExceedAgentDeadline(t *testing.T) {
 	}}
 	if err := validateLifecycleDeadline(cfg, rulesCfg); err == nil {
 		t.Fatal("expected lifecycle timeout validation error")
+	}
+}
+
+func TestRuntimeReloadRejectsSemanticCandidateWithoutMutatingRulesOrSchedules(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kardbrd.yml")
+	if err := os.WriteFile(path, []byte("board_id: board1\nagent: Bot\nrules:\n  - name: Broken rule\n    event: card_created\nschedules:\n  - name: Broken schedule\n    cron: '* * * * *'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldRules := []rules.Rule{{Name: "Old rule", Events: []string{"card_created"}, Action: "/old"}}
+	oldSchedules := []rules.Schedule{{Name: "Old schedule", Cron: "0 * * * *", Action: "/old"}}
+	manager := agent.NewManager(agent.Config{
+		Rules:                &rules.Engine{Rules: oldRules},
+		Schedules:            oldSchedules,
+		LifecycleFingerprint: rules.LifecycleFingerprint(rules.Config{Rules: oldRules}),
+	})
+	scheduleManager := scheduler.NewManager(oldSchedules, "board1", nil, nil)
+	cfg := config.AgentConfig{TimeoutSeconds: 60}
+	manager.Reload = newRuntimeRulesReload(path, cfg, manager, scheduleManager)
+
+	if _, err := manager.ReloadAndApply(context.Background()); err == nil {
+		t.Fatal("parseable candidate missing required actions was accepted")
+	}
+	if got := manager.Rules.Rules[0].Name; got != "Old rule" {
+		t.Fatalf("failed reload replaced ordinary rules with %q", got)
+	}
+	if got := manager.Schedules[0].Name; got != "Old schedule" {
+		t.Fatalf("failed reload replaced manager schedules with %q", got)
+	}
+	if got := scheduleManager.Schedules[0].Name; got != "Old schedule" {
+		t.Fatalf("failed reload replaced active scheduler schedules with %q", got)
 	}
 }
 
