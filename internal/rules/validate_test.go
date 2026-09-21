@@ -163,6 +163,26 @@ rules:
 	assertIssueContains(t, result.Errors, "must not invoke sudo")
 }
 
+func TestValidateRulesFileRejectsUnknownCommandRuleFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "command.yml")
+	writeFile(t, path, `
+board_id: board1
+agent: Bot
+rules:
+  - name: Stop preview
+    event: comment_created
+    comment_command: /down
+    action: /down
+    misspelled_policy: nope
+`)
+
+	result := ValidateFile(path)
+	if result.IsValid() {
+		t.Fatal("expected strict command rule validation failure")
+	}
+	assertIssueContains(t, result.Errors, "unknown command-rule field 'misspelled_policy'")
+}
+
 func writeFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(strings.TrimLeft(content, "\n")), 0o600); err != nil {

@@ -13,8 +13,61 @@ type rawConfig struct {
 	AgentName string        `yaml:"agent"`
 	APIURL    string        `yaml:"api_url"`
 	Executor  string        `yaml:"executor"`
+	Worktree  *rawWorktree  `yaml:"worktree"`
 	Rules     []rawRule     `yaml:"rules"`
 	Schedules []rawSchedule `yaml:"schedules"`
+}
+
+type rawWorktree struct {
+	Base        *rawWorktreeBase        `yaml:"base"`
+	Helpers     *rawWorktreeHelpers     `yaml:"helpers"`
+	Checkout    *rawWorktreeCheckout    `yaml:"checkout"`
+	Prepare     *rawPrepareHook         `yaml:"prepare"`
+	Sharing     *rawWorktreeSharing     `yaml:"sharing"`
+	Environment *rawWorktreeEnvironment `yaml:"environment"`
+	Adoptions   []rawWorktreeAdoption   `yaml:"adoptions"`
+}
+
+type rawWorktreeBase struct {
+	Remote string `yaml:"remote"`
+	Ref    string `yaml:"ref"`
+}
+
+type rawWorktreeHelpers struct {
+	StableRoot string `yaml:"stable_root"`
+}
+
+type rawWorktreeCheckout struct {
+	Mode      string   `yaml:"mode"`
+	Bootstrap *rawHook `yaml:"bootstrap"`
+}
+
+type rawHook struct {
+	Argv           []string `yaml:"argv"`
+	TimeoutSeconds *int     `yaml:"timeout_seconds"`
+}
+
+type rawPrepareHook struct {
+	Argv           []string `yaml:"argv"`
+	TimeoutSeconds *int     `yaml:"timeout_seconds"`
+	OnCreate       *bool    `yaml:"on_create"`
+	OnReuse        *bool    `yaml:"on_reuse"`
+}
+
+type rawWorktreeSharing struct {
+	Env    string `yaml:"env"`
+	Skills string `yaml:"skills"`
+}
+
+type rawWorktreeEnvironment struct {
+	Passthrough []string `yaml:"passthrough"`
+}
+
+type rawWorktreeAdoption struct {
+	CardID       string `yaml:"card_id"`
+	Path         string `yaml:"path"`
+	CommonGitDir string `yaml:"common_git_dir"`
+	Branch       string `yaml:"branch"`
 }
 
 type rawRule struct {
@@ -33,6 +86,8 @@ type rawRule struct {
 	Assignee        []string `yaml:"assignee"`
 	CommentAuthor   string   `yaml:"comment_author"`
 	CleanupCommand  []string `yaml:"cleanup_command"`
+	CommentCommand  string   `yaml:"comment_command"`
+	Execution       string   `yaml:"execution"`
 }
 
 type rawSchedule struct {
@@ -54,6 +109,9 @@ func LoadFile(path string) (Config, error) {
 	if err := validateLoadedCleanupCommands(data); err != nil {
 		return Config{}, err
 	}
+	if err := validateLoadedLifecycle(data); err != nil {
+		return Config{}, err
+	}
 
 	var raw rawConfig
 	if err := yaml.Unmarshal(data, &raw); err != nil {
@@ -71,6 +129,13 @@ func LoadFile(path string) (Config, error) {
 		AgentName: raw.AgentName,
 		APIURL:    raw.APIURL,
 		Executor:  stringsLower(raw.Executor),
+	}
+	if raw.Worktree != nil {
+		worktree, err := normalizeWorktree(*raw.Worktree)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.Worktree = &worktree
 	}
 	for _, rawRule := range raw.Rules {
 		events, err := parseEvents(rawRule.Event)
@@ -98,7 +163,12 @@ func LoadFile(path string) (Config, error) {
 			Assignee:        rawRule.Assignee,
 			CommentAuthor:   rawRule.CommentAuthor,
 			CleanupCommand:  append([]string(nil), rawRule.CleanupCommand...),
+			CommentCommand:  rawRule.CommentCommand,
+			Execution:       ExecutionPolicy(rawRule.Execution),
 		})
+	}
+	if err := normalizeCommandRules(cfg.Rules); err != nil {
+		return Config{}, err
 	}
 	for _, rawSchedule := range raw.Schedules {
 		cfg.Schedules = append(cfg.Schedules, Schedule{
@@ -113,6 +183,116 @@ func LoadFile(path string) (Config, error) {
 		})
 	}
 	return cfg, nil
+}
+
+func normalizeWorktree(raw rawWorktree) (WorktreeConfig, error) {
+	config := WorktreeConfig{
+		Base:     WorktreeBase{Remote: "origin"},
+		Checkout: WorktreeCheckout{Mode: CheckoutFull},
+		Sharing:  WorktreeSharing{Env: SharingEnvDisabled, Skills: SharingSkillsFallback},
+	}
+	if raw.Base != nil {
+		if raw.Base.Remote != "" {
+			config.Base.Remote = raw.Base.Remote
+		}
+		config.Base.Ref = normalizeRef(raw.Base.Ref)
+	}
+	if raw.Helpers != nil {
+		config.Helpers.StableRoot = raw.Helpers.StableRoot
+	}
+	if raw.Checkout != nil {
+		if raw.Checkout.Mode != "" {
+			config.Checkout.Mode = CheckoutMode(raw.Checkout.Mode)
+		}
+		if raw.Checkout.Bootstrap != nil {
+			config.Checkout.Bootstrap = normalizeHook(*raw.Checkout.Bootstrap)
+		}
+	}
+	if raw.Prepare != nil {
+		onCreate := true
+		if raw.Prepare.OnCreate != nil {
+			onCreate = *raw.Prepare.OnCreate
+		}
+		onReuse := false
+		if raw.Prepare.OnReuse != nil {
+			onReuse = *raw.Prepare.OnReuse
+		}
+		config.Prepare = &PrepareHook{Hook: *normalizeHook(rawHook{Argv: raw.Prepare.Argv, TimeoutSeconds: raw.Prepare.TimeoutSeconds}), OnCreate: onCreate, OnReuse: onReuse}
+	}
+	if raw.Sharing != nil {
+		if raw.Sharing.Env != "" {
+			config.Sharing.Env = SharingEnv(raw.Sharing.Env)
+		}
+		if raw.Sharing.Skills != "" {
+			config.Sharing.Skills = SharingSkills(raw.Sharing.Skills)
+		}
+	}
+	if raw.Environment != nil {
+		config.Environment.Passthrough = append([]string(nil), raw.Environment.Passthrough...)
+	}
+	for _, adoption := range raw.Adoptions {
+		config.Adoptions = append(config.Adoptions, WorktreeAdoption{CardID: adoption.CardID, Path: adoption.Path, CommonGitDir: adoption.CommonGitDir, Branch: adoption.Branch})
+	}
+	if err := validateWorktreeConfig(config); err != nil {
+		return WorktreeConfig{}, err
+	}
+	return config, nil
+}
+
+func normalizeHook(raw rawHook) *Hook {
+	timeout := 900
+	if raw.TimeoutSeconds != nil {
+		timeout = *raw.TimeoutSeconds
+	}
+	return &Hook{Argv: append([]string(nil), raw.Argv...), TimeoutSeconds: timeout}
+}
+
+func normalizeRef(ref string) string {
+	if ref == "main" {
+		return "refs/heads/main"
+	}
+	return ref
+}
+
+func normalizeCommandRules(rules []Rule) error {
+	seen := map[string]bool{}
+	for index := range rules {
+		rule := &rules[index]
+		if rule.CommentCommand == "" {
+			if rule.Execution != "" {
+				return fmt.Errorf("rule %q: execution requires comment_command", rule.Name)
+			}
+			continue
+		}
+		if rule.Execution == "" {
+			rule.Execution = ExecutionPrepare
+		}
+		if err := validateCommandRule(*rule); err != nil {
+			return err
+		}
+		key := strings.ToLower(rule.CommentCommand)
+		if seen[key] {
+			return fmt.Errorf("rule %q: duplicate comment_command %q", rule.Name, rule.CommentCommand)
+		}
+		seen[key] = true
+	}
+	return nil
+}
+
+func validateCommandRule(rule Rule) error {
+	if len(rule.Events) != 1 || rule.Events[0] != "comment_created" {
+		return fmt.Errorf("rule %q: comment_command rules must use only the comment_created event", rule.Name)
+	}
+	if !strings.HasPrefix(rule.CommentCommand, "/") || strings.TrimSpace(rule.CommentCommand) != rule.CommentCommand || strings.ContainsAny(rule.CommentCommand, " \t\n") || len(rule.CommentCommand) == 1 {
+		return fmt.Errorf("rule %q: comment_command must be one exact slash command", rule.Name)
+	}
+	if strings.TrimSpace(rule.Action) == "" {
+		return fmt.Errorf("rule %q: comment_command requires action", rule.Name)
+	}
+	if rule.Execution != ExecutionPrepare && rule.Execution != ExecutionExistingOrBase {
+		return fmt.Errorf("rule %q: execution must be prepare or existing_or_base", rule.Name)
+	}
+	return nil
 }
 
 // validateLoadedCleanupCommands retains LoadFile's existing compatibility for

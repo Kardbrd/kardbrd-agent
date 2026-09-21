@@ -168,6 +168,65 @@ func TestLoadDoneCleanupCommandRejectsEveryInvalidCleanupForm(t *testing.T) {
 	}
 }
 
+func TestLoadLifecycleNormalizesReviewedDefaultsAndCommandPolicy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lifecycle.yml")
+	if err := os.WriteFile(path, []byte(`
+board_id: board1
+agent: BotName
+worktree:
+  helpers:
+    stable_root: /stable
+  prepare:
+    argv: [/stable/prepare]
+rules:
+  - name: Stop preview
+    event: comment_created
+    comment_command: /down
+    execution: existing_or_base
+    action: /down
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Worktree == nil {
+		t.Fatal("expected opt-in lifecycle configuration")
+	}
+	assertEqual(t, "origin", cfg.Worktree.Base.Remote)
+	assertEqual(t, "", cfg.Worktree.Base.Ref)
+	assertEqual(t, CheckoutFull, cfg.Worktree.Checkout.Mode)
+	assertEqual(t, 900, cfg.Worktree.Prepare.TimeoutSeconds)
+	assertEqual(t, true, cfg.Worktree.Prepare.OnCreate)
+	assertEqual(t, false, cfg.Worktree.Prepare.OnReuse)
+	assertEqual(t, SharingEnvDisabled, cfg.Worktree.Sharing.Env)
+	assertEqual(t, SharingSkillsFallback, cfg.Worktree.Sharing.Skills)
+	assertEqual(t, "/down", cfg.Rules[0].CommentCommand)
+	assertEqual(t, ExecutionExistingOrBase, cfg.Rules[0].Execution)
+}
+
+func TestLoadLifecycleRejectsNullUnknownAndCoercedFields(t *testing.T) {
+	for _, lifecycle := range []string{
+		"worktree: null",
+		"worktree:\n  unknown: value",
+		"worktree:\n  checkout:\n    mode: delegated",
+		"worktree:\n  prepare:\n    argv: [/stable/prepare]\n    on_create: 'true'",
+	} {
+		t.Run(lifecycle, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "invalid-lifecycle.yml")
+			content := "board_id: board1\nagent: BotName\n" + lifecycle + "\n"
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadFile(path); err == nil {
+				t.Fatal("expected strict lifecycle load failure")
+			}
+		})
+	}
+}
+
 func assertEqual[T comparable](t *testing.T, want T, got T) {
 	t.Helper()
 	if got != want {
