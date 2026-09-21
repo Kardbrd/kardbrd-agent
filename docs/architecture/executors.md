@@ -70,6 +70,11 @@ input descriptor cannot discard a terminal JSONL line or make completion wait in
 Progress delivery is bounded and best-effort under backlog; scanner/read errors remain executor
 failures.
 
+Diagnostic retention has independent byte caps. For Codex, each complete stdout record is decoded
+into compact protocol state before that retained diagnostic cap, so verbose tool output cannot turn
+a later completion or failed-turn record into malformed JSONL. Hitting a retained-log cap annotates
+the diagnostic; it is not by itself an execution failure.
+
 Nested assistant messages continue to stream as progress, with repeated item snapshots
 suppressed. Reasoning, command execution, and raw tool payloads are never forwarded as Codex
 assistant chunks. If the manager needs empty-result recovery and the adapter supplied a thread

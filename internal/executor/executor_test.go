@@ -380,9 +380,12 @@ func TestSupervisorBlockedCallbackHasBoundedDrain(t *testing.T) {
 
 func TestSupervisorInheritedStdinCannotHoldParentCompletion(t *testing.T) {
 	pidPath := filepath.Join(t.TempDir(), "stdin-child-pid")
+	promptPath := filepath.Join(t.TempDir(), "stdin-prompt")
 	t.Setenv("SUPERVISOR_CHILD_PID", pidPath)
+	t.Setenv("SUPERVISOR_PROMPT", promptPath)
 	dir := fakeBinary(t, "inherited-input", `#!/bin/sh
 exec 3<&0
+dd bs=1 count=12 <&3 > "$SUPERVISOR_PROMPT" 2>/dev/null
 sleep 30 <&3 >/dev/null 2>&1 &
 printf '%s' "$!" > "$SUPERVISOR_CHILD_PID"
 exit 0
@@ -397,6 +400,7 @@ exit 0
 	case <-time.After(2 * time.Second):
 		t.Error("direct child exited but inherited stdin held runner completion")
 	}
+	assertEqual(t, "long prompt ", readFile(t, promptPath))
 	assertSupervisorChildStopped(t, pidPath)
 }
 
@@ -440,6 +444,66 @@ exit 1
 	assertNotContains(t, result.Error, "tok_sensitive")
 	assertNotContains(t, result.Stderr, "tok_sensitive")
 	assertContains(t, result.Error, "[REDACTED]")
+}
+
+func TestCodexExecutorAcceptsVerboseSuccessfulOutput(t *testing.T) {
+	for _, stream := range []string{"stdout", "stderr"} {
+		t.Run(stream, func(t *testing.T) {
+			dir := fakeBinary(t, "codex", `#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+output = args[args.index('--output-last-message') + 1]
+sys.stdin.read()
+print(json.dumps({'type': 'thread.started', 'thread_id': 'synthetic-verbose'}))
+if os.environ['SUPERVISOR_NOISY_STREAM'] == 'stdout':
+    for i in range(5000):
+        print(json.dumps({'type': 'item.completed', 'item': {'id': str(i), 'type': 'command_execution', 'aggregated_output': 'x' * 1000, 'exit_code': 0}}))
+else:
+    sys.stderr.write('ordinary diagnostics\\n' * 4000)
+print(json.dumps({'type': 'item.completed', 'item': {'id': 'final', 'type': 'agent_message', 'text': 'completed'}}))
+print(json.dumps({'type': 'turn.completed', 'usage': {}}))
+with open(output, 'w') as f:
+    f.write('completed')
+`)
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("SUPERVISOR_NOISY_STREAM", stream)
+
+			result := NewCodex(Config{Timeout: 10 * time.Second}).Execute(context.Background(), Request{
+				CWD:     filepath.Dir(dir),
+				Prompt:  "synthetic",
+				CardID:  "card",
+				BoardID: "board",
+			})
+			if !result.Success || result.ResultText != "completed" {
+				t.Fatalf("valid verbose run was discarded: success=%v final=%q error=%q", result.Success, result.ResultText, result.Error)
+			}
+		})
+	}
+}
+
+func TestCodexExecutorReportsVerboseTurnFailure(t *testing.T) {
+	dir := fakeBinary(t, "codex", `#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+output = args[args.index('--output-last-message') + 1]
+sys.stdin.read()
+print(json.dumps({'type': 'thread.started', 'thread_id': 'synthetic-verbose'}))
+for i in range(5000):
+    print(json.dumps({'type': 'item.completed', 'item': {'id': str(i), 'type': 'command_execution', 'aggregated_output': 'x' * 1000, 'exit_code': 0}}))
+print(json.dumps({'type': 'turn.failed', 'error': {'message': 'synthetic verbose failure'}}))
+with open(output, 'w') as f:
+    f.write('completed')
+`)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	result := NewCodex(Config{Timeout: 10 * time.Second}).Execute(context.Background(), Request{
+		CWD:     filepath.Dir(dir),
+		Prompt:  "synthetic",
+		CardID:  "card",
+		BoardID: "board",
+	})
+	assertEqual(t, false, result.Success)
+	assertContains(t, result.Error, "synthetic verbose failure")
 }
 
 func TestRunCommandDoesNotStartWithCancelledContext(t *testing.T) {

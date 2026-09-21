@@ -25,6 +25,14 @@ const (
 // ends out of os/exec's copy goroutines lets us reap a direct child promptly
 // even when one of its descendants inherited stdout or stderr.
 func runCommand(ctx context.Context, cfg Config, cwd string, args []string, promptText, cardID, boardID, timeoutError string, onStdoutLine func(string)) (stdout string, stderr string, code *int, err error) {
+	return runCommandWithStdoutObserver(ctx, cfg, cwd, args, promptText, cardID, boardID, timeoutError, nil, onStdoutLine)
+}
+
+// runCommandWithStdoutObserver delivers each complete stdout line to observer
+// before bounded diagnostic retention and best-effort progress delivery. An
+// observer is for compact, authoritative protocol state only: it runs on the
+// capture goroutine and must not block on external work.
+func runCommandWithStdoutObserver(ctx context.Context, cfg Config, cwd string, args []string, promptText, cardID, boardID, timeoutError string, observer, onStdoutLine func(string)) (stdout string, stderr string, code *int, err error) {
 	commandCtx, cancel := context.WithTimeout(ctx, durationOrDefault(cfg.Timeout))
 	defer cancel()
 	if err := commandCtx.Err(); err != nil {
@@ -86,7 +94,12 @@ func runCommand(ctx context.Context, cfg Config, cwd string, args []string, prom
 	stdoutDone := make(chan error, 1)
 	go func() {
 		defer stdoutReader.Close()
-		stdoutDone <- scanStdout(stdoutReader, &stdoutBuf, progress.emit)
+		stdoutDone <- scanStdout(stdoutReader, &stdoutBuf, func(line string) {
+			if observer != nil {
+				observer(line)
+			}
+			progress.emit(line)
+		})
 	}()
 	stderrDone := make(chan error, 1)
 	go func() {
@@ -137,14 +150,6 @@ func runCommand(ctx context.Context, cfg Config, cwd string, args []string, prom
 			err = errors.Join(err, drainErr)
 		}
 	}
-	if stdoutBuf.Truncated() || stderrBuf.Truncated() {
-		outputErr := errors.New("subprocess output exceeds configured diagnostic limit")
-		if err == nil {
-			err = outputErr
-		} else {
-			err = errors.Join(err, outputErr)
-		}
-	}
 	if commandCtx.Err() == context.DeadlineExceeded {
 		return stdoutBuf.String(), stderrBuf.String(), nil, errors.New(timeoutError)
 	}
@@ -164,7 +169,11 @@ func scanStdout(reader io.Reader, stdout io.Writer, onStdoutLine func(string)) e
 	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
-		_, _ = io.WriteString(stdout, line+"\n")
+		if limited, ok := stdout.(*limitedOutput); ok {
+			limited.WriteLine(line + "\n")
+		} else {
+			_, _ = io.WriteString(stdout, line+"\n")
+		}
 		if onStdoutLine != nil {
 			onStdoutLine(line)
 		}
@@ -315,6 +324,19 @@ func (o *limitedOutput) Write(value []byte) (int, error) {
 		o.truncated = true
 	}
 	return len(value), nil
+}
+
+// WriteLine keeps a retained stdout diagnostic parseable by discarding a whole
+// record once it would exceed the cap. stderr is intentionally byte-oriented
+// because it is only surfaced as diagnostics, never decoded as a protocol.
+func (o *limitedOutput) WriteLine(value string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if len(value) <= o.limit-o.buffer.Len() {
+		_, _ = o.buffer.WriteString(value)
+		return
+	}
+	o.truncated = true
 }
 
 func (o *limitedOutput) String() string {

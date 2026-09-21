@@ -61,8 +61,11 @@ func (e Codex) Execute(ctx context.Context, req Request) (result Result) {
 	if req.OnChunk != nil {
 		onStdoutLine = newCodexChunkEmitter(req.OnChunk)
 	}
-	stdout, stderr, code, runErr := runCommand(ctx, e.cfg, e.cwd(req), cmd, req.Prompt, req.CardID, req.BoardID, "Codex execution timed out", onStdoutLine)
-	result = resultFromRun(parseCodexOutput, stdout, stderr, code, cmd, runErr, e.cfg)
+	stream := newCodexOutputState()
+	stdout, stderr, code, runErr := runCommandWithStdoutObserver(ctx, e.cfg, e.cwd(req), cmd, req.Prompt, req.CardID, req.BoardID, "Codex execution timed out", stream.consume, onStdoutLine)
+	result = resultFromRun(func(_ string, stderr string, returnCode int, cmd []string) Result {
+		return stream.result(stderr, returnCode, cmd)
+	}, stdout, stderr, code, cmd, runErr, e.cfg)
 	if !result.Success {
 		return result
 	}

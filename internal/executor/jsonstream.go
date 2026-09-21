@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 func emitChunks(stdout string, executorName string, onChunk func(content string, chunkType string)) {
@@ -194,76 +195,119 @@ func parseClaudeOutput(stdout string, stderr string, returnCode int, cmd []strin
 }
 
 func parseCodexOutput(stdout string, stderr string, returnCode int, cmd []string) Result {
-	result := Result{Success: returnCode == 0, ReturnCode: &returnCode, Stderr: emptyToNone(stderr), Command: cmd}
-	var legacyText strings.Builder
-	terminalFallback := ""
-	sawModernEvent := false
-	turnCompleted := false
+	stream := newCodexOutputState()
 	for _, line := range strings.Split(stdout, "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
+		stream.consume(line)
+	}
+	return stream.result(stderr, returnCode, cmd)
+}
+
+// codexOutputState holds only the protocol state needed to determine success.
+// Codex execution feeds it directly from complete stdout records, so bounded
+// retained diagnostics can never make a later JSONL record appear malformed or
+// hide a terminal turn failure.
+type codexOutputState struct {
+	mu sync.Mutex
+
+	sessionID        string
+	legacyText       strings.Builder
+	terminalFallback string
+	sawModernEvent   bool
+	turnCompleted    bool
+	parseError       string
+	failed           bool
+	failureError     string
+}
+
+func newCodexOutputState() *codexOutputState {
+	return &codexOutputState{}
+}
+
+func (stream *codexOutputState) consume(line string) {
+	if strings.TrimSpace(line) == "" {
+		return
+	}
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	stream.consumeLocked(line)
+}
+
+func (stream *codexOutputState) consumeLocked(line string) {
+	var event map[string]any
+	if err := json.Unmarshal([]byte(line), &event); err != nil {
+		if stream.parseError == "" {
+			stream.parseError = boundedCodexDiagnostic("malformed Codex JSONL: " + err.Error())
 		}
-		var event map[string]any
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			result.Success = false
-			if result.Error == "" {
-				result.Error = boundedCodexDiagnostic("malformed Codex JSONL: " + err.Error())
-			}
-			continue
+		return
+	}
+	eventType := stringFromAny(event["type"])
+	switch eventType {
+	case "thread.started":
+		stream.sawModernEvent = true
+		if threadID := stringFromAny(event["thread_id"]); threadID != "" {
+			stream.sessionID = threadID
 		}
-		eventType := stringFromAny(event["type"])
-		switch eventType {
-		case "thread.started":
-			sawModernEvent = true
-			if threadID := stringFromAny(event["thread_id"]); threadID != "" {
-				result.SessionID = threadID
+	case "turn.started":
+		stream.sawModernEvent = true
+	case "turn.completed":
+		stream.sawModernEvent = true
+		stream.turnCompleted = true
+	case "item.started", "item.updated":
+		if _, ok := event["item"].(map[string]any); ok {
+			stream.sawModernEvent = true
+		}
+	case "item.completed":
+		nested, nestedItem := event["item"].(map[string]any)
+		if nestedItem {
+			stream.sawModernEvent = true
+		}
+		if nestedItem && stringFromAny(nested["type"]) == "agent_message" && isCodexTerminalPhase(event, nested) {
+			if text := codexMessageText(nested); text != "" {
+				// The documented JSONL stream has no phase. Its completed agent
+				// message is a compatibility fallback only; Execute replaces it
+				// with --output-last-message for real subprocesses.
+				stream.terminalFallback = text
 			}
-		case "turn.started":
-			sawModernEvent = true
-		case "turn.completed":
-			sawModernEvent = true
-			turnCompleted = true
-		case "item.started", "item.updated":
-			if _, ok := event["item"].(map[string]any); ok {
-				sawModernEvent = true
-			}
-		case "item.completed":
-			nested, nestedItem := event["item"].(map[string]any)
-			if nestedItem {
-				sawModernEvent = true
-			}
-			if nestedItem && stringFromAny(nested["type"]) == "agent_message" && isCodexTerminalPhase(event, nested) {
-				if text := codexMessageText(nested); text != "" {
-					// The documented JSONL stream has no phase. Its completed agent
-					// message is a compatibility fallback only; Execute replaces it
-					// with --output-last-message for real subprocesses.
-					terminalFallback = text
-				}
-			}
-		case "turn.failed", "error":
-			sawModernEvent = true
-			result.Success = false
-			if message := codexEventError(event); message != "" {
-				result.Error = message
-			} else if result.Error == "" {
-				result.Error = "Codex reported a failed turn"
-			}
-		default:
-			if isLegacyCodexMessageEvent(eventType) && event["item"] == nil {
-				appendContent(&legacyText, event["content"])
-			}
+		}
+	case "turn.failed", "error":
+		stream.sawModernEvent = true
+		stream.failed = true
+		if message := codexEventError(event); message != "" {
+			stream.failureError = message
+		}
+	default:
+		if isLegacyCodexMessageEvent(eventType) && event["item"] == nil {
+			appendContent(&stream.legacyText, event["content"])
 		}
 	}
-	if terminalFallback != "" {
-		result.ResultText = strings.TrimSpace(terminalFallback)
+}
+
+func (stream *codexOutputState) result(stderr string, returnCode int, cmd []string) Result {
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	result := Result{Success: returnCode == 0, ReturnCode: &returnCode, Stderr: emptyToNone(stderr), Command: cmd, SessionID: stream.sessionID}
+	if stream.parseError != "" {
+		result.Success = false
+		result.Error = stream.parseError
+	}
+	if stream.failed {
+		result.Success = false
+		if stream.failureError != "" {
+			result.Error = stream.failureError
+		} else if result.Error == "" {
+			result.Error = "Codex reported a failed turn"
+		}
+	}
+	if stream.terminalFallback != "" {
+		result.ResultText = strings.TrimSpace(stream.terminalFallback)
 	} else {
-		result.ResultText = strings.TrimSpace(legacyText.String())
+		result.ResultText = strings.TrimSpace(stream.legacyText.String())
 	}
 	if returnCode != 0 && result.Error == "" {
 		result.Success = false
 		result.Error = exitError("Codex", returnCode, stderr)
 	}
-	if result.Success && sawModernEvent && !turnCompleted {
+	if result.Success && stream.sawModernEvent && !stream.turnCompleted {
 		result.Success = false
 		result.Error = "Codex JSONL ended before turn.completed"
 	}
