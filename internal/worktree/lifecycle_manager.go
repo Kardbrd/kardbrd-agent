@@ -149,11 +149,18 @@ func (m *LifecycleManager) Prepare(ctx context.Context, request LifecycleRequest
 	if err := validLifecycleRequest(request); err != nil {
 		return "", err
 	}
-	record, path, reason, created, err := m.acquireOrCreate(ctx, request)
+	record, path, reason, _, err := m.acquireOrCreate(ctx, request)
 	if err != nil {
 		return "", err
 	}
-	if created && m.Config.Checkout.Mode == rules.CheckoutFull {
+	if !record.Materialized && m.Config.Checkout.Mode == rules.CheckoutFull {
+		// git worktree add performs a complete checkout before its ownership
+		// record is written. If that record write was interrupted, verify the
+		// existing owned checkout and finish the record without resetting or
+		// checking out over user edits.
+		if err := m.verifyOwned(ctx, request.CardID, path, record); err != nil {
+			return "", err
+		}
 		record.Materialized = true
 		if err := m.writeRecord(ctx, path, record); err != nil {
 			return "", err
@@ -300,8 +307,11 @@ func (m *LifecycleManager) Adopt(ctx context.Context, cardID string) error {
 }
 
 func (m *LifecycleManager) acquireOrCreate(ctx context.Context, request LifecycleRequest) (lifecycleRecord, string, LifecycleReason, bool, error) {
-	m.gitMu.Lock()
-	defer m.gitMu.Unlock()
+	releaseMutex, err := lockLifecycleMutex(ctx, &m.gitMu)
+	if err != nil {
+		return lifecycleRecord{}, "", "", false, fmt.Errorf("lock shared Git administration: %w", err)
+	}
+	defer releaseMutex()
 	releaseLock, err := lockLifecycleGitAdministration(ctx, filepath.Join(m.baseCommonGitDir, "kardbrd-lifecycle.lock"))
 	if err != nil {
 		return lifecycleRecord{}, "", "", false, fmt.Errorf("lock shared Git administration: %w", err)
@@ -741,10 +751,26 @@ func (m *LifecycleManager) runWithEnv(ctx context.Context, dir string, args, env
 	}
 	configureLifecycleProcessGroup(cmd)
 	output := &limitedLifecycleOutput{limit: 64 * 1024}
-	cmd.Stdout, cmd.Stderr = output, output
+	// Passing a Go writer directly to exec.Cmd creates copier goroutines that
+	// make Wait wait for inherited stdout/stderr pipes. Use an OS pipe instead:
+	// Wait reaps the direct child, then we terminate its process group before a
+	// descendant holding those descriptors can delay terminal cleanup.
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return RunResult{}, fmt.Errorf("create command output pipe: %w", err)
+	}
+	cmd.Stdout, cmd.Stderr = writer, writer
 	if err := cmd.Start(); err != nil {
+		_ = reader.Close()
+		_ = writer.Close()
 		return RunResult{Stderr: output.String()}, err
 	}
+	_ = writer.Close()
+	outputDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(output, reader)
+		close(outputDone)
+	}()
 	done := make(chan struct{})
 	go func() {
 		select {
@@ -753,9 +779,19 @@ func (m *LifecycleManager) runWithEnv(ctx context.Context, dir string, args, env
 		case <-done:
 		}
 	}()
-	err := cmd.Wait()
+	err = cmd.Wait()
 	close(done)
 	terminateLifecycleProcessGroup(cmd)
+	select {
+	case <-outputDone:
+		_ = reader.Close()
+	case <-time.After(100 * time.Millisecond):
+		_ = reader.Close()
+		select {
+		case <-outputDone:
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 	result := RunResult{Stdout: output.String(), Stderr: output.String()}
 	if err != nil {
 		return result, commandError{args: args, stderr: result.Stderr, err: err}
@@ -764,6 +800,32 @@ func (m *LifecycleManager) runWithEnv(ctx context.Context, dir string, args, env
 		return result, ctx.Err()
 	}
 	return result, nil
+}
+
+// lockLifecycleMutex makes the in-process half of Git administration honor
+// the same caller deadline as the cross-process advisory lock. A canceled
+// waiter releases the mutex asynchronously if it acquires it later, so it
+// cannot strand all subsequent lifecycle operations.
+func lockLifecycleMutex(ctx context.Context, mutex *sync.Mutex) (func(), error) {
+	acquired := make(chan struct{})
+	go func() {
+		mutex.Lock()
+		close(acquired)
+	}()
+	select {
+	case <-acquired:
+		if err := ctx.Err(); err != nil {
+			mutex.Unlock()
+			return nil, err
+		}
+		return mutex.Unlock, nil
+	case <-ctx.Done():
+		go func() {
+			<-acquired
+			mutex.Unlock()
+		}()
+		return nil, ctx.Err()
+	}
 }
 
 type limitedLifecycleOutput struct {

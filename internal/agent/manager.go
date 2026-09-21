@@ -87,6 +87,7 @@ type Manager struct {
 	commandClaims     map[commandDedupKey]*commandClaim
 	commandQueues     map[string][]*commandClaim
 	commandSeq        uint64
+	commandAccessSeq  uint64
 	Paused            bool
 	BotCardID         string
 	StartTime         time.Time
