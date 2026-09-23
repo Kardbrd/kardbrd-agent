@@ -86,6 +86,14 @@ kardbrd activity ...
 kardbrd self-update
 ```
 
+Download attachment bytes with
+`kardbrd attachment download CARD_ID ATTACHMENT_ID --output PATH`.
+The destination must not already exist. Failed downloads leave no partial file.
+`attachment get` returns metadata only. Downloads require HTTPS access to the
+storage hostname returned by the API, including any configured egress proxy
+allowlist. `--no-retry` refuses the storage redirect, consistent with its
+no-redirect policy.
+
 ### Output formats
 
 Row-oriented reads default to TSV with a stable header row. The following commands support `--format tsv`, `--format json`, and `--format md`:

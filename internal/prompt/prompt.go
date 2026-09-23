@@ -99,9 +99,11 @@ The `+"`"+`kardbrd`+"`"+` CLI is available for board operations. Key commands:
 - `+"`"+`kardbrd card update %s --title "..." --description "..."`+"`"+` - update card
 - `+"`"+`kardbrd card create --board %s --list LIST_ID --title "..."`+"`"+` - create card
 - `+"`"+`kardbrd card move %s --list LIST_ID`+"`"+` - move card
+- `+"`"+`kardbrd attachment list %s`+"`"+` - list attachment IDs
+- `+"`"+`kardbrd attachment download %s ATTACHMENT_ID --output /tmp/attachment-file`+"`"+` - download bytes to a new local file; attachment get returns metadata only
 
 Environment variables `+"`"+`KARDBRD_TOKEN`+"`"+` and `+"`"+`KARDBRD_API_URL`+"`"+` are pre-configured.
-`, req.CardID, req.BoardID, req.CardID, req.CardID, req.BoardID, req.CardID)
+`, req.CardID, req.BoardID, req.CardID, req.CardID, req.BoardID, req.CardID, req.CardID, req.CardID)
 	}
 
 	if strings.HasPrefix(req.Command, "/") {

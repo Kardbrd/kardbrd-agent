@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/Kardbrd/kardbrd-agent/internal/api"
@@ -738,7 +739,7 @@ func checklistExtract(root *rootOptions) *cobra.Command {
 
 func newAttachmentCommand(root *rootOptions) *cobra.Command {
 	group := &cobra.Command{Use: "attachment", Short: "Attachment operations on cards"}
-	group.AddCommand(attachmentUpload(root), attachmentMarkdown(root), attachmentList(root), attachmentGet(root))
+	group.AddCommand(attachmentUpload(root), attachmentMarkdown(root), attachmentList(root), attachmentGet(root), attachmentDownload(root))
 	return group
 }
 
@@ -777,11 +778,53 @@ func attachmentList(root *rootOptions) *cobra.Command {
 }
 
 func attachmentGet(root *rootOptions) *cobra.Command {
-	return jsonCommand("get CARD_ID ATTACHMENT_ID", "Download an attachment", cobra.ExactArgs(2), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
+	return jsonCommand("get CARD_ID ATTACHMENT_ID", "Get attachment metadata", cobra.ExactArgs(2), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
 		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
 			return client.GetAttachment(ctx, args[0], args[1])
 		}
 	})
+}
+
+func attachmentDownload(root *rootOptions) *cobra.Command {
+	var output string
+	cmd := &cobra.Command{
+		Use:   "download CARD_ID ATTACHMENT_ID --output PATH",
+		Short: "Download attachment bytes to a new local file",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if _, err := resolveFormat(cmd, root, formatJSON, formatJSON); err != nil {
+				return err
+			}
+			client, err := newClient(root)
+			if err != nil {
+				return err
+			}
+			path, err := filepath.Abs(output)
+			if err != nil {
+				return err
+			}
+			file, err := os.CreateTemp(filepath.Dir(path), ".kardbrd-download-*")
+			if err != nil {
+				return err
+			}
+			defer os.Remove(file.Name())
+			defer file.Close()
+			if err := client.DownloadAttachment(cmd.Context(), args[0], args[1], file); err != nil {
+				return err
+			}
+			if err := file.Close(); err != nil {
+				return err
+			}
+			// Publish complete bytes atomically without overwriting an existing file.
+			if err := os.Link(file.Name(), path); err != nil {
+				return err
+			}
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]string{"path": path})
+		},
+	}
+	cmd.Flags().StringVarP(&output, "output", "o", "", "Destination path (must not already exist)")
+	_ = cmd.MarkFlagRequired("output")
+	return cmd
 }
 
 func newLinkCommand(root *rootOptions) *cobra.Command {

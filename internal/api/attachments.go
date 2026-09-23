@@ -86,6 +86,56 @@ func (c *Client) GetAttachment(ctx context.Context, cardID, attachmentID string)
 	return c.RequestRaw(ctx, "GET", "/api/cards/"+url.PathEscape(cardID)+"/attachments/"+url.PathEscape(attachmentID)+"/", nil)
 }
 
+// DownloadAttachment resolves the authenticated API redirect, then streams the
+// object without forwarding the board token or API cookies to object storage.
+func (c *Client) DownloadAttachment(ctx context.Context, cardID, attachmentID string, dst io.Writer) error {
+	client := *c.HTTPClient
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+"/api/cards/"+url.PathEscape(cardID)+"/attachments/"+url.PathEscape(attachmentID)+"/download/", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return attachmentTransportError("resolve attachment", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		return fmt.Errorf("resolve attachment: expected HTTP 302, got HTTP %d", resp.StatusCode)
+	}
+	if c.noRetry {
+		return fmt.Errorf("attachment download requires following the storage redirect; omit --no-retry")
+	}
+	location, err := url.Parse(resp.Header.Get("Location"))
+	if err != nil || location.Scheme != "https" || location.Host == "" || location.User != nil {
+		return fmt.Errorf("attachment download requires a valid HTTPS storage URL")
+	}
+	req, err = http.NewRequestWithContext(ctx, "GET", location.String(), nil)
+	if err != nil {
+		return fmt.Errorf("invalid attachment storage URL")
+	}
+	client.Jar = nil
+	resp, err = client.Do(req)
+	if err != nil {
+		return attachmentTransportError("download attachment from "+location.Hostname(), err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download attachment from %s: HTTP %d", location.Hostname(), resp.StatusCode)
+	}
+	_, err = io.Copy(dst, resp.Body)
+	return err
+}
+
+func attachmentTransportError(operation string, err error) error {
+	// url.Error includes the complete signed URL, which must not enter logs.
+	if transportErr, ok := err.(*url.Error); ok {
+		err = transportErr.Err
+	}
+	return fmt.Errorf("%s: %w", operation, err)
+}
+
 func (c *Client) uploadToPresignedURL(ctx context.Context, uploadURL string, content []byte, contentType string) error {
 	var lastErr error
 	for attempt := 0; attempt < c.maxAttempts(); attempt++ {

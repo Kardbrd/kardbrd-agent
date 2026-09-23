@@ -24,6 +24,7 @@ func TestClientCommandPathParity(t *testing.T) {
 		"agent start",
 		"agent validate",
 		"attachment",
+		"attachment download",
 		"attachment get",
 		"attachment list",
 		"attachment markdown",

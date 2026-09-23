@@ -1296,6 +1296,7 @@ type fakeBoardClient struct {
 	card                json.RawMessage
 	comment             json.RawMessage
 	markdown            string
+	markdownErr         error
 	getBoardCalled      bool
 	getCardCalls        int
 	getCardErr          error
@@ -1342,7 +1343,7 @@ func (c *fakeBoardClient) GetCard(ctx context.Context, cardID string) (json.RawM
 }
 
 func (c *fakeBoardClient) GetCardMarkdown(ctx context.Context, cardID string) (string, error) {
-	return c.markdown, nil
+	return c.markdown, c.markdownErr
 }
 
 func (c *fakeBoardClient) AddComment(ctx context.Context, cardID, content string) (json.RawMessage, error) {
