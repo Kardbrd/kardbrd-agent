@@ -257,15 +257,32 @@ func (m *Manager) ProcessMention(ctx context.Context, cardID, commentID, content
 	return m.processClaimedMention(ctx, execCtx, session, content, authorName)
 }
 
-func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *ActiveSession, content, authorName string) error {
+func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *ActiveSession, content, authorName string) (runErr error) {
+	phase := "checking authentication"
+	terminalHandled := false
 	defer func() {
+		// Preparation and card-loading failures happen before the executor can
+		// produce a reply. Publish here so queued mentions get the same outcome.
+		if !terminalHandled && ctx.Err() == nil && (runErr != nil || errors.Is(execCtx.Err(), context.DeadlineExceeded)) {
+			failure := runErr
+			if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
+				failure = fmt.Errorf("request timed out while %s", phase)
+			}
+			if !errors.Is(failure, context.Canceled) {
+				m.postMentionFailure(session, authorName, phase, failure)
+			}
+		}
 		session.Cancel()
 		m.finishActiveSession(session)
 		m.release()
 	}()
 
-	auth := m.Executor.CheckAuth(ctx)
+	auth := m.Executor.CheckAuth(execCtx)
+	if execCtx.Err() != nil {
+		return execCtx.Err()
+	}
 	if !auth.Authenticated {
+		terminalHandled = true
 		m.addReaction(ctx, session.CardID, session.CommentID, "🛑")
 		hint := auth.AuthHint
 		if hint == "" {
@@ -277,6 +294,7 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 	}
 
 	worktreePath := m.CWD
+	phase = "preparing the workspace"
 	path, err := m.selectWorktree(execCtx, session.CardID, rules.ExecutionPrepare)
 	if err != nil {
 		return err
@@ -287,7 +305,8 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 
 	session.WorktreePath = worktreePath
 
-	cardMarkdown, err := m.Client.GetCardMarkdown(ctx, session.CardID)
+	phase = "loading the card"
+	cardMarkdown, err := m.Client.GetCardMarkdown(execCtx, session.CardID)
 	if err != nil {
 		return err
 	}
@@ -302,6 +321,7 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 		CWD:            worktreePath,
 	})
 
+	phase = "running the request"
 	result := m.Executor.Execute(execCtx, executor.Request{
 		CardID:  session.CardID,
 		BoardID: m.BoardID,
@@ -312,6 +332,7 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 	if execCtx.Err() != nil {
 		return nil
 	}
+	terminalHandled = true
 
 	m.mu.Lock()
 	if m.Active[session.CardID] == session {
@@ -327,6 +348,17 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 	message := buildErrorComment(result, "Error") + "\n\n" + requesterMention(authorName)
 	_, _ = m.Client.AddComment(ctx, session.CardID, message)
 	return nil
+}
+
+func (m *Manager) postMentionFailure(session *ActiveSession, authorName, phase string, err error) {
+	// A job deadline must not cancel its failure notification.
+	ctx, cancel := context.WithTimeout(context.Background(), commandPublishWait)
+	defer cancel()
+	m.addReaction(ctx, session.CardID, session.CommentID, "🛑")
+	diagnostic := redactCleanupDiagnostic(err.Error(), m.Token)
+	message := "**Unable to complete request**\n\nThe request failed while " + phase +
+		". It was not marked successful.\n\n```\n" + diagnostic + "\n```\n\n" + requesterMention(authorName)
+	_, _ = m.Client.AddCommentOnce(ctx, session.CardID, message)
 }
 
 type pendingMention struct {
@@ -413,6 +445,9 @@ func (m *Manager) finishActiveSession(session *ActiveSession) {
 	}
 	go func() {
 		if err := m.acquire(pendingExecCtx); err != nil {
+			if pending.ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+				m.postMentionFailure(pendingSession, pending.authorName, "waiting for an execution slot", err)
+			}
 			pendingSession.Cancel()
 			m.finishActiveSession(pendingSession)
 			return
