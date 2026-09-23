@@ -320,6 +320,7 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 		BoardID:        m.BoardID,
 		CWD:            worktreePath,
 	})
+	promptText = m.withBranchContext(execCtx, session.CardID, worktreePath, promptText)
 
 	phase = "running the request"
 	result := m.Executor.Execute(execCtx, executor.Request{
@@ -727,4 +728,15 @@ func (m *Manager) selectWorktree(ctx context.Context, cardID string, policy rule
 		return "", errors.New("worktree implementation cannot prepare")
 	}
 	return legacy.Create(cardID)
+}
+
+func (m *Manager) withBranchContext(ctx context.Context, cardID, path, promptText string) string {
+	if provider, ok := m.Worktree.(interface {
+		BranchContext(context.Context, string, string) string
+	}); ok {
+		if advisory := provider.BranchContext(ctx, cardID, path); advisory != "" {
+			return promptText + "\n\n## Worktree branch context\n\n" + advisory
+		}
+	}
+	return promptText
 }

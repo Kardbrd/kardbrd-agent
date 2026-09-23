@@ -501,6 +501,10 @@ func (a lifecycleWorktreeAdapter) Remove(cardID string, force bool) error {
 	return a.manager.Remove(cardID, force)
 }
 
+func (a lifecycleWorktreeAdapter) BranchContext(ctx context.Context, cardID, path string) string {
+	return a.manager.BranchContext(ctx, cardID, path)
+}
+
 func (a worktreeAdapter) Create(cardID string) (string, error) {
 	return a.manager.Create(cardID, "")
 }
