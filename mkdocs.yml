@@ -84,6 +84,8 @@ nav:
       - Code Conventions: contributing/conventions.md
   - Changelog: changelog.md
   - Releases:
+      - v0.13.2: releases/v0.13.2.md
+      - v0.13.1: releases/v0.13.1.md
       - v0.11.0: releases/v0.11.0.md
       - v0.10.0: releases/v0.10.0.md
   - API Reference: api/index.md

@@ -299,6 +299,12 @@ func (m *LifecycleManager) Adopt(ctx context.Context, cardID string) error {
 	if err := m.verifyOwnershipWithoutRecord(ctx, cardID, path, record); err != nil {
 		return err
 	}
+	// Adoption still verifies the administrator's initial manifest. Once owned,
+	// the executor may change branches without invalidating card ownership.
+	branch, err := m.currentBranch(ctx, path)
+	if err != nil || branch != record.Branch {
+		return fmt.Errorf("worktree path %q has unexpected branch", path)
+	}
 	declaredCommon, err := canonicalExistingPath(adoption.CommonGitDir)
 	if err != nil || declaredCommon != m.baseCommonGitDir {
 		return fmt.Errorf("adoption common_git_dir does not match base repository")
@@ -469,14 +475,39 @@ func (m *LifecycleManager) verifyOwnershipWithoutRecord(ctx context.Context, car
 	if err != nil || common != m.baseCommonGitDir {
 		return fmt.Errorf("worktree path %q has a different common Git directory", path)
 	}
-	branch, err := m.currentBranch(ctx, path)
-	if err != nil || branch != record.Branch {
-		return fmt.Errorf("worktree path %q has unexpected branch", path)
-	}
 	if record.CardID != cardID {
 		return fmt.Errorf("worktree path %q belongs to another card", path)
 	}
 	return nil
+}
+
+// BranchContext reports checkout drift to the executor without changing source,
+// rewriting the expected branch, or turning branch inspection into a run gate.
+// The caller has already selected and verified this worktree's ownership.
+func (m *LifecycleManager) BranchContext(ctx context.Context, cardID, path string) string {
+	if path == m.BaseRepo {
+		return ""
+	}
+	record, err := m.readRecord(ctx, path)
+	if err != nil || record.CardID != cardID {
+		return fmt.Sprintf("Could not read the expected branch for card %q in worktree %q. Inspect the checkout before deciding how to proceed.", cardID, path)
+	}
+	branch, err := m.currentBranch(ctx, path)
+	if err == nil && branch == record.Branch {
+		return ""
+	}
+	actual := fmt.Sprintf("branch %q", branch)
+	if err != nil {
+		// symbolic-ref exits 1 for a detached HEAD; other failures remain
+		// informational, with no automatic checkout or repair.
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			actual = "detached HEAD"
+		} else {
+			actual = "an unknown branch (branch inspection failed)"
+		}
+	}
+	return fmt.Sprintf("Card %q worktree %q expected branch %q, but currently has %s. The agent has left the checkout unchanged and continued this run. Inspect the current Git state and decide whether to continue here or recover the expected branch, preserving existing work.", cardID, path, record.Branch, actual)
 }
 
 func (m *LifecycleManager) isRegistered(ctx context.Context, path string) (bool, error) {

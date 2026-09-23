@@ -266,6 +266,7 @@ func (m *Manager) executeRule(ctx context.Context, session *ActiveSession, rule 
 		BoardID:        m.BoardID,
 		CWD:            worktreePath,
 	})
+	promptText = m.withBranchContext(ctx, session.CardID, worktreePath, promptText)
 	result := m.Executor.Execute(ctx, executor.Request{CardID: session.CardID, BoardID: m.BoardID, Prompt: promptText, CWD: worktreePath, Model: rule.ModelID(), OnChunk: m.makeOnChunk(session.CardID)})
 	if err := ctx.Err(); err != nil {
 		return m.publishCommandExecutionFailure(session.CardID, rule, err, publishResult)

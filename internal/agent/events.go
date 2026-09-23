@@ -481,6 +481,7 @@ func (m *Manager) processRuleWithExecution(ctx context.Context, cardID string, r
 		BoardID:        m.BoardID,
 		CWD:            worktreePath,
 	})
+	promptText = m.withBranchContext(execCtx, cardID, worktreePath, promptText)
 	result := m.Executor.Execute(execCtx, executor.Request{
 		CardID:  cardID,
 		BoardID: m.BoardID,

@@ -237,6 +237,11 @@ func TestLifecycleAdoptionPreservesCustomBranchAndEdits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	manager.Config.Adoptions[0].Branch = "wrong/initial-branch"
+	if err := manager.Adopt(context.Background(), "Existing"); err == nil {
+		t.Fatal("initial adoption must verify the declared branch")
+	}
+	manager.Config.Adoptions[0].Branch = "fix/Existing-preserved"
 	if err := manager.Adopt(context.Background(), "Existing"); err != nil {
 		t.Fatal(err)
 	}
@@ -252,6 +257,29 @@ func TestLifecycleAdoptionPreservesCustomBranchAndEdits(t *testing.T) {
 	assertEqual(t, adopted, path)
 	assertEqual(t, "fix/Existing-preserved\n", gitOutput(t, adopted, "branch", "--show-current"))
 	assertEqual(t, "preserved dirty edit\n", readFile(t, filepath.Join(adopted, "source.txt")))
+	assertEqual(t, "", manager.BranchContext(context.Background(), "Existing", adopted))
+	assertEqual(t, "", manager.BranchContext(context.Background(), "Existing", manager.BaseRepo))
+
+	for _, args := range [][]string{{"checkout", "-b", "fix/later-work"}, {"checkout", "--detach"}} {
+		git(t, adopted, args...)
+		recordPath, err := manager.recordPath(context.Background(), adopted)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := readFile(t, recordPath)
+		selected, err := manager.ExistingOrBase(context.Background(), LifecycleRequest{CardID: "Existing", BoardID: "board1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertEqual(t, adopted, selected)
+		assertContains(t, manager.BranchContext(context.Background(), "Existing", selected), "expected branch \"fix/Existing-preserved\"")
+		assertEqual(t, before, readFile(t, recordPath))
+		if _, err := manager.Prepare(context.Background(), LifecycleRequest{CardID: "Existing", BoardID: "board1"}); err != nil {
+			t.Fatal(err)
+		}
+		assertEqual(t, before, readFile(t, recordPath))
+		assertEqual(t, "preserved dirty edit\n", readFile(t, filepath.Join(adopted, "source.txt")))
+	}
 }
 
 func TestLifecycleRejectsAliasedAdoptionPaths(t *testing.T) {

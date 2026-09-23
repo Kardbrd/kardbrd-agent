@@ -48,8 +48,15 @@ processes using the base Git common directory.
 
 Lifecycle records live in Git worktree administration, not project source.
 Existing paths are used only after registration, common-Git-directory, path,
-card, branch, and record verification. A present foreign or malformed path
+card, and record verification. A present foreign or malformed path
 fails closed.
+
+After ownership is established, a different branch or detached HEAD does not
+block execution. The AI prompt reports the expected branch and current checkout
+state so the executor can decide how to proceed or recover. The manager does not
+switch branches, reset edits, or replace the recorded expected branch. This
+applies to mentions, exact commands, and automation, including
+`execution: existing_or_base`.
 
 Use `agent adopt-worktree` only for a listed administrative adoption:
 
