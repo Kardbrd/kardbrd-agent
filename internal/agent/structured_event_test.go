@@ -1340,6 +1340,178 @@ func TestReplaySameCardKeepsServerTieOrderAcrossPagesAndRestart(t *testing.T) {
 	}
 }
 
+func TestReplayMutableCollectionDiscoversLaterRequestAcrossRestart(t *testing.T) {
+	intake := replayManager(t)
+	client := intake.Client.(*fakeBoardClient)
+	a := replayEvent(t, "card1", "a", "@coder first")
+	b := replayEvent(t, "card1", "b", "@coder second")
+	c := replayEvent(t, "card1", "c", "@coder third")
+	for _, raw := range []*json.RawMessage{&a, &b, &c} {
+		var event map[string]any
+		if err := json.Unmarshal(*raw, &event); err != nil {
+			t.Fatal(err)
+		}
+		event["created_at"] = "2026-10-05T18:00:00Z"
+		*raw = rawJSON(t, event)
+	}
+	afterA := "a"
+	client.requestPages = map[string]api.ExecutionRequestPage{
+		"":  {Requests: []json.RawMessage{a}, NextAfter: &afterA},
+		"a": {Requests: []json.RawMessage{b}},
+	}
+	if err := intake.ReconcileExecutionRequests(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// A is deleted or moved off board. Its accepted local claim survives, while
+	// Web now returns B at the first position and C on a later page.
+	afterB := "b"
+	client.requestPages = map[string]api.ExecutionRequestPage{
+		"":  {Requests: []json.RawMessage{b}, NextAfter: &afterB},
+		"b": {Requests: []json.RawMessage{c}},
+	}
+	restarted := replayManager(t)
+	restarted.ClaimDir = intake.ClaimDir
+	restarted.Client = client
+	if err := restarted.ReconcileExecutionRequests(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if claim, err := restarted.readMentionClaim("card1", "c"); err != nil || claim.State != "accepted" {
+		t.Fatalf("C was not durably discovered: claim=%+v err=%v", claim, err)
+	}
+	underlying := restarted.Executor.(*fakeExecutor)
+	restarted.Executor = &orderingExecutor{underlying}
+	for range 2 {
+		if err := restarted.RecoverAcceptedMentions(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := underlying.executionCount(); got != 3 {
+		t.Fatalf("executions=%d, want exactly three", got)
+	}
+	underlying.mu.Lock()
+	defer underlying.mu.Unlock()
+	for i, want := range []string{"first", "second", "third"} {
+		if !strings.Contains(underlying.requests[i].Prompt, want) {
+			t.Fatalf("request %d prompt=%q, want %q", i, underlying.requests[i].Prompt, want)
+		}
+	}
+}
+
+func TestReplayResetsDeletedCursorWithoutLosingIntake(t *testing.T) {
+	m := replayManager(t)
+	client := m.Client.(*fakeBoardClient)
+	a := replayEvent(t, "card1", "a", "@coder first")
+	b := replayEvent(t, "card2", "b", "@coder second")
+	c := replayEvent(t, "card3", "c", "@coder third")
+	afterA := "a"
+	client.requestPages = map[string]api.ExecutionRequestPage{
+		"":  {Requests: []json.RawMessage{a}, NextAfter: &afterA},
+		"a": {Requests: []json.RawMessage{b}},
+	}
+	client.requestPageErrors = map[string]error{"a": &api.APIError{StatusCode: 400, Code: "VALIDATION_ERROR", Message: "cursor no longer exists"}}
+	// The first page changes after Web rejects the now deleted cursor. A
+	// retry must begin at the start and discover the later C request.
+	afterB := "b"
+	client.requestPagesOnError = map[string]api.ExecutionRequestPage{
+		"":  {Requests: []json.RawMessage{b}, NextAfter: &afterB},
+		"b": {Requests: []json.RawMessage{c}},
+	}
+	if err := m.ReconcileExecutionRequests(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	client.mu.Lock()
+	cursors := append([]string(nil), client.requestCursors...)
+	client.mu.Unlock()
+	if got, want := strings.Join(cursors, ","), ",a,,b"; got != want {
+		t.Fatalf("cursor calls=%q, want %q", got, want)
+	}
+	if claim, err := m.readMentionClaim("card3", "c"); err != nil || claim.State != "accepted" {
+		t.Fatalf("C claim=%+v err=%v", claim, err)
+	}
+}
+
+func TestReplayMutableCollectionDoesNotRerunOwnedOutcomes(t *testing.T) {
+	owner := replayManager(t)
+	client := owner.Client.(*fakeBoardClient)
+	a := replayEvent(t, "card1", "a", "@coder first")
+	b := replayEvent(t, "card1", "b", "@coder second")
+	c := replayEvent(t, "card1", "c", "@coder third")
+	client.requestPages = map[string]api.ExecutionRequestPage{"": {Requests: []json.RawMessage{a, b}}}
+	if err := owner.ReconcileExecutionRequests(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.RecoverAcceptedMentions(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := owner.Executor.(*fakeExecutor).executionCount(); got != 2 {
+		t.Fatalf("initial executions=%d", got)
+	}
+	// Moving A off this board has the same collection omission as deleting its
+	// comment. B's owned terminal result remains local while C is appended.
+	client.requestPages = map[string]api.ExecutionRequestPage{"": {Requests: []json.RawMessage{b, c}}}
+	restarted := replayManager(t)
+	restarted.Client = client
+	restarted.ClaimDir = owner.ClaimDir
+	for range 2 {
+		if err := restarted.ReconcileExecutionRequests(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if err := restarted.RecoverAcceptedMentions(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := restarted.Executor.(*fakeExecutor).executionCount(); got != 1 {
+		t.Fatalf("restart executions=%d, want C only", got)
+	}
+	for _, id := range []string{"a", "b", "c"} {
+		claim, err := restarted.readMentionClaim("card1", id)
+		if err != nil || claim.State != "terminal" {
+			t.Fatalf("claim %s=%+v err=%v", id, claim, err)
+		}
+	}
+}
+
+func TestReplaySequenceMigratesOldOrdinalSidecars(t *testing.T) {
+	m := replayManager(t)
+	client := m.Client.(*fakeBoardClient)
+	a := replayEvent(t, "card1", "a", "@coder first")
+	b := replayEvent(t, "card1", "b", "@coder second")
+	c := replayEvent(t, "card1", "c", "@coder third")
+	client.requestPages = map[string]api.ExecutionRequestPage{"": {Requests: []json.RawMessage{a, b}}}
+	if err := m.ReconcileExecutionRequests(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(m.replaySequencePath("bot-1")); err != nil {
+		t.Fatal(err)
+	}
+	for i, id := range []string{"a", "b"} {
+		claim, err := m.readMentionClaim("card1", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data := rawJSON(t, replayOrderRecord{Version: 1, BoardID: claim.BoardID, CardID: claim.CardID, CommentID: claim.CommentID, TargetBotID: claim.TargetBotID, Order: uint64(i + 1)})
+		if err := os.WriteFile(m.replayOrderPath(claim), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	client.requestPages = map[string]api.ExecutionRequestPage{"": {Requests: []json.RawMessage{b, c}}}
+	if err := m.ReconcileExecutionRequests(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	sequence, err := m.readReplaySequence("bot-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(sequence.Items), 3; got != want {
+		t.Fatalf("sequence items=%d, want %d", got, want)
+	}
+	for i, want := range []string{"a", "b", "c"} {
+		if sequence.Items[i].CommentID != want {
+			t.Fatalf("sequence[%d]=%q, want %q", i, sequence.Items[i].CommentID, want)
+		}
+	}
+}
+
 func TestRecoveryHoldsUnknownOwnerAndAmbiguousLegacyOrder(t *testing.T) {
 	owner := replayManager(t)
 	owner.ClaimDir = t.TempDir()

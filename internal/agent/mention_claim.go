@@ -63,6 +63,26 @@ func (m *Manager) RecoverAcceptedMentions(ctx context.Context) error {
 	var claims []mentionClaim
 	var publications []mentionClaim
 	ambiguous := map[string]bool{}
+	m.mu.Lock()
+	verifiedBotID := m.verifiedBotID
+	m.mu.Unlock()
+	sequenceOrder := map[replayIdentity]uint64{}
+	sequenceUnavailable := false
+	uncertainCards := map[string]bool{}
+	if verifiedBotID != "" {
+		sequence, err := m.readReplaySequence(verifiedBotID)
+		if err != nil {
+			itemErrors = append(itemErrors, fmt.Errorf("replay sequence: %w", err))
+			sequenceUnavailable = true
+		} else {
+			for i, item := range sequence.Items {
+				sequenceOrder[item] = uint64(i + 1)
+			}
+			for _, cardID := range sequence.UncertainCards {
+				uncertainCards[cardID] = true
+			}
+		}
+	}
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -92,15 +112,31 @@ func (m *Manager) RecoverAcceptedMentions(ctx context.Context) error {
 		default:
 			continue
 		}
-		claim.ReplayOrder, err = m.readReplayOrder(claim)
-		if err != nil {
-			itemErrors = append(itemErrors, fmt.Errorf("request %s replay order: %w", claim.CommentID, err))
+		if sequenceUnavailable {
 			ambiguous[claim.CardID] = true
 			continue
 		}
+		claim.ReplayOrder = sequenceOrder[replayIdentity{CardID: claim.CardID, CommentID: claim.CommentID}]
+		if claim.ReplayOrder == 0 {
+			claim.ReplayOrder, err = m.readReplayOrder(claim)
+			if err != nil {
+				itemErrors = append(itemErrors, fmt.Errorf("request %s replay order: %w", claim.CommentID, err))
+				ambiguous[claim.CardID] = true
+				continue
+			}
+		}
 		claims = append(claims, claim)
 	}
-	// Web replay position preserves the server's order when timestamps tie.
+	acceptedPerCard := map[string]int{}
+	for _, claim := range claims {
+		acceptedPerCard[claim.CardID]++
+	}
+	for cardID := range uncertainCards {
+		if acceptedPerCard[cardID] > 1 {
+			ambiguous[cardID] = true
+		}
+	}
+	// The durable identity sequence preserves Web's observed tie order.
 	sort.SliceStable(claims, func(i, j int) bool {
 		if claims[i].CardID != claims[j].CardID {
 			return claims[i].CardID < claims[j].CardID
@@ -217,59 +253,6 @@ func (m *Manager) readReplayOrder(claim mentionClaim) (uint64, error) {
 		return 0, fmt.Errorf("replay order identity mismatch")
 	}
 	return record.Order, nil
-}
-
-func (m *Manager) recordReplayOrder(claim mentionClaim, order uint64) error {
-	if !m.ownsRecoveredClaim(claim) || order == 0 {
-		return fmt.Errorf("replay order owner is unverified")
-	}
-	if existing, err := m.readReplayOrder(claim); err != nil || existing != 0 {
-		if err != nil {
-			return err
-		}
-		if existing != order {
-			return fmt.Errorf("canonical order changed from %d to %d", existing, order)
-		}
-		return nil
-	}
-	path := m.replayOrderPath(claim)
-	data, err := json.Marshal(replayOrderRecord{Version: 1, BoardID: claim.BoardID, CardID: claim.CardID, CommentID: claim.CommentID, TargetBotID: claim.TargetBotID, Order: order})
-	if err != nil {
-		return err
-	}
-	file, err := os.CreateTemp(filepath.Dir(path), "order-*.tmp")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(file.Name())
-	if err := file.Chmod(0o600); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	if err := os.Link(file.Name(), path); errors.Is(err, os.ErrExist) {
-		existing, readErr := m.readReplayOrder(claim)
-		if readErr != nil {
-			return readErr
-		}
-		if existing != order {
-			return fmt.Errorf("concurrent replay order conflict: got %d, want %d", existing, order)
-		}
-		return nil
-	} else if err != nil {
-		return err
-	}
-	return syncClaimDirectory(filepath.Dir(path))
 }
 
 func (m *Manager) claimPath(cardID, commentID string) string {

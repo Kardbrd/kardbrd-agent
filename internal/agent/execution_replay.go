@@ -3,12 +3,16 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/Kardbrd/kardbrd-agent/internal/api"
 )
 
 type replayIntakeKey struct{}
+type lostReplayCursorError struct{ error }
+
+func (e lostReplayCursorError) Unwrap() error { return e.error }
 
 func replayIntakeOnly(ctx context.Context) bool {
 	return ctx.Value(replayIntakeKey{}) != nil
@@ -25,11 +29,30 @@ func (m *Manager) ReconcileExecutionRequests(ctx context.Context) error {
 	if !ok {
 		return fmt.Errorf("structured request replay API is unavailable")
 	}
+	// A public cursor can disappear while a scan is in flight. Restart at the
+	// beginning; claims already written below make the repeated intake safe.
+	for attempt := 0; attempt < 3; attempt++ {
+		err := m.scanExecutionRequests(ctx, reader)
+		var lost lostReplayCursorError
+		if !errors.As(err, &lost) || attempt == 2 {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *Manager) scanExecutionRequests(ctx context.Context, reader interface {
+	GetExecutionRequests(context.Context, string, string) (api.ExecutionRequestPage, error)
+}) error {
 	after := ""
-	var order uint64
+	var seen []replayIdentity
 	for {
 		page, err := reader.GetExecutionRequests(ctx, m.BoardID, after)
 		if err != nil {
+			var apiErr *api.APIError
+			if after != "" && errors.As(err, &apiErr) && apiErr.StatusCode == 400 && apiErr.Code == "VALIDATION_ERROR" {
+				return lostReplayCursorError{err}
+			}
 			return err
 		}
 		if len(page.Requests) > 100 {
@@ -37,7 +60,6 @@ func (m *Manager) ReconcileExecutionRequests(ctx context.Context) error {
 		}
 		lastCommentID := ""
 		for _, raw := range page.Requests {
-			order++
 			var identity struct {
 				BoardID   string `json:"board_id"`
 				CardID    string `json:"card_id"`
@@ -63,13 +85,14 @@ func (m *Manager) ReconcileExecutionRequests(ctx context.Context) error {
 			if claim.BoardID != identity.BoardID || claim.CardID != identity.CardID || claim.CommentID != identity.CommentID || claim.State == "" {
 				return fmt.Errorf("execution replay item %s has an invalid durable disposition", identity.CommentID)
 			}
-			if err := m.recordReplayOrder(claim, order); err != nil {
-				return fmt.Errorf("persist execution replay order for %s: %w", identity.CommentID, err)
-			}
+			seen = append(seen, replayIdentity{CardID: identity.CardID, CommentID: identity.CommentID})
 			lastCommentID = identity.CommentID
 		}
 		if page.NextAfter == nil {
-			return nil
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return m.recordReplaySequence(seen)
 		}
 		if len(page.Requests) == 0 || *page.NextAfter == "" || *page.NextAfter == after || *page.NextAfter != lastCommentID {
 			return fmt.Errorf("execution replay returned an invalid cursor")

@@ -1335,6 +1335,7 @@ type fakeBoardClient struct {
 	loseReceiptResponse bool
 	requestPages        map[string]api.ExecutionRequestPage
 	requestPageErrors   map[string]error
+	requestPagesOnError map[string]api.ExecutionRequestPage
 	requestCursors      []string
 }
 
@@ -1344,6 +1345,10 @@ func (c *fakeBoardClient) GetExecutionRequests(ctx context.Context, boardID, aft
 	c.requestCursors = append(c.requestCursors, after)
 	if err := c.requestPageErrors[after]; err != nil {
 		delete(c.requestPageErrors, after)
+		if c.requestPagesOnError != nil {
+			c.requestPages = c.requestPagesOnError
+			c.requestPagesOnError = nil
+		}
 		return api.ExecutionRequestPage{}, err
 	}
 	return c.requestPages[after], nil
