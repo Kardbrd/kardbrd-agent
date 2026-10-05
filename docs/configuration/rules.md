@@ -167,6 +167,21 @@ model: haiku     # Claude Haiku
 
 For Goose, use provider-specific model names or the short aliases above.
 
+Rules and schedules can also set `reasoning: high` (accepted values: `low`, `medium`, `high`, `xhigh`, `max`). Claude receives `--effort`; Codex receives `--config model_reasoning_effort=...`. Goose and Pi reject a configured effort with an actionable error. If either setting is omitted, that value follows the executor's own configuration. A matched rule's model and effort remain attached to its queued command and publication continuation.
+
+```yaml
+executor: codex
+rules:
+  - name: Review
+    event: card_moved
+    list: Review
+    model: gpt-6.1-sol
+    reasoning: high
+    action: /kr
+```
+
+The repository's existing board rules retain their configured models and `xhigh` effort; this feature now propagates that effort to supported executors. An exact configured slash command is handled by its command rule first; other addressed comments take precedence over matching ordinary `comment_created` rules. For direct comment selection, see [Addressed Comment Dispatch](mention-dispatch.md).
+
 ## Examples
 
 ### Auto-explore new cards

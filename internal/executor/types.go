@@ -21,6 +21,7 @@ type Request struct {
 	ResumeSessionID string
 	CWD             string
 	Model           string
+	ReasoningEffort string
 	OnChunk         func(content string, chunkType string)
 }
 

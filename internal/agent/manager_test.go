@@ -158,6 +158,7 @@ func TestNonExactCommandTextNeverFallsThroughToGenericRuleDispatch(t *testing.T)
 
 func TestExactCommandQueuesBehindActiveCodingAndRunsInOrder(t *testing.T) {
 	manager := newTestManager(t)
+	manager.ExecutorType = "codex"
 	manager.Client.(*fakeBoardClient).card = rawJSON(t, map[string]any{"list": map[string]any{"name": "In Progress"}})
 	legacy := manager.Worktree.(*fakeWorktree)
 	manager.Worktree = &fakeLifecycleWorktree{fakeWorktree: legacy, existingPath: "/tmp/base"}
@@ -167,6 +168,8 @@ func TestExactCommandQueuesBehindActiveCodingAndRunsInOrder(t *testing.T) {
 		CommentCommand: "/down",
 		Execution:      rules.ExecutionExistingOrBase,
 		Action:         "/down",
+		Model:          "gpt-6.1-sol",
+		Reasoning:      "high",
 	}}}
 	exec := manager.Executor.(*fakeExecutor)
 	exec.started = make(chan struct{})
@@ -199,6 +202,11 @@ func TestExactCommandQueuesBehindActiveCodingAndRunsInOrder(t *testing.T) {
 	}
 	waitFor(t, time.Second, func() bool { return exec.executionCount() == 2 })
 	assertEqual(t, "/down", exec.lastPromptRequest.Command)
+	exec.mu.Lock()
+	queuedRequest := exec.requests[1]
+	exec.mu.Unlock()
+	assertEqual(t, "gpt-6.1-sol", queuedRequest.Model)
+	assertEqual(t, "high", queuedRequest.ReasoningEffort)
 }
 
 func TestDoneCleanupDrainsQueuedCommandBeforeItCanRun(t *testing.T) {
@@ -1454,6 +1462,7 @@ type fakeExecutor struct {
 	executeCount       int
 	lastPromptRequest  prompt.Request
 	lastExecuteRequest executor.Request
+	requests           []executor.Request
 	blockUntilCancel   bool
 	started            chan struct{}
 	cancelled          chan struct{}
@@ -1472,6 +1481,7 @@ func (e *fakeExecutor) Execute(ctx context.Context, req executor.Request) execut
 	e.executeCount++
 	executionCount := e.executeCount
 	e.lastExecuteRequest = req
+	e.requests = append(e.requests, req)
 	result := e.result
 	if len(e.results) >= executionCount {
 		result = e.results[executionCount-1]

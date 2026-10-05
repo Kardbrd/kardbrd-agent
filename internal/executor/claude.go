@@ -36,12 +36,18 @@ func (e Claude) CheckAuth(ctx context.Context) AuthStatus {
 }
 
 func (e Claude) Execute(ctx context.Context, req Request) Result {
+	if err := validateEffort("claude", req.ReasoningEffort); err != nil {
+		return Result{Success: false, Error: err.Error()}
+	}
 	if _, err := exec.LookPath("claude"); err != nil {
 		return missingBinary("Claude")
 	}
 	cmd := []string{"claude", "-p", "-", "--output-format=stream-json", "--verbose", "--dangerously-skip-permissions"}
 	if req.Model != "" {
 		cmd = append(cmd, "--model", req.Model)
+	}
+	if req.ReasoningEffort != "" {
+		cmd = append(cmd, "--effort", req.ReasoningEffort)
 	}
 	if req.ResumeSessionID != "" {
 		cmd = append(cmd, "--resume", req.ResumeSessionID)

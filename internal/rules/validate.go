@@ -45,8 +45,9 @@ var knownEvents = set(
 )
 
 var knownTopFields = set("board_id", "agent", "api_url", "executor", "worktree", "rules", "schedules")
-var knownRuleFields = set("name", "event", "action", "model", "list", "title", "label", "content_contains", "exclude_label", "require_label", "emoji", "require_user", "assignee", "comment_author", "cleanup_command", "comment_command", "execution")
-var knownScheduleFields = set("name", "card_id", "cron", "action", "model", "assignee", "list", "publish_result")
+var knownRuleFields = set("name", "event", "action", "model", "reasoning", "list", "title", "label", "content_contains", "exclude_label", "require_label", "emoji", "require_user", "assignee", "comment_author", "cleanup_command", "comment_command", "execution")
+var knownScheduleFields = set("name", "card_id", "cron", "action", "model", "reasoning", "assignee", "list", "publish_result")
+var validReasoningEfforts = set("low", "medium", "high", "xhigh", "max")
 
 func ValidateFile(path string) ValidationResult {
 	data, err := os.ReadFile(path)
@@ -173,6 +174,9 @@ func validateRulesNode(result *ValidationResult, node *yaml.Node) {
 			}
 		}
 		cleanupCommand, isCleanup := fields["cleanup_command"]
+		if reasoning, ok := fields["reasoning"]; ok && (reasoning.Kind != yaml.ScalarNode || !validReasoningEfforts[reasoning.Value]) {
+			result.addRuleError(i, name, "unsupported reasoning effort; use low, medium, high, xhigh, or max")
+		}
 		if isCleanup {
 			validateCleanupCommandNode(result, i, name, fields, events, cleanupCommand)
 		} else if scalar(fields["action"]) == "" {
@@ -282,6 +286,9 @@ func validateSchedulesNode(result *ValidationResult, node *yaml.Node) {
 		}
 		if scalar(fields["action"]) == "" {
 			result.addRuleError(i, name, "Schedule missing required field 'action'")
+		}
+		if reasoning, ok := fields["reasoning"]; ok && (reasoning.Kind != yaml.ScalarNode || !validReasoningEfforts[reasoning.Value]) {
+			result.addRuleError(i, name, "unsupported reasoning effort; use low, medium, high, xhigh, or max")
 		}
 		cron := scalar(fields["cron"])
 		if cron == "" {

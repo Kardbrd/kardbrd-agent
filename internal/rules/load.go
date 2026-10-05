@@ -75,6 +75,7 @@ type rawRule struct {
 	Event           any      `yaml:"event"`
 	Action          string   `yaml:"action"`
 	Model           string   `yaml:"model"`
+	Reasoning       string   `yaml:"reasoning"`
 	List            string   `yaml:"list"`
 	Title           string   `yaml:"title"`
 	Label           string   `yaml:"label"`
@@ -96,6 +97,7 @@ type rawSchedule struct {
 	Cron          string `yaml:"cron"`
 	Action        string `yaml:"action"`
 	Model         string `yaml:"model"`
+	Reasoning     string `yaml:"reasoning"`
 	Assignee      string `yaml:"assignee"`
 	List          string `yaml:"list"`
 	PublishResult *bool  `yaml:"publish_result"`
@@ -145,6 +147,9 @@ func LoadBytes(data []byte) (Config, error) {
 		cfg.Worktree = &worktree
 	}
 	for _, rawRule := range raw.Rules {
+		if rawRule.Reasoning != "" && !validReasoningEfforts[rawRule.Reasoning] {
+			return Config{}, fmt.Errorf("rule %q: unsupported reasoning effort %q", rawRule.Name, rawRule.Reasoning)
+		}
 		events, err := parseEvents(rawRule.Event)
 		if err != nil {
 			return Config{}, fmt.Errorf("rule %q: %w", rawRule.Name, err)
@@ -159,6 +164,7 @@ func LoadBytes(data []byte) (Config, error) {
 			Events:          events,
 			Action:          rawRule.Action,
 			Model:           rawRule.Model,
+			Reasoning:       rawRule.Reasoning,
 			List:            rawRule.List,
 			Title:           rawRule.Title,
 			Label:           rawRule.Label,
@@ -178,12 +184,16 @@ func LoadBytes(data []byte) (Config, error) {
 		return Config{}, err
 	}
 	for _, rawSchedule := range raw.Schedules {
+		if rawSchedule.Reasoning != "" && !validReasoningEfforts[rawSchedule.Reasoning] {
+			return Config{}, fmt.Errorf("schedule %q: unsupported reasoning effort %q", rawSchedule.Name, rawSchedule.Reasoning)
+		}
 		cfg.Schedules = append(cfg.Schedules, Schedule{
 			CardID:        rawSchedule.CardID,
 			Name:          rawSchedule.Name,
 			Cron:          rawSchedule.Cron,
 			Action:        rawSchedule.Action,
 			Model:         rawSchedule.Model,
+			Reasoning:     rawSchedule.Reasoning,
 			Assignee:      rawSchedule.Assignee,
 			List:          rawSchedule.List,
 			PublishResult: rawSchedule.PublishResult,

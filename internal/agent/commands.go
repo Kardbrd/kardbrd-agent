@@ -236,6 +236,9 @@ func (m *Manager) recheckCommand(ctx context.Context, claim *commandClaim) error
 }
 
 func (m *Manager) executeRule(ctx context.Context, session *ActiveSession, rule rules.Rule, message map[string]any, publishResult bool, policy rules.ExecutionPolicy) error {
+	if err := validateReasoning(m.ExecutorType, rule.Reasoning); err != nil {
+		return commandRunFailure(err, "**Command selection error**: "+err.Error())
+	}
 	if err := ctx.Err(); err != nil {
 		return m.publishCommandExecutionFailure(session.CardID, rule, err, publishResult)
 	}
@@ -267,7 +270,7 @@ func (m *Manager) executeRule(ctx context.Context, session *ActiveSession, rule 
 		CWD:            worktreePath,
 	})
 	promptText = m.withBranchContext(ctx, session.CardID, worktreePath, promptText)
-	result := m.Executor.Execute(ctx, executor.Request{CardID: session.CardID, BoardID: m.BoardID, Prompt: promptText, CWD: worktreePath, Model: rule.ModelID(), OnChunk: m.makeOnChunk(session.CardID)})
+	result := m.Executor.Execute(ctx, executor.Request{CardID: session.CardID, BoardID: m.BoardID, Prompt: promptText, CWD: worktreePath, Model: rule.ModelID(), ReasoningEffort: rule.Reasoning, OnChunk: m.makeOnChunk(session.CardID)})
 	if err := ctx.Err(); err != nil {
 		return m.publishCommandExecutionFailure(session.CardID, rule, err, publishResult)
 	}
@@ -275,7 +278,7 @@ func (m *Manager) executeRule(ctx context.Context, session *ActiveSession, rule 
 		if !publishResult {
 			return nil
 		}
-		return m.completeSuccessfulResult(ctx, session.CardID, session.CommentID, result, "automation", worktreePath)
+		return m.completeSuccessfulResult(ctx, session.CardID, session.CommentID, result, "automation", worktreePath, rule.ModelID(), rule.Reasoning)
 	}
 	if !publishResult {
 		return errors.New("executor failed")

@@ -50,6 +50,8 @@ func (m *Manager) HandleBoardEvent(ctx context.Context, message map[string]any) 
 		if err := m.ProcessMention(ctx, cardID, stringField(message, "comment_id"), content, stringField(message, "author_name")); err != nil {
 			return err
 		}
+		// An addressed comment is one dispatch, including a queued mention.
+		return nil
 	case "reaction_added":
 		// Reactions are dispatched through rules so custom stop policies can be configured.
 	case "card_moved":
@@ -429,6 +431,13 @@ func (m *Manager) processRule(ctx context.Context, cardID string, rule rules.Rul
 }
 
 func (m *Manager) processRuleWithExecution(ctx context.Context, cardID string, rule rules.Rule, message map[string]any, publishResult bool, policy rules.ExecutionPolicy) error {
+	if err := validateReasoning(m.ExecutorType, rule.Reasoning); err != nil {
+		if !publishResult {
+			return err
+		}
+		_, _ = m.Client.AddComment(ctx, cardID, "**Automation selection error** ("+rule.Name+"): "+err.Error())
+		return nil
+	}
 	if err := m.acquire(ctx); err != nil {
 		return err
 	}
@@ -483,12 +492,13 @@ func (m *Manager) processRuleWithExecution(ctx context.Context, cardID string, r
 	})
 	promptText = m.withBranchContext(execCtx, cardID, worktreePath, promptText)
 	result := m.Executor.Execute(execCtx, executor.Request{
-		CardID:  cardID,
-		BoardID: m.BoardID,
-		Prompt:  promptText,
-		CWD:     worktreePath,
-		Model:   rule.ModelID(),
-		OnChunk: m.makeOnChunk(cardID),
+		CardID:          cardID,
+		BoardID:         m.BoardID,
+		Prompt:          promptText,
+		CWD:             worktreePath,
+		Model:           rule.ModelID(),
+		ReasoningEffort: rule.Reasoning,
+		OnChunk:         m.makeOnChunk(cardID),
 	})
 	if execCtx.Err() != nil {
 		return nil
@@ -497,7 +507,7 @@ func (m *Manager) processRuleWithExecution(ctx context.Context, cardID string, r
 		if !publishResult {
 			return nil
 		}
-		return m.completeSuccessfulResult(execCtx, cardID, "", result, "automation", worktreePath)
+		return m.completeSuccessfulResult(execCtx, cardID, "", result, "automation", worktreePath, rule.ModelID(), rule.Reasoning)
 	}
 	if !publishResult {
 		return errors.New("executor failed")
@@ -508,9 +518,10 @@ func (m *Manager) processRuleWithExecution(ctx context.Context, cardID string, r
 
 func (m *Manager) ProcessSchedule(ctx context.Context, cardID string, schedule rules.Schedule) error {
 	return m.processRule(ctx, cardID, rules.Rule{
-		Name:   "schedule:" + schedule.Name,
-		Action: schedule.Action,
-		Model:  schedule.Model,
+		Name:      "schedule:" + schedule.Name,
+		Action:    schedule.Action,
+		Model:     schedule.Model,
+		Reasoning: schedule.Reasoning,
 	}, map[string]any{"card_id": cardID}, schedule.PublishesResult())
 }
 

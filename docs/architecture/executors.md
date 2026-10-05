@@ -26,6 +26,8 @@ The selected executor comes from `--executor`, `KARDBRD_AGENT_EXECUTOR`, or the 
 
 Executor subprocesses receive `KARDBRD_TOKEN` and `KARDBRD_API_URL` so prompts can call `kardbrd ...` commands.
 
+`Request.Model` and `Request.ReasoningEffort` are per execution values. Codex receives `--model` and `--config model_reasoning_effort="..."`; Claude receives `--model` and `--effort`. The manager passes the same values to its bounded publication continuation. A missing value uses the executor's own default. Goose and Pi reject reasoning effort because their adapters have no verified control for it; their resume calls retain model selection.
+
 ## Progress and terminal summaries
 
 Executors may add comments, attachments, links, reactions, and other card updates while
