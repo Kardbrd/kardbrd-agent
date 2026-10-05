@@ -27,6 +27,9 @@ func (e Codex) CheckAuth(ctx context.Context) AuthStatus {
 }
 
 func (e Codex) Execute(ctx context.Context, req Request) (result Result) {
+	if err := validateEffort("codex", req.ReasoningEffort); err != nil {
+		return Result{Success: false, Error: err.Error()}
+	}
 	if _, err := exec.LookPath("codex"); err != nil {
 		return Result{Success: false, Error: "Codex CLI not found. Install: npm install -g @openai/codex"}
 	}
@@ -52,6 +55,9 @@ func (e Codex) Execute(ctx context.Context, req Request) (result Result) {
 	cmd = append(cmd, "--dangerously-bypass-approvals-and-sandbox", "--json", "--output-last-message", output.path)
 	if req.Model != "" {
 		cmd = append(cmd, "--model", req.Model)
+	}
+	if req.ReasoningEffort != "" {
+		cmd = append(cmd, "--config", "model_reasoning_effort=\""+req.ReasoningEffort+"\"")
 	}
 	if req.ResumeSessionID != "" {
 		cmd = append(cmd, "--", req.ResumeSessionID)

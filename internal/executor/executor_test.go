@@ -31,13 +31,15 @@ printf '{"type":"result","result":"ok","session_id":"s1"}\n'
 	t.Setenv("KARDBRD_BOARD_ID", "stale-board")
 
 	exec := NewClaude(Config{CWD: t.TempDir(), Timeout: testCommandTimeout, APIURL: "https://api.test", Token: "tok"})
-	result := exec.Execute(context.Background(), Request{Prompt: "hello", ResumeSessionID: "resume1", CardID: "card1", BoardID: "board1"})
+	result := exec.Execute(context.Background(), Request{Prompt: "hello", ResumeSessionID: "resume1", Model: "claude-opus-4-6", ReasoningEffort: "xhigh", CardID: "card1", BoardID: "board1"})
 	assertEqual(t, true, result.Success)
 
 	args := readFile(t, argsFile)
 	assertContains(t, args, "-p\n-\n")
 	assertContains(t, args, "--output-format=stream-json")
 	assertContains(t, args, "--resume\nresume1")
+	assertContains(t, args, "--model\nclaude-opus-4-6")
+	assertContains(t, args, "--effort\nxhigh")
 	assertEqual(t, "tok|https://api.test|card1|board1\n", readFile(t, envFile))
 }
 
@@ -68,14 +70,42 @@ printf '{"type":"item.message","content":"ok"}\n'
 	t.Setenv("KARDBRD_BOARD_ID", "stale-board")
 
 	exec := NewCodex(Config{CWD: t.TempDir(), Timeout: testCommandTimeout})
-	result := exec.Execute(context.Background(), Request{Prompt: "hello", Model: "gpt-5.4", CardID: "card2", BoardID: "board2"})
+	result := exec.Execute(context.Background(), Request{Prompt: "hello", Model: "gpt-6.1-sol", ReasoningEffort: "high", CardID: "card2", BoardID: "board2"})
 	assertEqual(t, true, result.Success)
 	args := readFile(t, argsFile)
 	assertContains(t, args, "exec\n")
 	assertContains(t, args, "--dangerously-bypass-approvals-and-sandbox")
 	assertContains(t, args, "--json")
-	assertContains(t, args, "--model\ngpt-5.4")
+	assertContains(t, args, "--model\ngpt-6.1-sol")
+	assertContains(t, args, "--config\nmodel_reasoning_effort=\"high\"")
 	assertEqual(t, "card2|board2\n", readFile(t, envFile))
+	if plain := exec.Execute(context.Background(), Request{Prompt: "plain"}); !plain.Success {
+		t.Fatalf("plain run = %+v", plain)
+	}
+	args = readFile(t, argsFile)
+	if strings.Contains(args, "--model") || strings.Contains(args, "--config") {
+		t.Fatalf("plain request inherited selection: %q", args)
+	}
+}
+
+func TestExecutorRejectsInvalidOrUnsupportedEffortBeforeRunning(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		execute func(Request) Result
+		effort  string
+	}{
+		{"codex config injection", func(r Request) Result { return NewCodex(Config{}).Execute(context.Background(), r) }, "high\"\nmodel=\"other"},
+		{"claude invalid", func(r Request) Result { return NewClaude(Config{}).Execute(context.Background(), r) }, "none"},
+		{"goose unsupported", func(r Request) Result { return NewGoose(Config{}).Execute(context.Background(), r) }, "high"},
+		{"pi unsupported", func(r Request) Result { return NewPi(Config{}).Execute(context.Background(), r) }, "high"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := tc.execute(Request{Prompt: "work", ReasoningEffort: tc.effort})
+			if r.Success || !strings.Contains(r.Error, "reasoning effort") {
+				t.Fatalf("result = %+v", r)
+			}
+		})
+	}
 }
 
 func TestCodexExecutorUsesFinalMessageFileForTerminalResult(t *testing.T) {
@@ -142,6 +172,7 @@ func TestCodexExecutorResumesExplicitSessionInsteadOfStartingFresh(t *testing.T)
 		Prompt:          "resume prompt",
 		ResumeSessionID: "-thread-123",
 		Model:           "gpt-5.4",
+		ReasoningEffort: "high",
 		CardID:          "card2",
 		BoardID:         "board2",
 	})
@@ -149,7 +180,7 @@ func TestCodexExecutorResumesExplicitSessionInsteadOfStartingFresh(t *testing.T)
 	assertEqual(t, true, result.Success)
 	assertEqual(t, "authoritative final response", result.ResultText)
 	outputPath := strings.TrimSpace(readFile(t, outputPathFile))
-	assertEqual(t, "exec\nresume\n--dangerously-bypass-approvals-and-sandbox\n--json\n--output-last-message\n"+outputPath+"\n--model\ngpt-5.4\n--\n-thread-123\n", readFile(t, argsFile))
+	assertEqual(t, "exec\nresume\n--dangerously-bypass-approvals-and-sandbox\n--json\n--output-last-message\n"+outputPath+"\n--model\ngpt-5.4\n--config\nmodel_reasoning_effort=\"high\"\n--\n-thread-123\n", readFile(t, argsFile))
 	assertEqual(t, "resume prompt", readFile(t, promptFile))
 	assertEqual(t, cwd+"\n", readFile(t, cwdFile))
 	if _, err := os.Stat(outputPath); !os.IsNotExist(err) {
@@ -764,7 +795,7 @@ printf '{"type":"AgentMessageChunk","content":"ok"}\n'
 	t.Setenv("KARDBRD_BOARD_ID", "stale-board")
 
 	exec := NewGoose(Config{CWD: t.TempDir(), Timeout: testCommandTimeout})
-	result := exec.Execute(context.Background(), Request{Prompt: "hello", ResumeSessionID: "session1", CardID: "card3", BoardID: "board3"})
+	result := exec.Execute(context.Background(), Request{Prompt: "hello", ResumeSessionID: "session1", Model: "goose-model", CardID: "card3", BoardID: "board3"})
 	if !result.Success {
 		t.Fatalf("goose execute failed: error=%q stderr=%q command=%v", result.Error, result.Stderr, result.Command)
 	}
@@ -773,6 +804,7 @@ printf '{"type":"AgentMessageChunk","content":"ok"}\n'
 	assertContains(t, args, "-t\n-")
 	assertContains(t, args, "--output-format\nstream-json")
 	assertContains(t, args, "-r\n-n\nsession1")
+	assertContains(t, args, "--model\ngoose-model")
 	assertEqual(t, "card3|board3\n", readFile(t, envFile))
 }
 
@@ -826,13 +858,14 @@ printf '{"type":"session","id":"s1"}\n{"type":"message_end","message":"ok"}\n'
 	t.Setenv("KARDBRD_BOARD_ID", "stale-board")
 
 	exec := NewPi(Config{CWD: t.TempDir(), Timeout: testCommandTimeout})
-	result := exec.Execute(context.Background(), Request{Prompt: "hello", ResumeSessionID: "session1", CardID: "card4", BoardID: "board4"})
+	result := exec.Execute(context.Background(), Request{Prompt: "hello", ResumeSessionID: "session1", Model: "pi-model", CardID: "card4", BoardID: "board4"})
 	assertEqual(t, true, result.Success)
 	args := readFile(t, argsFile)
 	assertContains(t, args, "--mode\njson")
 	assertContains(t, args, "-p\n-")
 	assertContains(t, args, "-a")
 	assertContains(t, args, "--session\nsession1")
+	assertContains(t, args, "--model\npi-model")
 	assertEqual(t, "card4|board4\n", readFile(t, envFile))
 }
 

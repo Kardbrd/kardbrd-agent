@@ -26,15 +26,18 @@ func (e Goose) CheckAuth(ctx context.Context) AuthStatus {
 }
 
 func (e Goose) Execute(ctx context.Context, req Request) Result {
+	if err := validateEffort("goose", req.ReasoningEffort); err != nil {
+		return Result{Success: false, Error: err.Error()}
+	}
 	if _, err := exec.LookPath("goose"); err != nil {
 		return missingBinary("Goose")
 	}
 	cmd := []string{"goose", "run", "-t", "-", "--output-format", "stream-json", "--no-session"}
-	if req.Model != "" {
-		cmd = append(cmd, "--model", req.Model)
-	}
 	if req.ResumeSessionID != "" {
 		cmd = []string{"goose", "run", "-t", "-", "--output-format", "stream-json", "-r", "-n", req.ResumeSessionID}
+	}
+	if req.Model != "" {
+		cmd = append(cmd, "--model", req.Model)
 	}
 	stdout, stderr, code, err := runCommand(ctx, e.cfg, e.cwd(req), cmd, req.Prompt, req.CardID, req.BoardID, "Goose execution timed out", func(line string) {
 		emitChunkLine(line, "goose", req.OnChunk)

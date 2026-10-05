@@ -167,6 +167,23 @@ model: haiku     # Claude Haiku
 
 For Goose, use provider-specific model names or the short aliases above.
 
+Rules and schedules can also set `reasoning: high` (accepted values: `low`, `medium`, `high`, `xhigh`, `max`). Claude receives `--effort`; Codex receives `--config model_reasoning_effort=...`. Goose and Pi reject a configured effort with an actionable error. If either setting is omitted, that value follows the executor's own configuration. A matched rule's model and effort remain attached to its queued command and publication continuation.
+
+```yaml
+executor: codex
+rules:
+  - name: Review
+    event: card_moved
+    list: Review
+    model: gpt-6.1-sol
+    reasoning: high
+    action: /kr
+```
+
+The bundled MBPBot rules in `kardbrd.yml` keep their existing models and set `reasoning: high`. **Migration warning:** this feature makes previously ignored `reasoning` settings effective. Before upgrading a live MBPBot daemon, inspect the configuration file it actually loads and change the applicable MBPBot rules from `xhigh` to the requested `high`. The bundled file does not update a separate deployed copy. Preserve intentionally configured efforts for other agents and workflows. See the [operator checklist](mention-dispatch.md#operator-migration-checklist) before release.
+
+An exact configured slash command is handled by its command rule first; other addressed comments take precedence over matching ordinary `comment_created` rules. For direct comment selection, see [Addressed Comment Dispatch](mention-dispatch.md).
+
 ## Examples
 
 ### Auto-explore new cards

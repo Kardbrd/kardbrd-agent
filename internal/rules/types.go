@@ -106,6 +106,7 @@ type Rule struct {
 	Events          []string
 	Action          string
 	Model           string
+	Reasoning       string
 	List            string
 	Title           string
 	Label           string
@@ -149,6 +150,7 @@ type Schedule struct {
 	Cron          string
 	Action        string
 	Model         string
+	Reasoning     string
 	Assignee      string
 	List          string
 	PublishResult *bool

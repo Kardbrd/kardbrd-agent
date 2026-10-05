@@ -26,15 +26,18 @@ func (e Pi) CheckAuth(ctx context.Context) AuthStatus {
 }
 
 func (e Pi) Execute(ctx context.Context, req Request) Result {
+	if err := validateEffort("pi", req.ReasoningEffort); err != nil {
+		return Result{Success: false, Error: err.Error()}
+	}
 	if _, err := exec.LookPath("pi"); err != nil {
 		return missingBinary("Pi")
 	}
 	cmd := []string{"pi", "--mode", "json", "-p", "-", "--no-session", "-a"}
-	if req.Model != "" {
-		cmd = append(cmd, "--model", req.Model)
-	}
 	if req.ResumeSessionID != "" {
 		cmd = []string{"pi", "--mode", "json", "-p", "-", "-a", "--session", req.ResumeSessionID}
+	}
+	if req.Model != "" {
+		cmd = append(cmd, "--model", req.Model)
 	}
 	stdout, stderr, code, err := runCommand(ctx, e.cfg, e.cwd(req), cmd, req.Prompt, req.CardID, req.BoardID, "Pi execution timed out", func(line string) {
 		emitChunkLine(line, "pi", req.OnChunk)

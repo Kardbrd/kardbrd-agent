@@ -258,7 +258,7 @@ func (m *Manager) ProcessMention(ctx context.Context, cardID, commentID, content
 }
 
 func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *ActiveSession, content, authorName string) (runErr error) {
-	phase := "checking authentication"
+	phase := "validating dispatch selection"
 	terminalHandled := false
 	defer func() {
 		// Preparation and card-loading failures happen before the executor can
@@ -276,7 +276,18 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 		m.finishActiveSession(session)
 		m.release()
 	}()
+	selection, selectionErr := parseMentionDispatch(content, m.Mention)
+	if selectionErr == nil && selection.Model != "" && m.ExecutorType != "codex" {
+		selectionErr = fmt.Errorf("explicit model selection requires the codex executor; current executor is %q", m.ExecutorType)
+	}
+	if selectionErr != nil {
+		terminalHandled = true
+		m.addReaction(ctx, session.CardID, session.CommentID, "🛑")
+		_, _ = m.Client.AddCommentOnce(ctx, session.CardID, "**Dispatch selection error**: "+selectionErr.Error()+"\n\n"+requesterMention(authorName))
+		return nil
+	}
 
+	phase = "checking authentication"
 	auth := m.Executor.CheckAuth(execCtx)
 	if execCtx.Err() != nil {
 		return execCtx.Err()
@@ -310,12 +321,12 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 	if err != nil {
 		return err
 	}
-	command := m.Executor.ExtractCommand(content, m.Mention)
+	command := m.Executor.ExtractCommand(selection.Content, m.Mention)
 	promptText := m.Executor.BuildPrompt(executor.PromptRequest{
 		CardID:         session.CardID,
 		CardMarkdown:   cardMarkdown,
 		Command:        command,
-		CommentContent: content,
+		CommentContent: selection.Content,
 		AuthorName:     authorName,
 		BoardID:        m.BoardID,
 		CWD:            worktreePath,
@@ -324,11 +335,13 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 
 	phase = "running the request"
 	result := m.Executor.Execute(execCtx, executor.Request{
-		CardID:  session.CardID,
-		BoardID: m.BoardID,
-		Prompt:  promptText,
-		CWD:     worktreePath,
-		OnChunk: m.makeOnChunk(session.CardID),
+		CardID:          session.CardID,
+		BoardID:         m.BoardID,
+		Prompt:          promptText,
+		CWD:             worktreePath,
+		Model:           selection.Model,
+		ReasoningEffort: selection.ReasoningEffort,
+		OnChunk:         m.makeOnChunk(session.CardID),
 	})
 	if execCtx.Err() != nil {
 		return nil
@@ -342,7 +355,7 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 	m.mu.Unlock()
 
 	if result.Success {
-		return m.completeSuccessfulResult(execCtx, session.CardID, session.CommentID, result, authorName, worktreePath)
+		return m.completeSuccessfulResult(execCtx, session.CardID, session.CommentID, result, authorName, worktreePath, selection.Model, selection.ReasoningEffort)
 	}
 
 	m.addReaction(ctx, session.CardID, session.CommentID, "🛑")
@@ -532,13 +545,13 @@ func requesterMention(authorName string) string {
 	return "@" + name
 }
 
-func (m *Manager) completeSuccessfulResult(ctx context.Context, cardID, commentID string, result executor.Result, authorName, worktreePath string) error {
+func (m *Manager) completeSuccessfulResult(ctx context.Context, cardID, commentID string, result executor.Result, authorName, worktreePath, model, effort string) error {
 	if strings.TrimSpace(result.ResultText) != "" {
 		m.publishTerminalSummary(ctx, cardID, commentID, result.ResultText, authorName)
 		return nil
 	}
 	if result.SessionID != "" {
-		return m.resumeToPublish(ctx, cardID, commentID, result.SessionID, authorName, worktreePath)
+		return m.resumeToPublish(ctx, cardID, commentID, result.SessionID, authorName, worktreePath, model, effort)
 	}
 	m.postEmptyResultWarning(ctx, cardID, commentID, authorName)
 	return nil
@@ -585,7 +598,7 @@ func (m *Manager) postEmptyResultWarning(ctx context.Context, cardID, commentID,
 	_, _ = m.Client.AddComment(ctx, cardID, "**No terminal response received**\n\nThe executor completed without a final response, so this run was not marked successful.\n\n"+requesterMention(authorName))
 }
 
-func (m *Manager) resumeToPublish(ctx context.Context, cardID, commentID, sessionID, authorName, worktreePath string) error {
+func (m *Manager) resumeToPublish(ctx context.Context, cardID, commentID, sessionID, authorName, worktreePath, model, effort string) error {
 	resumePrompt := `The previous execution completed without a final response.
 
 Do not do any new work. Return the concise terminal summary normally so the agent manager can publish it. Do not call kardbrd comment add.`
@@ -596,6 +609,8 @@ Do not do any new work. Return the concise terminal summary normally so the agen
 		Prompt:          resumePrompt,
 		ResumeSessionID: sessionID,
 		CWD:             worktreePath,
+		Model:           model,
+		ReasoningEffort: effort,
 	})
 	if result.Success {
 		if strings.TrimSpace(result.ResultText) != "" {
