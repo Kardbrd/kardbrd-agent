@@ -268,28 +268,54 @@ func (m *Manager) ProcessMention(ctx context.Context, cardID, commentID, content
 	return m.processMention(ctx, cardID, commentID, content, authorName, &selection, nil)
 }
 
-func (m *Manager) ProcessStructuredMention(ctx context.Context, cardID, commentID string, selection mentionDispatch, authorName, acceptedRevision string) error {
-	claim, created, err := m.createOrReadMentionClaim(cardID, commentID, authorName, selection)
+func (m *Manager) ProcessStructuredMention(ctx context.Context, cardID, commentID string, selection mentionDispatch, authorName, acceptedRevision string, acceptedModels ...[]api.ExecutionModel) error {
+	snapshot := structuredSnapshot{Revision: acceptedRevision}
+	if len(acceptedModels) > 0 {
+		snapshot.Models = acceptedModels[0]
+	}
+	return m.processStructuredMentionSnapshot(ctx, cardID, commentID, selection, authorName, snapshot)
+}
+
+func (m *Manager) processStructuredMentionSnapshot(ctx context.Context, cardID, commentID string, selection mentionDispatch, authorName string, snapshot structuredSnapshot) error {
+	claim, created, err := m.createOrReadMentionClaim(cardID, commentID, authorName, selection, snapshot)
 	if err != nil {
 		return err
 	}
+	if !created && claim.State == "outcome" {
+		return m.reconcileMentionOutcome(ctx, claim)
+	}
 	if !created && claim.State != "accepted" {
 		if claim.State == "started" {
-			if _, err := os.Stat(m.claimPath(cardID, commentID) + ".lock"); errors.Is(err, os.ErrNotExist) {
-				if err := m.setMentionClaimState(claim, "needs_review"); err != nil {
-					return err
-				}
-				return m.rejectStructuredComment(ctx, cardID, authorName, fmt.Errorf("comment_id: prior execution may have started; inspect the card and claim before any retry"))
+			m.mu.Lock()
+			active := m.structuredInFlight[commentID]
+			m.mu.Unlock()
+			if active {
+				return nil
 			}
+			body := "**Execution claim uncertain**: prior execution may have started under instance " + claim.OwnerID + "; inspect the card and claim before any retry.\n\n" + requesterMention(claim.AuthorName)
+			if publisher, ok := m.Client.(interface {
+				AddCommentIdempotent(context.Context, string, string, string) (json.RawMessage, error)
+			}); ok {
+				_, err := publisher.AddCommentIdempotent(ctx, cardID, body, "execution-uncertain:"+claim.BoardID+":"+claim.CardID+":"+claim.CommentID)
+				return err
+			}
+			_, err := m.Client.AddCommentOnce(ctx, cardID, body)
+			return err
 		}
 		return nil
 	}
 	// The persisted snapshot wins on redelivery, including after a config reload.
 	selection = mentionDispatch{Content: claim.Content, Model: claim.Model, ReasoningEffort: claim.Effort, ModelSource: claim.ModelSource, EffortSource: claim.EffortSource}
+	if !modelsContainPair(claim.AcceptedModels, claim.Model, claim.Effort) {
+		if err := m.setMentionClaimState(claim, "needs_review"); err != nil {
+			return err
+		}
+		return m.rejectStructuredComment(ctx, cardID, authorName, fmt.Errorf("execution_request: resolved selection is outside accepted_models snapshot"))
+	}
 	m.mu.Lock()
 	currentRevision, botID, instanceID := m.CapabilityRevision, m.BotID, m.InstanceID
 	m.mu.Unlock()
-	if currentRevision == "" || (created && currentRevision != acceptedRevision) || !m.verifiedPair(selection.Model, selection.ReasoningEffort) {
+	if currentRevision == "" || (created && currentRevision != snapshot.Revision) || !m.verifiedPair(selection.Model, selection.ReasoningEffort) {
 		return m.rejectStructuredComment(ctx, cardID, authorName, fmt.Errorf("capability_revision: accepted request is held until a compatible sole v1 reader registers; redeliver the same comment after refresh"))
 	}
 	if reader, ok := m.Client.(interface {
@@ -319,15 +345,20 @@ func (m *Manager) processMention(ctx context.Context, cardID, commentID, content
 		}
 		m.mu.Unlock()
 	}
-	if claim == nil && m.queueMentionIfActive(ctx, cardID, commentID, content, authorName) {
+	if claim == nil && m.queueMentionIfActive(ctx, cardID, commentID, content, authorName, frozen) {
 		return nil
 	}
 	if err := m.acquire(ctx); err != nil {
+		if claim != nil {
+			m.mu.Lock()
+			delete(m.structuredInFlight, claim.CommentID)
+			m.mu.Unlock()
+		}
 		return err
 	}
 
 	execCtx, cancel := context.WithTimeout(ctx, m.Timeout)
-	session := &ActiveSession{CardID: cardID, CommentID: commentID, Cancel: cancel, Done: make(chan struct{})}
+	session := &ActiveSession{CardID: cardID, CommentID: commentID, Cancel: cancel, Done: make(chan struct{}), StructuredClaim: claim}
 	m.mu.Lock()
 	_, exists := m.Active[cardID]
 	if exists {
@@ -366,6 +397,9 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 	phase := "validating dispatch selection"
 	terminalHandled := false
 	defer func() {
+		if claim != nil && m.sessionStopping(session) {
+			_ = m.holdUnstartedClaim(*claim)
+		}
 		if claim != nil {
 			m.mu.Lock()
 			delete(m.structuredInFlight, claim.CommentID)
@@ -395,6 +429,14 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 			return nil
 		}
 		defer unlock()
+		current, err := m.readMentionClaim(claim.CardID, claim.CommentID)
+		if err != nil {
+			return err
+		}
+		if current.State != "accepted" || current.TargetBotID != claim.TargetBotID {
+			return nil
+		}
+		claim = &current
 	}
 	selection := mentionDispatch{}
 	var selectionErr error
@@ -466,7 +508,53 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 
 	phase = "running the request"
 	if claim != nil {
-		if err := m.setMentionClaimState(*claim, "started"); err != nil {
+		if err := execCtx.Err(); err != nil {
+			return err
+		}
+		if err := m.verifyCurrentClaim(execCtx, *claim); err != nil {
+			return err
+		}
+		inDone, err := m.structuredCardInDone(execCtx, claim.CardID)
+		if err != nil {
+			return err
+		}
+		if inDone {
+			terminalHandled = true
+			if err := m.setMentionClaimState(*claim, "needs_review"); err != nil {
+				return err
+			}
+			return m.rejectStructuredComment(ctx, claim.CardID, claim.AuthorName, fmt.Errorf("accepted request held: card entered Done before execution"))
+		}
+		owner, err := m.claimOnWeb(execCtx, *claim)
+		if err != nil {
+			terminalHandled = true
+			var apiErr *api.APIError
+			if errors.As(err, &apiErr) && apiErr.Code == "CLAIM_UNCERTAIN" {
+				if saveErr := m.setMentionClaimState(*claim, "needs_review"); saveErr != nil {
+					return saveErr
+				}
+			}
+			return m.rejectStructuredComment(ctx, claim.CardID, claim.AuthorName, err)
+		}
+		if owner.Status != "claimed" {
+			terminalHandled = true
+			if owner.Status == "completed" || owner.Status == "failed" {
+				return m.setMentionClaimState(*claim, "terminal")
+			}
+			return m.rejectStructuredComment(ctx, claim.CardID, claim.AuthorName, fmt.Errorf("claim status %q requires operator reconciliation", owner.Status))
+		}
+		claim.OwnerID = owner.InstanceID
+		if err := execCtx.Err(); err != nil {
+			return err
+		}
+		m.mu.Lock()
+		ownsCard := m.Active[session.CardID] == session && !session.Stopping
+		m.mu.Unlock()
+		if !ownsCard {
+			return fmt.Errorf("structured request claimed but card ownership changed before spawn")
+		}
+		claim.State = "started"
+		if err := m.saveMentionClaim(*claim); err != nil {
 			return fmt.Errorf("persist execution claim: %w", err)
 		}
 	}
@@ -494,21 +582,28 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 	m.mu.Unlock()
 
 	if result.Success {
+		if claim != nil {
+			return m.finishStructuredResult(execCtx, *claim, result, worktreePath)
+		}
 		if err := m.completeSuccessfulResult(execCtx, session.CardID, session.CommentID, result, authorName, worktreePath, selection.Model, selection.ReasoningEffort); err != nil {
 			return err
-		}
-		if claim != nil {
-			return m.setMentionClaimState(*claim, "terminal")
 		}
 		return nil
 	}
 
 	m.addReaction(ctx, session.CardID, session.CommentID, "🛑")
 	message := buildErrorComment(result, "Error") + "\n\n" + requesterMention(authorName)
-	_, _ = m.Client.AddComment(ctx, session.CardID, message)
 	if claim != nil {
-		return m.setMentionClaimState(*claim, "terminal")
+		claim.OutcomeStatus = "failed"
+		claim.OutcomeBody = message
+		claim.OutcomeMessage = truncateUTF8(result.Error, 1000)
+		claim.State = "outcome"
+		if err := m.saveMentionClaim(*claim); err != nil {
+			return err
+		}
+		return m.publishMentionOutcome(execCtx, *claim)
 	}
+	_, _ = m.Client.AddComment(ctx, session.CardID, message)
 	return nil
 }
 
@@ -533,10 +628,14 @@ type pendingMention struct {
 	claim      *mentionClaim
 }
 
-func (m *Manager) queueMentionIfActive(ctx context.Context, cardID, commentID, content, authorName string) bool {
+func (m *Manager) queueMentionIfActive(ctx context.Context, cardID, commentID, content, authorName string, frozen ...*mentionDispatch) bool {
 	m.mu.Lock()
 	_, active := m.Active[cardID]
 	if active {
+		var selection *mentionDispatch
+		if len(frozen) > 0 {
+			selection = frozen[0]
+		}
 		if m.pending == nil {
 			m.pending = map[string]pendingMention{}
 		}
@@ -546,6 +645,7 @@ func (m *Manager) queueMentionIfActive(ctx context.Context, cardID, commentID, c
 			commentID:  commentID,
 			content:    content,
 			authorName: authorName,
+			frozen:     selection,
 		}
 	}
 	m.mu.Unlock()
@@ -607,7 +707,7 @@ func (m *Manager) finishActiveSession(session *ActiveSession) {
 	var pendingCancel context.CancelFunc
 	if queued {
 		pendingExecCtx, pendingCancel = context.WithTimeout(pending.ctx, m.Timeout)
-		pendingSession = &ActiveSession{CardID: pending.cardID, CommentID: pending.commentID, Cancel: pendingCancel, Done: make(chan struct{})}
+		pendingSession = &ActiveSession{CardID: pending.cardID, CommentID: pending.commentID, Cancel: pendingCancel, Done: make(chan struct{}), StructuredClaim: pending.claim}
 		m.Active[session.CardID] = pendingSession
 	}
 	m.mu.Unlock()
@@ -619,6 +719,14 @@ func (m *Manager) finishActiveSession(session *ActiveSession) {
 	}
 	go func() {
 		if err := m.acquire(pendingExecCtx); err != nil {
+			if pending.claim != nil && m.sessionStopping(pendingSession) {
+				_ = m.holdUnstartedClaim(*pending.claim)
+			}
+			if pending.claim != nil {
+				m.mu.Lock()
+				delete(m.structuredInFlight, pending.commentID)
+				m.mu.Unlock()
+			}
 			if pending.ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
 				m.postMentionFailure(pendingSession, pending.authorName, "waiting for an execution slot", err)
 			}
@@ -646,6 +754,7 @@ func (m *Manager) reserveCleanup(ctx context.Context, cardID string) (*ActiveSes
 	}
 	stopSessionProcess(current)
 	if current != nil && current.Cancel != nil {
+		current.Stopping = true
 		current.Cancel()
 	}
 	var stream api.StreamConn
@@ -655,6 +764,7 @@ func (m *Manager) reserveCleanup(ctx context.Context, cardID string) (*ActiveSes
 		current.Streaming = false
 	}
 	delete(m.pending, cardID)
+	heldStructured := m.drainStructuredLocked(cardID)
 	canceledCommands := m.drainCommandsLocked(cardID)
 	m.Active[cardID] = cleanup
 	previousDone := currentDone(current)
@@ -663,10 +773,40 @@ func (m *Manager) reserveCleanup(ctx context.Context, cardID string) (*ActiveSes
 	if stream != nil {
 		_ = stream.Close()
 	}
+	if current != nil && current.StructuredClaim != nil {
+		_ = m.holdUnstartedClaim(*current.StructuredClaim)
+	}
+	m.reportHeldStructured(ctx, cardID, heldStructured)
 	for range canceledCommands {
 		_, _ = m.Client.AddComment(ctx, cardID, "**Command canceled**\n\nThe card entered Done before this queued command could run.")
 	}
 	return cleanup, previousDone
+}
+
+func (m *Manager) holdQueuedStructuredForDone(ctx context.Context, cardID string) {
+	m.mu.Lock()
+	held := m.drainStructuredLocked(cardID)
+	m.mu.Unlock()
+	m.reportHeldStructured(ctx, cardID, held)
+}
+
+// drainStructuredLocked removes queued requests while card ownership is held.
+func (m *Manager) drainStructuredLocked(cardID string) []pendingMention {
+	held := m.structuredQueue[cardID]
+	delete(m.structuredQueue, cardID)
+	for _, pending := range held {
+		delete(m.structuredInFlight, pending.commentID)
+	}
+	return held
+}
+
+func (m *Manager) reportHeldStructured(ctx context.Context, cardID string, held []pendingMention) {
+	for _, pending := range held {
+		if pending.claim != nil {
+			_ = m.setMentionClaimState(*pending.claim, "needs_review")
+		}
+		_, _ = m.Client.AddCommentOnce(ctx, cardID, "**Structured request held**: card entered Done before queued comment "+pending.commentID+" could run. Inspect before retrying.")
+	}
 }
 
 func currentDone(session *ActiveSession) <-chan struct{} {
@@ -674,6 +814,12 @@ func currentDone(session *ActiveSession) <-chan struct{} {
 		return nil
 	}
 	return session.Done
+}
+
+func (m *Manager) sessionStopping(session *ActiveSession) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return session.Stopping
 }
 
 func (m *Manager) acquire(ctx context.Context) error {

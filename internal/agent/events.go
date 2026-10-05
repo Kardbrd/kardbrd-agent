@@ -67,6 +67,7 @@ func (m *Manager) HandleBoardEvent(ctx context.Context, message map[string]any) 
 		}
 		if matchedCleanup {
 			if m.Paused {
+				m.holdQueuedStructuredForDone(ctx, cardID)
 				return nil
 			}
 			return m.runCleanup(ctx, cardID, cleanupRule)
@@ -108,6 +109,7 @@ func (m *Manager) HandleCardMoved(ctx context.Context, message map[string]any) e
 	session := m.Active[cardID]
 	stopSessionProcess(session)
 	if session != nil && session.Cancel != nil {
+		session.Stopping = true
 		session.Cancel()
 	}
 	var stream api.StreamConn
@@ -118,19 +120,13 @@ func (m *Manager) HandleCardMoved(ctx context.Context, message map[string]any) e
 	}
 	delete(m.Active, cardID)
 	delete(m.pending, cardID)
-	heldStructured := m.structuredQueue[cardID]
-	delete(m.structuredQueue, cardID)
-	for _, pending := range heldStructured {
-		delete(m.structuredInFlight, pending.commentID)
-	}
+	heldStructured := m.drainStructuredLocked(cardID)
 	canceledCommands := m.drainCommandsLocked(cardID)
 	m.mu.Unlock()
-	for _, pending := range heldStructured {
-		if pending.claim != nil {
-			_ = m.setMentionClaimState(*pending.claim, "needs_review")
-		}
-		_, _ = m.Client.AddCommentOnce(ctx, cardID, "**Structured request held**: card entered Done before queued comment "+pending.commentID+" could run. Inspect before retrying.")
+	if session != nil && session.StructuredClaim != nil {
+		_ = m.holdUnstartedClaim(*session.StructuredClaim)
 	}
+	m.reportHeldStructured(ctx, cardID, heldStructured)
 	if stream != nil {
 		_ = stream.Close()
 	}
@@ -163,11 +159,7 @@ func (m *Manager) HandleStopReaction(ctx context.Context, cardID string, comment
 	session.Streaming = false
 	session.Stopping = true
 	delete(m.pending, cardID)
-	heldStructured := m.structuredQueue[cardID]
-	delete(m.structuredQueue, cardID)
-	for _, pending := range heldStructured {
-		delete(m.structuredInFlight, pending.commentID)
-	}
+	heldStructured := m.drainStructuredLocked(cardID)
 	// A live session remains the card owner until its worker reaches its
 	// terminal defer. A subsequent Done cleanup must wait for that point: a
 	// Worktree.Create implementation may be unable to observe cancellation

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"log"
 	"sync"
 	"time"
 
@@ -34,6 +35,7 @@ func publishExecutionCapabilities(ctx context.Context, manager *agent.Manager, c
 type capabilityRegistrationLoop struct {
 	mu        sync.Mutex
 	publishMu sync.Mutex
+	replayMu  sync.Mutex
 	cancel    context.CancelFunc
 	manager   *agent.Manager
 	client    *api.Client
@@ -54,7 +56,7 @@ func (r *capabilityRegistrationLoop) connected(parent context.Context, botID, in
 			err := r.publish(ctx)
 			wait := 10 * time.Second
 			if err == nil {
-				go func() { _ = r.manager.RecoverAcceptedMentions(ctx) }()
+				go r.reconcile(ctx)
 				if expiry := r.manager.CurrentCapabilityExpiry(); expiry.After(time.Now()) {
 					wait = time.Until(expiry) / 2
 					if wait > time.Minute {
@@ -92,7 +94,22 @@ func (r *capabilityRegistrationLoop) disconnected() {
 
 func (r *capabilityRegistrationLoop) refresh(ctx context.Context) {
 	if err := r.publish(ctx); err == nil {
-		go func() { _ = r.manager.RecoverAcceptedMentions(ctx) }()
+		go r.reconcile(ctx)
+	}
+}
+
+func (r *capabilityRegistrationLoop) reconcile(ctx context.Context) {
+	r.replayMu.Lock()
+	defer r.replayMu.Unlock()
+	if ctx.Err() != nil || r.manager.CurrentCapabilityRevision() == "" {
+		return
+	}
+	if err := r.manager.ReconcileExecutionRequests(ctx); err != nil {
+		log.Printf("structured request replay held: %v", err)
+		return
+	}
+	if err := r.manager.RecoverAcceptedMentions(ctx); err != nil {
+		log.Printf("local structured request reconciliation held: %v", err)
 	}
 }
 

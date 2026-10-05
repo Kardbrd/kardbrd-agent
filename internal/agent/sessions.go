@@ -9,20 +9,21 @@ import (
 )
 
 type ActiveSession struct {
-	CardID       string
-	Context      context.Context
-	WorktreePath string
-	CommentID    string
-	Process      *exec.Cmd
-	Cancel       context.CancelFunc
-	SessionID    string
-	Stream       api.StreamConn
-	Streaming    bool
-	Cleanup      bool
-	Stopping     bool
-	Command      *commandClaim
-	Done         chan struct{}
-	doneOnce     sync.Once
+	CardID          string
+	Context         context.Context
+	WorktreePath    string
+	CommentID       string
+	Process         *exec.Cmd
+	Cancel          context.CancelFunc
+	SessionID       string
+	Stream          api.StreamConn
+	Streaming       bool
+	Cleanup         bool
+	Stopping        bool
+	Command         *commandClaim
+	StructuredClaim *mentionClaim
+	Done            chan struct{}
+	doneOnce        sync.Once
 }
 
 func (s *ActiveSession) markDone() {

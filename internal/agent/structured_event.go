@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Kardbrd/kardbrd-agent/internal/api"
 )
 
 // HandleBoardEventRaw retains the nested request's original JSON so presence,
@@ -24,6 +26,9 @@ func (m *Manager) HandleBoardEventRaw(ctx context.Context, raw json.RawMessage) 
 	}
 	if defaults, ok := fields["accepted_defaults"]; ok {
 		message["accepted_defaults_raw"] = defaults
+	}
+	if models, ok := fields["accepted_models"]; ok {
+		message["accepted_models_raw"] = models
 	}
 	return m.HandleBoardEvent(ctx, message)
 }
@@ -96,6 +101,14 @@ func (m *Manager) handleStructuredComment(ctx context.Context, message map[strin
 	if err != nil {
 		return m.rejectStructuredComment(ctx, cardID, stringField(message, "author_name"), err)
 	}
+	modelsRaw, ok := message["accepted_models_raw"].(json.RawMessage)
+	if !ok {
+		return m.rejectStructuredComment(ctx, cardID, stringField(message, "author_name"), fmt.Errorf("accepted_models: missing server snapshot"))
+	}
+	var models []api.ExecutionModel
+	if err := json.Unmarshal(modelsRaw, &models); err != nil || len(models) == 0 {
+		return m.rejectStructuredComment(ctx, cardID, stringField(message, "author_name"), fmt.Errorf("accepted_models: invalid server snapshot"))
+	}
 	content := stringField(message, "content")
 	if !strings.Contains(strings.ToLower(content), strings.ToLower(m.Mention)) {
 		return m.rejectStructuredComment(ctx, cardID, stringField(message, "author_name"), fmt.Errorf("target_bot_id: comment does not address this bot"))
@@ -104,7 +117,18 @@ func (m *Manager) handleStructuredComment(ctx context.Context, message map[strin
 	if err != nil {
 		return m.rejectStructuredComment(ctx, cardID, stringField(message, "author_name"), err)
 	}
-	return m.ProcessStructuredMention(ctx, cardID, commentID, selection, stringField(message, "author_name"), request.CapabilityRevision)
+	snapshot := structuredSnapshot{Revision: request.CapabilityRevision, Models: models, Request: append(json.RawMessage(nil), raw...), Defaults: append(json.RawMessage(nil), defaultsRaw...), AuthorID: stringField(message, "author_id"), AuthorIsBot: boolField(message, "author_is_bot"), CreatedAt: stringField(message, "created_at")}
+	return m.processStructuredMentionSnapshot(ctx, cardID, commentID, selection, stringField(message, "author_name"), snapshot)
+}
+
+type structuredSnapshot struct {
+	Revision    string
+	Models      []api.ExecutionModel
+	Request     json.RawMessage
+	Defaults    json.RawMessage
+	AuthorID    string
+	AuthorIsBot bool
+	CreatedAt   string
 }
 
 func (m *Manager) rejectStructuredComment(ctx context.Context, cardID, authorName string, err error) error {
@@ -143,9 +167,6 @@ func (m *Manager) resolveStructuredSelection(content string, request executionRe
 	if err := validateReasoning(m.ExecutorType, selection.ReasoningEffort); err != nil {
 		return selection, fmt.Errorf("execution_request.effort: %w", err)
 	}
-	if (request.Model.Present || request.Effort.Present) && (selection.Model == "" || selection.ReasoningEffort == "") {
-		return selection, fmt.Errorf("execution_request: explicit selection requires known effective model and effort")
-	}
 	return selection, nil
 }
 
@@ -158,12 +179,27 @@ func (m *Manager) verifiedPair(model, effort string) bool {
 	if m.CommentExecution == nil || m.CommentExecution.Verification.Source == "" {
 		return false
 	}
+	models := make([]api.ExecutionModel, 0, len(m.CommentExecution.Models))
 	for _, candidate := range m.CommentExecution.Models {
-		if candidate.ID == model {
-			for _, allowed := range candidate.Efforts {
-				if allowed == effort {
-					return true
-				}
+		models = append(models, api.ExecutionModel{ID: candidate.ID, Efforts: candidate.Efforts})
+	}
+	return modelsContainPair(models, model, effort)
+}
+
+func modelsContainPair(models []api.ExecutionModel, model, effort string) bool {
+	for _, candidate := range models {
+		if model != "" && candidate.ID != model {
+			continue
+		}
+		if effort == "" {
+			if len(candidate.Efforts) > 0 {
+				return true
+			}
+			continue
+		}
+		for _, allowed := range candidate.Efforts {
+			if allowed == effort {
+				return true
 			}
 		}
 	}

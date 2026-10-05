@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,7 +17,7 @@ func TestPublishExecutionCapabilitiesSetsRevision(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		_, _ = w.Write([]byte(`{"data":{"revision":"rev-1","expires_at":"2026-10-05T23:00:00Z"}}`))
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"revision": "rev-1", "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}})
 	}))
 	defer server.Close()
 	m := agent.NewManager(agent.Config{BoardID: "board1", ExecutorType: "codex", CommentExecution: &rules.CommentExecutionConfig{Models: []rules.CommentModel{{ID: "verified-model", Efforts: []string{"high"}}}, Verification: rules.CommentVerification{Source: "operator_probe", VerifiedAt: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339), ExecutorVersion: "codex 0.156.0"}}})
