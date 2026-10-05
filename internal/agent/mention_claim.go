@@ -61,6 +61,7 @@ func (m *Manager) RecoverAcceptedMentions(ctx context.Context) error {
 	}
 	var itemErrors []error
 	var claims []mentionClaim
+	var publications []mentionClaim
 	ambiguous := map[string]bool{}
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
@@ -81,6 +82,14 @@ func (m *Manager) RecoverAcceptedMentions(ctx context.Context) error {
 			continue
 		}
 		if !m.ownsRecoveredClaim(claim) {
+			continue
+		}
+		switch claim.State {
+		case "rejected", "outcome":
+			publications = append(publications, claim)
+			continue
+		case "accepted":
+		default:
 			continue
 		}
 		claim.ReplayOrder, err = m.readReplayOrder(claim)
@@ -120,10 +129,9 @@ func (m *Manager) RecoverAcceptedMentions(ctx context.Context) error {
 	for cardID := range ambiguous {
 		itemErrors = append(itemErrors, fmt.Errorf("card %s has requests without unambiguous replay order; reconcile canonical replay before recovery", cardID))
 	}
-	for _, claim := range claims {
-		if ambiguous[claim.CardID] {
-			continue
-		}
+	// Saved results and intake rejections need no executor ordering. Reconcile
+	// them even when a separate accepted request on this card is held.
+	for _, claim := range publications {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -132,15 +140,18 @@ func (m *Manager) RecoverAcceptedMentions(ctx context.Context) error {
 			if err := m.publishStructuredRejection(ctx, claim); err != nil {
 				itemErrors = append(itemErrors, fmt.Errorf("rejected request %s: %w", claim.CommentID, err))
 			}
-			continue
 		case "outcome":
 			if err := m.reconcileMentionOutcome(ctx, claim); err != nil {
 				itemErrors = append(itemErrors, fmt.Errorf("outcome request %s: %w", claim.CommentID, err))
 			}
+		}
+	}
+	for _, claim := range claims {
+		if ambiguous[claim.CardID] {
 			continue
-		case "accepted":
-		default:
-			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		cardRaw, err := m.Client.GetCard(ctx, claim.CardID)
 		if err != nil {

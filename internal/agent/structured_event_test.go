@@ -1240,6 +1240,58 @@ func TestRecoveryUsesAuthenticatedBotAcrossSharedDirectoryAndDisconnect(t *testi
 	}
 }
 
+func TestRecoveryPublishesLegacyOutcomeDespiteSameCardTerminal(t *testing.T) {
+	for _, state := range []string{"rejected", "outcome"} {
+		t.Run(state, func(t *testing.T) {
+			owner := replayManager(t)
+			owner.ClaimDir = t.TempDir()
+			selection := mentionDispatch{Content: "@coder fix", Model: "gpt-6-sol", ReasoningEffort: "high"}
+			snapshot := structuredSnapshot{Revision: "rev-1", Models: []api.ExecutionModel{{ID: "gpt-6-sol", Efforts: []string{"high"}}}}
+			if _, _, err := owner.createOrReadMentionClaimWithDisposition("card1", "old", "Paul", selection, snapshot, "terminal", ""); err != nil {
+				t.Fatal(err)
+			}
+			claim, _, err := owner.createOrReadMentionClaimWithDisposition("card1", "pending", "Paul", selection, snapshot, state, "outcome body")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state == "outcome" {
+				claim.OwnerID = "socket-1"
+				claim.OutcomeStatus = "completed"
+				claim.OutcomeMessage = "completed"
+				if err := owner.saveMentionClaim(claim); err != nil {
+					t.Fatal(err)
+				}
+			}
+			other := replayManager(t)
+			other.ClaimDir = owner.ClaimDir
+			other.SetConnectedBot("bot-2", "socket-2")
+			for range 2 {
+				if err := other.RecoverAcceptedMentions(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			otherClient := other.Client.(*fakeBoardClient)
+			if len(otherClient.commentsSnapshot()) != 0 || otherClient.receiptCalls != 0 || other.Executor.(*fakeExecutor).executionCount() != 0 {
+				t.Fatal("foreign bot acted on legacy claims")
+			}
+			owner.SetConnectedBot("", "")
+			for range 2 {
+				if err := owner.RecoverAcceptedMentions(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ownerClient := owner.Client.(*fakeBoardClient)
+			wantReceipts := 0
+			if state == "outcome" {
+				wantReceipts = 1
+			}
+			if got := len(ownerClient.commentsSnapshot()); got != 1 || ownerClient.receiptCalls != wantReceipts || owner.Executor.(*fakeExecutor).executionCount() != 0 {
+				t.Fatalf("owner reconciliation: comments=%d receipts=%d executions=%d", got, ownerClient.receiptCalls, owner.Executor.(*fakeExecutor).executionCount())
+			}
+		})
+	}
+}
+
 type orderingExecutor struct{ *fakeExecutor }
 
 func (e *orderingExecutor) BuildPrompt(req executor.PromptRequest) string {

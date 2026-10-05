@@ -122,6 +122,9 @@ type Manager struct {
 	// cleanupCommandStarted is a test seam for the interval after a cleanup
 	// process starts and before its session process handle is published.
 	cleanupCommandStarted func()
+	// cleanupProcessStopped exposes the stop/cancel ordering to the Unix
+	// cleanup regression test while the manager lock is held.
+	cleanupProcessStopped func(*ActiveSession)
 }
 
 func NewManager(cfg Config) *Manager {
@@ -214,10 +217,11 @@ func (m *Manager) Stop(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for cardID, session := range m.Active {
-		stopSessionProcess(session)
 		if session.Cancel != nil {
+			session.Stopping = true
 			session.Cancel()
 		}
+		stopSessionProcess(session)
 		if session.Stream != nil {
 			_ = session.Stream.Close()
 		}
@@ -772,11 +776,11 @@ func (m *Manager) reserveCleanup(ctx context.Context, cardID string) (*ActiveSes
 		cancel()
 		return nil, nil
 	}
-	stopSessionProcess(current)
 	if current != nil && current.Cancel != nil {
 		current.Stopping = true
 		current.Cancel()
 	}
+	stopSessionProcess(current)
 	var stream api.StreamConn
 	if current != nil {
 		stream = current.Stream

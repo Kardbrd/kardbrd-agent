@@ -107,11 +107,11 @@ func (m *Manager) HandleCardMoved(ctx context.Context, message map[string]any) e
 	}
 	m.mu.Lock()
 	session := m.Active[cardID]
-	stopSessionProcess(session)
 	if session != nil && session.Cancel != nil {
 		session.Stopping = true
 		session.Cancel()
 	}
+	stopSessionProcess(session)
 	var stream api.StreamConn
 	if session != nil {
 		stream = session.Stream
@@ -150,14 +150,17 @@ func (m *Manager) HandleStopReaction(ctx context.Context, cardID string, comment
 		m.mu.Unlock()
 		return nil
 	}
-	stopSessionProcess(session)
+	session.Stopping = true
 	if session.Cancel != nil {
 		session.Cancel()
+	}
+	stopSessionProcess(session)
+	if session.Cleanup && m.cleanupProcessStopped != nil {
+		m.cleanupProcessStopped(session)
 	}
 	stream := session.Stream
 	session.Stream = nil
 	session.Streaming = false
-	session.Stopping = true
 	delete(m.pending, cardID)
 	heldStructured := m.drainStructuredLocked(cardID)
 	// A live session remains the card owner until its worker reaches its
