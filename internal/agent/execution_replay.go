@@ -76,6 +76,13 @@ func (m *Manager) scanExecutionRequests(ctx context.Context, reader interface {
 			if identity.BoardID != m.BoardID || identity.CardID == "" || identity.CommentID == "" {
 				return fmt.Errorf("execution replay item has mismatched identity")
 			}
+			// A claim can survive a crash before the page checkpoint. Record
+			// Web's observed order first so that claim is never left without
+			// durable ordering evidence, even when a later item or page fails.
+			seen = append(seen, replayIdentity{CardID: identity.CardID, CommentID: identity.CommentID})
+			if err := m.recordReplaySequence(seen, false); err != nil {
+				return fmt.Errorf("persist execution replay item %s identity: %w", identity.CommentID, err)
+			}
 			itemErr := m.HandleBoardEventRaw(context.WithValue(ctx, replayIntakeKey{}, true), raw)
 			if err := ctx.Err(); err != nil {
 				return err
@@ -90,7 +97,6 @@ func (m *Manager) scanExecutionRequests(ctx context.Context, reader interface {
 			if claim.BoardID != identity.BoardID || claim.CardID != identity.CardID || claim.CommentID != identity.CommentID || claim.State == "" || !m.ownsRecoveredClaim(claim) {
 				return fmt.Errorf("execution replay item %s has an invalid durable disposition", identity.CommentID)
 			}
-			seen = append(seen, replayIdentity{CardID: identity.CardID, CommentID: identity.CommentID})
 			lastCommentID = identity.CommentID
 		}
 		// Page intake is complete. Persist its observed order before using the

@@ -1458,6 +1458,70 @@ func TestReplayResetsDeletedCursorWithoutLosingIntake(t *testing.T) {
 	}
 }
 
+func TestReplayPersistsIdentityBeforeAcceptedClaimOnInterruptedPage(t *testing.T) {
+	intake := replayManager(t)
+	client := intake.Client.(*fakeBoardClient)
+	a := replayEvent(t, "card1", "a", "@coder first")
+	b := replayEvent(t, "card1", "b", "@coder second")
+	c := replayEvent(t, "card1", "c", "@coder third")
+	for _, raw := range []*json.RawMessage{&a, &b, &c} {
+		var event map[string]any
+		if err := json.Unmarshal(*raw, &event); err != nil {
+			t.Fatal(err)
+		}
+		event["created_at"] = "2026-10-05T18:00:00Z"
+		*raw = rawJSON(t, event)
+	}
+	// The invalid second item interrupts this page after A's acceptance,
+	// before the page-level order checkpoint. A process crash has the same
+	// durable state at this boundary.
+	client.requestPages = map[string]api.ExecutionRequestPage{"": {
+		Requests: []json.RawMessage{a, json.RawMessage("{")},
+	}}
+	if err := intake.ReconcileExecutionRequests(context.Background()); err == nil {
+		t.Fatal("interrupted page was accepted")
+	}
+	claim, err := intake.readMentionClaim("card1", "a")
+	if err != nil || claim.State != "accepted" {
+		t.Fatalf("A claim=%+v err=%v", claim, err)
+	}
+	sequence, err := intake.readReplaySequence("bot-1")
+	if err != nil || len(sequence.Items) != 1 || sequence.Items[0].CommentID != "a" {
+		t.Fatalf("accepted A has no durable order: sequence=%+v err=%v", sequence, err)
+	}
+	// Restart before recovery. A is deleted from Web, so its authoritative
+	// claim fails with 404; B and C remain eligible in their tied server order.
+	client.requestPages = map[string]api.ExecutionRequestPage{"": {Requests: []json.RawMessage{b, c}}}
+	client.claimErrors = map[string]error{"a": &api.APIError{StatusCode: 404, Code: "NOT_FOUND", Message: "request no longer on board"}}
+	restarted := replayManager(t)
+	restarted.ClaimDir = intake.ClaimDir
+	restarted.Client = client
+	underlying := restarted.Executor.(*fakeExecutor)
+	restarted.Executor = &orderingExecutor{underlying}
+	for range 2 {
+		if err := restarted.ReconcileExecutionRequests(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if err := restarted.RecoverAcceptedMentions(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	underlying.mu.Lock()
+	defer underlying.mu.Unlock()
+	if len(underlying.requests) != 2 {
+		t.Fatalf("executions=%d, want B and C once", len(underlying.requests))
+	}
+	for i, want := range []string{"second", "third"} {
+		request := underlying.requests[i]
+		if !strings.Contains(request.Prompt, want) || request.Model != "gpt-6-sol" || request.ReasoningEffort != "high" {
+			t.Fatalf("request %d=%+v, want frozen %s", i, request, want)
+		}
+	}
+	if claim, err := restarted.readMentionClaim("card1", "a"); err != nil || claim.State != "accepted" {
+		t.Fatalf("deleted A claim=%+v err=%v", claim, err)
+	}
+}
+
 func TestReplayPageFailureDoesNotHoldDurableNewRequest(t *testing.T) {
 	m := replayManager(t)
 	client := m.Client.(*fakeBoardClient)
