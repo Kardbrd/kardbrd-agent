@@ -76,13 +76,16 @@ func (m *Manager) handleStructuredComment(ctx context.Context, message map[strin
 	if cardID == "" || commentID == "" {
 		return fmt.Errorf("structured comment event requires card_id and comment_id")
 	}
+	reject := func(err error) error {
+		return m.rejectStructuredIntake(ctx, message, value, err)
+	}
 	raw, ok := value.(json.RawMessage)
 	if !ok {
-		return m.rejectStructuredComment(ctx, cardID, stringField(message, "author_name"), fmt.Errorf("execution_request: missing raw JSON"))
+		return reject(fmt.Errorf("execution_request: missing raw JSON"))
 	}
 	request, err := parseExecutionRequest(raw)
 	if err != nil {
-		return m.rejectStructuredComment(ctx, cardID, stringField(message, "author_name"), err)
+		return reject(err)
 	}
 	m.mu.Lock()
 	botID := m.BotID
@@ -91,31 +94,34 @@ func (m *Manager) handleStructuredComment(ctx context.Context, message map[strin
 		return nil
 	}
 	if botID == "" {
-		return m.rejectStructuredComment(ctx, cardID, stringField(message, "author_name"), fmt.Errorf("target bot identity is not connected"))
+		return reject(fmt.Errorf("target bot identity is not connected"))
 	}
 	defaultsRaw, ok := message["accepted_defaults_raw"].(json.RawMessage)
 	if !ok {
-		return m.rejectStructuredComment(ctx, cardID, stringField(message, "author_name"), fmt.Errorf("accepted_defaults: missing server snapshot"))
+		return reject(fmt.Errorf("accepted_defaults: missing server snapshot"))
 	}
 	defaults, err := parseAcceptedDefaults(defaultsRaw)
 	if err != nil {
-		return m.rejectStructuredComment(ctx, cardID, stringField(message, "author_name"), err)
+		return reject(err)
 	}
 	modelsRaw, ok := message["accepted_models_raw"].(json.RawMessage)
 	if !ok {
-		return m.rejectStructuredComment(ctx, cardID, stringField(message, "author_name"), fmt.Errorf("accepted_models: missing server snapshot"))
+		return reject(fmt.Errorf("accepted_models: missing server snapshot"))
 	}
 	var models []api.ExecutionModel
 	if err := json.Unmarshal(modelsRaw, &models); err != nil || len(models) == 0 {
-		return m.rejectStructuredComment(ctx, cardID, stringField(message, "author_name"), fmt.Errorf("accepted_models: invalid server snapshot"))
+		return reject(fmt.Errorf("accepted_models: invalid server snapshot"))
 	}
 	content := stringField(message, "content")
 	if !strings.Contains(strings.ToLower(content), strings.ToLower(m.Mention)) {
-		return m.rejectStructuredComment(ctx, cardID, stringField(message, "author_name"), fmt.Errorf("target_bot_id: comment does not address this bot"))
+		return reject(fmt.Errorf("target_bot_id: comment does not address this bot"))
 	}
 	selection, err := m.resolveStructuredSelection(content, request, defaults)
 	if err != nil {
-		return m.rejectStructuredComment(ctx, cardID, stringField(message, "author_name"), err)
+		return reject(err)
+	}
+	if !modelsContainPair(models, selection.Model, selection.ReasoningEffort) {
+		return reject(fmt.Errorf("execution_request: resolved selection is outside accepted_models snapshot"))
 	}
 	snapshot := structuredSnapshot{Revision: request.CapabilityRevision, Models: models, Request: append(json.RawMessage(nil), raw...), Defaults: append(json.RawMessage(nil), defaultsRaw...), AuthorID: stringField(message, "author_id"), AuthorIsBot: boolField(message, "author_is_bot"), CreatedAt: stringField(message, "created_at")}
 	return m.processStructuredMentionSnapshot(ctx, cardID, commentID, selection, stringField(message, "author_name"), snapshot)
@@ -134,6 +140,64 @@ type structuredSnapshot struct {
 func (m *Manager) rejectStructuredComment(ctx context.Context, cardID, authorName string, err error) error {
 	_, _ = m.Client.AddCommentOnce(ctx, cardID, "**Execution request error**: "+err.Error()+"\n\n"+requesterMention(authorName))
 	return nil
+}
+
+// An intake error belongs to the persisted request, even when selection
+// resolution failed before a Web execution claim could be made.
+func (m *Manager) rejectStructuredIntake(ctx context.Context, message map[string]any, value any, reason error) error {
+	cardID, commentID := stringField(message, "card_id"), stringField(message, "comment_id")
+	content, authorName := stringField(message, "content"), stringField(message, "author_name")
+	request, _ := value.(json.RawMessage)
+	snapshot := structuredSnapshot{Request: request, AuthorID: stringField(message, "author_id"), AuthorIsBot: boolField(message, "author_is_bot"), CreatedAt: stringField(message, "created_at")}
+	if parsed, err := parseExecutionRequest(request); err == nil {
+		snapshot.Revision = parsed.CapabilityRevision
+	}
+	if defaults, ok := message["accepted_defaults_raw"].(json.RawMessage); ok {
+		snapshot.Defaults = defaults
+	}
+	if models, ok := message["accepted_models_raw"].(json.RawMessage); ok {
+		_ = json.Unmarshal(models, &snapshot.Models)
+	}
+	selection := mentionDispatch{Content: content}
+	body := "**Execution request error**: " + reason.Error() + "\n\n" + requesterMention(authorName)
+	claim, _, err := m.createOrReadMentionClaimWithDisposition(cardID, commentID, authorName, selection, snapshot, "rejected", body)
+	if err != nil {
+		return err
+	}
+	unlock, acquired, err := m.lockMentionClaim(cardID, commentID)
+	if err != nil || !acquired {
+		return err
+	}
+	defer unlock()
+	claim, err = m.readMentionClaim(cardID, commentID)
+	if err != nil {
+		return err
+	}
+	if claim.State == "accepted" {
+		claim.State = "rejected"
+		claim.OutcomeBody = body
+		if err := m.saveMentionClaim(claim); err != nil {
+			return err
+		}
+	}
+	if claim.State != "rejected" {
+		return nil
+	}
+	if replayIntakeOnly(ctx) {
+		return nil
+	}
+	return m.publishStructuredRejection(ctx, claim)
+}
+
+func (m *Manager) publishStructuredRejection(ctx context.Context, claim mentionClaim) error {
+	publisher, ok := m.Client.(interface {
+		AddCommentIdempotent(context.Context, string, string, string) (json.RawMessage, error)
+	})
+	if !ok {
+		return fmt.Errorf("structured intake rejection held: idempotent comment API is unavailable")
+	}
+	_, err := publisher.AddCommentIdempotent(ctx, claim.CardID, claim.OutcomeBody, "execution-rejected:"+claim.BoardID+":"+claim.CardID+":"+claim.CommentID)
+	return err
 }
 
 func (m *Manager) resolveStructuredSelection(content string, request executionRequest, defaults acceptedDefaults) (mentionDispatch, error) {

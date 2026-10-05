@@ -1328,11 +1328,13 @@ type fakeBoardClient struct {
 	claimResult         api.ExecutionClaim
 	claimErr            error
 	receiptCalls        int
+	receiptRequests     []api.ExecutionReceiptRequest
 	receiptErr          error
 	idempotentComments  map[string]json.RawMessage
 	loseCommentResponse bool
 	loseReceiptResponse bool
 	requestPages        map[string]api.ExecutionRequestPage
+	requestPageErrors   map[string]error
 	requestCursors      []string
 }
 
@@ -1340,6 +1342,10 @@ func (c *fakeBoardClient) GetExecutionRequests(ctx context.Context, boardID, aft
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.requestCursors = append(c.requestCursors, after)
+	if err := c.requestPageErrors[after]; err != nil {
+		delete(c.requestPageErrors, after)
+		return api.ExecutionRequestPage{}, err
+	}
 	return c.requestPages[after], nil
 }
 
@@ -1360,6 +1366,7 @@ func (c *fakeBoardClient) PutExecutionReceipt(ctx context.Context, commentID str
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.receiptCalls++
+	c.receiptRequests = append(c.receiptRequests, request)
 	if c.loseReceiptResponse {
 		c.loseReceiptResponse = false
 		return api.ExecutionClaim{}, context.DeadlineExceeded

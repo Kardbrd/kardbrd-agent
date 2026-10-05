@@ -38,11 +38,12 @@ type mentionClaim struct {
 	OutcomeStatus    string               `json:"outcome_status,omitempty"`
 	OutcomeBody      string               `json:"outcome_body,omitempty"`
 	OutcomeMessage   string               `json:"outcome_message,omitempty"`
+	IntakeErrorBody  string               `json:"intake_error_body,omitempty"`
 	AcceptedModels   []api.ExecutionModel `json:"accepted_models,omitempty"`
 }
 
-// RecoverAcceptedMentions only replays claims that have never entered the
-// executor. A started claim remains held for operator reconciliation.
+// RecoverAcceptedMentions processes durable intake and publication states.
+// A started claim remains held for operator reconciliation.
 func (m *Manager) RecoverAcceptedMentions(ctx context.Context) error {
 	dir := m.ClaimDir
 	if dir == "" {
@@ -55,7 +56,11 @@ func (m *Manager) RecoverAcceptedMentions(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var itemErrors []error
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
@@ -67,12 +72,28 @@ func (m *Manager) RecoverAcceptedMentions(ctx context.Context) error {
 		if err := json.Unmarshal(data, &claim); err != nil {
 			return err
 		}
-		if claim.Version != 1 || claim.BoardID != m.BoardID || claim.State != "accepted" {
+		if claim.Version != 1 || claim.BoardID != m.BoardID {
+			continue
+		}
+		switch claim.State {
+		case "rejected":
+			if err := m.publishStructuredRejection(ctx, claim); err != nil {
+				itemErrors = append(itemErrors, fmt.Errorf("rejected request %s: %w", claim.CommentID, err))
+			}
+			continue
+		case "outcome":
+			if err := m.reconcileMentionOutcome(ctx, claim); err != nil {
+				itemErrors = append(itemErrors, fmt.Errorf("outcome request %s: %w", claim.CommentID, err))
+			}
+			continue
+		case "accepted":
+		default:
 			continue
 		}
 		cardRaw, err := m.Client.GetCard(ctx, claim.CardID)
 		if err != nil {
-			return err
+			itemErrors = append(itemErrors, fmt.Errorf("accepted request %s card load: %w", claim.CommentID, err))
+			continue
 		}
 		var card struct {
 			IsArchived bool   `json:"is_archived"`
@@ -92,10 +113,10 @@ func (m *Manager) RecoverAcceptedMentions(ctx context.Context) error {
 		}
 		selection := mentionDispatch{Content: claim.Content, Model: claim.Model, ReasoningEffort: claim.Effort, ModelSource: claim.ModelSource, EffortSource: claim.EffortSource}
 		if err := m.ProcessStructuredMention(ctx, claim.CardID, claim.CommentID, selection, claim.AuthorName, m.CurrentCapabilityRevision()); err != nil {
-			return err
+			itemErrors = append(itemErrors, fmt.Errorf("accepted request %s: %w", claim.CommentID, err))
 		}
 	}
-	return nil
+	return errors.Join(itemErrors...)
 }
 
 func (m *Manager) claimPath(cardID, commentID string) string {
@@ -124,6 +145,10 @@ func (m *Manager) lockMentionClaim(cardID, commentID string) (func(), bool, erro
 }
 
 func (m *Manager) createOrReadMentionClaim(cardID, commentID, authorName string, selection mentionDispatch, snapshot structuredSnapshot) (mentionClaim, bool, error) {
+	return m.createOrReadMentionClaimWithDisposition(cardID, commentID, authorName, selection, snapshot, "accepted", "")
+}
+
+func (m *Manager) createOrReadMentionClaimWithDisposition(cardID, commentID, authorName string, selection mentionDispatch, snapshot structuredSnapshot, state, outcomeBody string) (mentionClaim, bool, error) {
 	path := m.claimPath(cardID, commentID)
 	m.mu.Lock()
 	targetBotID := m.BotID
@@ -131,7 +156,7 @@ func (m *Manager) createOrReadMentionClaim(cardID, commentID, authorName string,
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return mentionClaim{}, false, err
 	}
-	claim := mentionClaim{Version: 1, BoardID: m.BoardID, CardID: cardID, CommentID: commentID, TargetBotID: targetBotID, Content: selection.Content, AuthorName: authorName, AuthorID: snapshot.AuthorID, AuthorIsBot: snapshot.AuthorIsBot, CreatedAt: snapshot.CreatedAt, AcceptedRevision: snapshot.Revision, Request: snapshot.Request, AcceptedDefaults: snapshot.Defaults, Model: selection.Model, Effort: selection.ReasoningEffort, ModelSource: selection.ModelSource, EffortSource: selection.EffortSource, State: "accepted", AcceptedModels: snapshot.Models}
+	claim := mentionClaim{Version: 1, BoardID: m.BoardID, CardID: cardID, CommentID: commentID, TargetBotID: targetBotID, Content: selection.Content, AuthorName: authorName, AuthorID: snapshot.AuthorID, AuthorIsBot: snapshot.AuthorIsBot, CreatedAt: snapshot.CreatedAt, AcceptedRevision: snapshot.Revision, Request: snapshot.Request, AcceptedDefaults: snapshot.Defaults, Model: selection.Model, Effort: selection.ReasoningEffort, ModelSource: selection.ModelSource, EffortSource: selection.EffortSource, State: state, OutcomeBody: outcomeBody, AcceptedModels: snapshot.Models}
 	data, err := json.Marshal(claim)
 	if err != nil {
 		return mentionClaim{}, false, err

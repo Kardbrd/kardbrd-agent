@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,249 @@ import (
 	"github.com/Kardbrd/kardbrd-agent/internal/executor"
 	"github.com/Kardbrd/kardbrd-agent/internal/rules"
 )
+
+type failFirstWorktree struct{ fakeWorktree }
+
+func (w *failFirstWorktree) Prepare(_ context.Context, cardID, _ string) (string, error) {
+	if cardID == "card1" {
+		return "", errors.New("persistent workspace failure")
+	}
+	return w.path, nil
+}
+
+func (w *failFirstWorktree) ExistingOrBase(ctx context.Context, cardID, boardID string) (string, error) {
+	return w.Prepare(ctx, cardID, boardID)
+}
+
+func replayEvent(t *testing.T, cardID, commentID, content string) json.RawMessage {
+	t.Helper()
+	event := structuredEvent(`{"version":1,"target_bot_id":"bot-1","capability_revision":"rev-1"}`, `{"model":"gpt-6-sol","effort":"high"}`)
+	event["card_id"], event["comment_id"], event["content"] = cardID, commentID, content
+	event["execution_request"] = event["execution_request_raw"]
+	event["accepted_defaults"] = event["accepted_defaults_raw"]
+	event["accepted_models"] = event["accepted_models_raw"]
+	return rawJSON(t, event)
+}
+
+func replayManager(t *testing.T) *Manager {
+	t.Helper()
+	m := newTestManager(t)
+	m.ExecutorType = "codex"
+	m.ClaimDir = t.TempDir()
+	m.SetConnectedBot("bot-1", "socket-1")
+	m.SetCapabilityRevision("rev-1")
+	m.CommentExecution = &rules.CommentExecutionConfig{Models: []rules.CommentModel{{ID: "gpt-6-sol", Efforts: []string{"high"}}}, Verification: rules.CommentVerification{Source: "operator_probe"}}
+	return m
+}
+
+func TestReplayRejectsMalformedDirectiveOnceAndContinuesPages(t *testing.T) {
+	m := replayManager(t)
+	client := m.Client.(*fakeBoardClient)
+	client.loseCommentResponse = true
+	cursor := "bad"
+	client.requestPages = map[string]api.ExecutionRequestPage{
+		"":    {Requests: []json.RawMessage{replayEvent(t, "card1", "bad", "@coder [dispatch model=oops]\nFix")}, NextAfter: &cursor},
+		"bad": {Requests: []json.RawMessage{replayEvent(t, "card2", "good2", "@coder fix"), replayEvent(t, "card3", "good3", "@coder fix")}},
+	}
+	for range 2 {
+		if err := m.ReconcileExecutionRequests(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		_ = m.RecoverAcceptedMentions(context.Background())
+	}
+	claim, err := m.readMentionClaim("card1", "bad")
+	if err != nil || claim.State != "rejected" {
+		t.Fatalf("rejection claim=%+v err=%v", claim, err)
+	}
+	if got := m.Executor.(*fakeExecutor).executionCount(); got != 2 {
+		t.Fatalf("executions=%d", got)
+	}
+	if got := len(client.commentsSnapshot()); got != 3 {
+		t.Fatalf("comments=%d", got)
+	}
+}
+
+func TestReplayPreparationFailureDoesNotBlockNextCard(t *testing.T) {
+	m := replayManager(t)
+	m.Worktree = &failFirstWorktree{fakeWorktree{path: "/tmp/test-worktree"}}
+	client := m.Client.(*fakeBoardClient)
+	client.requestPages = map[string]api.ExecutionRequestPage{"": {Requests: []json.RawMessage{replayEvent(t, "card1", "first", "@coder fix"), replayEvent(t, "card2", "second", "@coder fix")}}}
+	for range 2 {
+		if err := m.ReconcileExecutionRequests(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.RecoverAcceptedMentions(context.Background()); err == nil {
+			t.Fatal("persistent preparation failure was hidden")
+		}
+	}
+	if got := m.Executor.(*fakeExecutor).executionCount(); got != 1 {
+		t.Fatalf("executions=%d", got)
+	}
+	if claim, err := m.readMentionClaim("card1", "first"); err != nil || claim.State != "accepted" {
+		t.Fatalf("claim=%+v err=%v", claim, err)
+	}
+	if got := len(client.commentsSnapshot()); got != 2 {
+		t.Fatalf("comments=%d", got)
+	}
+}
+
+func TestReplayRetryAfterPageFailureStartsFromDurableItems(t *testing.T) {
+	m := replayManager(t)
+	client := m.Client.(*fakeBoardClient)
+	cursor := "first"
+	client.requestPages = map[string]api.ExecutionRequestPage{
+		"":     {Requests: []json.RawMessage{replayEvent(t, "card1", "first", "@coder fix")}, NextAfter: &cursor},
+		cursor: {Requests: []json.RawMessage{replayEvent(t, "card2", "second", "@coder fix")}},
+	}
+	client.requestPageErrors = map[string]error{cursor: errors.New("temporary page failure")}
+	if err := m.ReconcileExecutionRequests(context.Background()); err == nil {
+		t.Fatal("missing page failure")
+	}
+	if claim, err := m.readMentionClaim("card1", "first"); err != nil || claim.State != "accepted" {
+		t.Fatalf("first claim=%+v err=%v", claim, err)
+	}
+	// A new manager represents a process restart. It scans from the beginning;
+	// the first durable item must not execute twice and the second is ingested.
+	restarted := replayManager(t)
+	restarted.ClaimDir = m.ClaimDir
+	restarted.Client = client
+	if err := restarted.ReconcileExecutionRequests(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.RecoverAcceptedMentions(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Executor.(*fakeExecutor).executionCount() + restarted.Executor.(*fakeExecutor).executionCount(); got != 2 {
+		t.Fatalf("executions=%d", got)
+	}
+	if claim, err := restarted.readMentionClaim("card2", "second"); err != nil || claim.State != "terminal" {
+		t.Fatalf("second claim=%+v err=%v", claim, err)
+	}
+}
+
+func TestReplayRecordsLaterIntakeBeforeEarlierExecutionFinishes(t *testing.T) {
+	m := replayManager(t)
+	client := m.Client.(*fakeBoardClient)
+	client.requestPages = map[string]api.ExecutionRequestPage{"": {Requests: []json.RawMessage{replayEvent(t, "card1", "first", "@coder fix"), replayEvent(t, "card2", "second", "@coder fix")}}}
+	e := m.Executor.(*fakeExecutor)
+	e.started = make(chan struct{})
+	e.blockUntilRelease = make(chan struct{})
+	e.blockOnExecute = 1
+	done := make(chan error, 1)
+	go func() {
+		if err := m.ReconcileExecutionRequests(context.Background()); err != nil {
+			done <- err
+			return
+		}
+		done <- m.RecoverAcceptedMentions(context.Background())
+	}()
+	<-e.started
+	defer func() { close(e.blockUntilRelease); <-done }()
+	deadline := time.After(time.Second)
+	for {
+		if claim, err := m.readMentionClaim("card2", "second"); err == nil && claim.State != "" {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("later replay item was not durably ingested while first executor ran")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+func TestCanceledStructuredExecutorKeepsReturnedSuccess(t *testing.T) {
+	for _, kind := range []string{"deadline", "socket"} {
+		t.Run(kind, func(t *testing.T) {
+			m := replayManager(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			e := m.Executor.(*fakeExecutor)
+			if kind == "deadline" {
+				m.Timeout = time.Millisecond
+				e.onExecute = func() { time.Sleep(10 * time.Millisecond) }
+			} else {
+				e.onExecute = cancel
+			}
+			raw := replayEvent(t, "card1", "comment1", "@coder fix")
+			_ = m.HandleBoardEventRaw(ctx, raw)
+			claim, err := m.readMentionClaim("card1", "comment1")
+			if err != nil || claim.State != "terminal" || claim.OutcomeStatus != "completed" || e.executionCount() != 1 {
+				t.Fatalf("claim=%+v executions=%d err=%v", claim, e.executionCount(), err)
+			}
+			if err := m.HandleBoardEventRaw(context.Background(), raw); err != nil {
+				t.Fatal(err)
+			}
+			if got := len(m.Client.(*fakeBoardClient).commentsSnapshot()); got != 1 {
+				t.Fatalf("comments=%d", got)
+			}
+		})
+	}
+}
+
+func TestCanceledStructuredExecutorPersistsKnownResult(t *testing.T) {
+	for _, kind := range []string{"deadline", "socket"} {
+		for _, lost := range []string{"none", "comment", "receipt"} {
+			t.Run(kind+"/"+lost, func(t *testing.T) {
+				m := replayManager(t)
+				m.Timeout = 20 * time.Millisecond
+				client := m.Client.(*fakeBoardClient)
+				client.loseCommentResponse = lost == "comment"
+				client.loseReceiptResponse = lost == "receipt"
+				e := m.Executor.(*fakeExecutor)
+				e.blockUntilCancel = true
+				e.started = make(chan struct{})
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				if kind == "socket" {
+					m.Timeout = time.Hour
+				}
+				done := make(chan error, 1)
+				raw := replayEvent(t, "card1", "comment1", "@coder fix")
+				go func() { done <- m.HandleBoardEventRaw(ctx, raw) }()
+				<-e.started
+				if kind == "socket" {
+					cancel()
+				}
+				_ = <-done
+				claim, err := m.readMentionClaim("card1", "comment1")
+				if err != nil || (claim.State != "outcome" && claim.State != "terminal") || claim.OutcomeStatus != "failed" || claim.OwnerID != "socket-1" {
+					t.Fatalf("claim=%+v err=%v", claim, err)
+				}
+				if err := m.HandleBoardEventRaw(context.Background(), raw); err != nil {
+					t.Fatal(err)
+				}
+				if err := m.HandleBoardEventRaw(context.Background(), raw); err != nil {
+					t.Fatal(err)
+				}
+				claim, err = m.readMentionClaim("card1", "comment1")
+				if err != nil || claim.State != "terminal" || e.executionCount() != 1 || len(client.commentsSnapshot()) != 1 || client.receiptCalls < 1 {
+					t.Fatalf("claim=%+v executions=%d comments=%v receipts=%d err=%v", claim, e.executionCount(), client.commentsSnapshot(), client.receiptCalls, err)
+				}
+				for _, receipt := range client.receiptRequests {
+					if receipt.InstanceID != "socket-1" || receipt.Status != "failed" {
+						t.Fatalf("receipt=%+v", receipt)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestCanceledStructuredExecutorDoesNotResumeEmptyResult(t *testing.T) {
+	m := replayManager(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	e := m.Executor.(*fakeExecutor)
+	e.result = executor.Result{Success: true, SessionID: "session-1"}
+	e.onExecute = cancel
+	raw := replayEvent(t, "card1", "comment1", "@coder fix")
+	_ = m.HandleBoardEventRaw(ctx, raw)
+	claim, err := m.readMentionClaim("card1", "comment1")
+	if err != nil || claim.State != "terminal" || claim.OutcomeStatus != "failed" || e.executionCount() != 1 {
+		t.Fatalf("claim=%+v executions=%d err=%v", claim, e.executionCount(), err)
+	}
+}
 
 func structuredEvent(request, defaults string) map[string]any {
 	return map[string]any{"event_type": "comment_created", "board_id": "board1", "card_id": "card1", "comment_id": "comment1", "content": "@coder [dispatch model=gpt-6-sol effort=low]\nFix this.", "author_name": "Paul", "execution_request_raw": json.RawMessage(request), "accepted_defaults_raw": json.RawMessage(defaults), "accepted_models_raw": json.RawMessage(`[{"id":"gpt-6-sol","efforts":["low","high"]},{"id":"m","efforts":["high"]}]`)}
@@ -206,6 +450,9 @@ func TestExecutionRequestPagingUsesDurableEventPath(t *testing.T) {
 	cursor := "comment1"
 	client.requestPages = map[string]api.ExecutionRequestPage{"": {Requests: []json.RawMessage{rawJSON(t, first)}, NextAfter: &cursor}, cursor: {Requests: []json.RawMessage{rawJSON(t, second)}}}
 	if err := m.ReconcileExecutionRequests(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RecoverAcceptedMentions(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if m.Executor.(*fakeExecutor).executionCount() != 2 || len(client.requestCursors) != 2 || client.requestCursors[1] != cursor {
@@ -537,7 +784,7 @@ func TestStructuredResolvedPairMustMatchAcceptedSnapshot(t *testing.T) {
 				t.Fatal(err)
 			}
 			claim, err := m.readMentionClaim("card1", "comment1")
-			if err != nil || claim.State != "needs_review" || m.Executor.(*fakeExecutor).executionCount() != 0 || m.Client.(*fakeBoardClient).claimCalls != 0 {
+			if err != nil || claim.State != "rejected" || m.Executor.(*fakeExecutor).executionCount() != 0 || m.Client.(*fakeBoardClient).claimCalls != 0 {
 				t.Fatalf("claim=%+v err=%v", claim, err)
 			}
 		})

@@ -281,6 +281,9 @@ func (m *Manager) processStructuredMentionSnapshot(ctx context.Context, cardID, 
 	if err != nil {
 		return err
 	}
+	if replayIntakeOnly(ctx) {
+		return nil
+	}
 	if !created && claim.State == "outcome" {
 		return m.reconcileMentionOutcome(ctx, claim)
 	}
@@ -413,7 +416,15 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 				failure = fmt.Errorf("request timed out while %s", phase)
 			}
 			if !errors.Is(failure, context.Canceled) {
-				m.postMentionFailure(session, authorName, phase, failure)
+				if claim != nil {
+					publicationCtx, cancelPublication := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+					if err := m.publishStructuredHold(publicationCtx, *claim, phase, failure); err != nil {
+						runErr = errors.Join(runErr, err)
+					}
+					cancelPublication()
+				} else {
+					m.postMentionFailure(session, authorName, phase, failure)
+				}
 			}
 		}
 		session.Cancel()
@@ -567,10 +578,18 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 		ReasoningEffort: selection.ReasoningEffort,
 		OnChunk:         m.makeOnChunk(session.CardID),
 	})
-	if !result.Success && m.withdrawRejectedPair(selection.Model, selection.ReasoningEffort, result.Error) && m.CapabilityRefresh != nil {
-		m.CapabilityRefresh(ctx)
+	// Execute has returned: its result is known even if its deadline or the
+	// socket context expired. Finish durable bookkeeping under a bounded context.
+	publicationCtx := execCtx
+	if claim != nil && execCtx.Err() != nil {
+		var cancelPublication context.CancelFunc
+		publicationCtx, cancelPublication = context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancelPublication()
 	}
-	if execCtx.Err() != nil {
+	if !result.Success && m.withdrawRejectedPair(selection.Model, selection.ReasoningEffort, result.Error) && m.CapabilityRefresh != nil {
+		m.CapabilityRefresh(publicationCtx)
+	}
+	if claim == nil && execCtx.Err() != nil {
 		return nil
 	}
 	terminalHandled = true
@@ -583,7 +602,7 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 
 	if result.Success {
 		if claim != nil {
-			return m.finishStructuredResult(execCtx, *claim, result, worktreePath)
+			return m.finishStructuredResult(publicationCtx, *claim, result, worktreePath, execCtx.Err() == nil && !m.sessionStopping(session))
 		}
 		if err := m.completeSuccessfulResult(execCtx, session.CardID, session.CommentID, result, authorName, worktreePath, selection.Model, selection.ReasoningEffort); err != nil {
 			return err
@@ -591,7 +610,7 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 		return nil
 	}
 
-	m.addReaction(ctx, session.CardID, session.CommentID, "🛑")
+	m.addReaction(publicationCtx, session.CardID, session.CommentID, "🛑")
 	message := buildErrorComment(result, "Error") + "\n\n" + requesterMention(authorName)
 	if claim != nil {
 		claim.OutcomeStatus = "failed"
@@ -601,7 +620,7 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 		if err := m.saveMentionClaim(*claim); err != nil {
 			return err
 		}
-		return m.publishMentionOutcome(execCtx, *claim)
+		return m.publishMentionOutcome(publicationCtx, *claim)
 	}
 	_, _ = m.Client.AddComment(ctx, session.CardID, message)
 	return nil

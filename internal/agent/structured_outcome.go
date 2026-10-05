@@ -92,8 +92,8 @@ func (m *Manager) claimOnWeb(ctx context.Context, claim mentionClaim) (api.Execu
 	return owner, nil
 }
 
-func (m *Manager) finishStructuredResult(ctx context.Context, claim mentionClaim, result executor.Result, worktreePath string) error {
-	if strings.TrimSpace(result.ResultText) == "" && result.SessionID != "" {
+func (m *Manager) finishStructuredResult(ctx context.Context, claim mentionClaim, result executor.Result, worktreePath string, allowResume bool) error {
+	if allowResume && strings.TrimSpace(result.ResultText) == "" && result.SessionID != "" {
 		result = m.Executor.Execute(ctx, executor.Request{CardID: claim.CardID, BoardID: claim.BoardID, Prompt: `The previous execution completed without a final response.
 
 Do not do any new work. Return the concise terminal summary normally so the agent manager can publish it. Do not call kardbrd comment add.`, ResumeSessionID: result.SessionID, CWD: worktreePath, Model: claim.Model, ReasoningEffort: claim.Effort})
@@ -151,6 +151,30 @@ func (m *Manager) publishMentionOutcome(ctx context.Context, claim mentionClaim)
 	}
 	m.addReaction(ctx, claim.CardID, claim.CommentID, map[bool]string{true: "✅", false: "🛑"}[claim.OutcomeStatus == "completed"])
 	return m.setMentionClaimState(claim, "terminal")
+}
+
+func (m *Manager) publishStructuredHold(ctx context.Context, claim mentionClaim, phase string, reason error) error {
+	current, err := m.readMentionClaim(claim.CardID, claim.CommentID)
+	if err != nil {
+		return err
+	}
+	if current.State != "accepted" {
+		return nil
+	}
+	if current.IntakeErrorBody == "" {
+		current.IntakeErrorBody = "**Execution request held** while " + phase + ": " + reason.Error() + "\n\n" + requesterMention(current.AuthorName)
+		if err := m.saveMentionClaim(current); err != nil {
+			return err
+		}
+	}
+	publisher, ok := m.Client.(interface {
+		AddCommentIdempotent(context.Context, string, string, string) (json.RawMessage, error)
+	})
+	if !ok {
+		return errors.New("structured hold publication pending: idempotent comment API is unavailable")
+	}
+	_, err = publisher.AddCommentIdempotent(ctx, current.CardID, current.IntakeErrorBody, "execution-held:"+current.BoardID+":"+current.CardID+":"+current.CommentID)
+	return err
 }
 
 func (m *Manager) reconcileMentionOutcome(ctx context.Context, claim mentionClaim) error {

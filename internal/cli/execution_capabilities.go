@@ -106,7 +106,6 @@ func (r *capabilityRegistrationLoop) reconcile(ctx context.Context) {
 	}
 	if err := r.manager.ReconcileExecutionRequests(ctx); err != nil {
 		log.Printf("structured request replay held: %v", err)
-		return
 	}
 	if err := r.manager.RecoverAcceptedMentions(ctx); err != nil {
 		log.Printf("local structured request reconciliation held: %v", err)

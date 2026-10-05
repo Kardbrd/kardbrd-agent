@@ -8,7 +8,14 @@ import (
 	"github.com/Kardbrd/kardbrd-agent/internal/api"
 )
 
-// ReconcileExecutionRequests scans from the beginning on each registration.
+type replayIntakeKey struct{}
+
+func replayIntakeOnly(ctx context.Context) bool {
+	return ctx.Value(replayIntakeKey{}) != nil
+}
+
+// ReconcileExecutionRequests durably ingests every page before local recovery
+// dispatches accepted claims. It scans from the beginning on each registration.
 // There is no persisted cursor: local claims deduplicate completed items, and
 // an item is never skipped after a crash between page receipt and recording.
 func (m *Manager) ReconcileExecutionRequests(ctx context.Context) error {
@@ -40,11 +47,19 @@ func (m *Manager) ReconcileExecutionRequests(ctx context.Context) error {
 			if identity.BoardID != m.BoardID || identity.CardID == "" || identity.CommentID == "" {
 				return fmt.Errorf("execution replay item has mismatched identity")
 			}
-			if err := m.HandleBoardEventRaw(ctx, raw); err != nil {
+			itemErr := m.HandleBoardEventRaw(context.WithValue(ctx, replayIntakeKey{}, true), raw)
+			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if _, err := m.readMentionClaim(identity.CardID, identity.CommentID); err != nil {
+			claim, err := m.readMentionClaim(identity.CardID, identity.CommentID)
+			if err != nil {
+				if itemErr != nil {
+					return fmt.Errorf("execution replay item %s was not recorded after processing error: %w", identity.CommentID, itemErr)
+				}
 				return fmt.Errorf("execution replay item %s was not recorded: %w", identity.CommentID, err)
+			}
+			if claim.BoardID != identity.BoardID || claim.CardID != identity.CardID || claim.CommentID != identity.CommentID || claim.State == "" {
+				return fmt.Errorf("execution replay item %s has an invalid durable disposition", identity.CommentID)
 			}
 			lastCommentID = identity.CommentID
 		}
