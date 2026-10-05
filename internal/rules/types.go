@@ -9,15 +9,37 @@ var modelMap = map[string]string{
 }
 
 type Config struct {
-	BoardID   string
-	AgentName string
-	APIURL    string
-	Executor  string
+	BoardID          string
+	AgentName        string
+	APIURL           string
+	Executor         string
+	CommentExecution *CommentExecutionConfig
 	// Worktree is nil unless the configuration explicitly opts into the
 	// portable lifecycle. Nil deliberately preserves the legacy manager.
 	Worktree  *WorktreeConfig
 	Rules     []Rule
 	Schedules []Schedule
+}
+
+// CommentExecutionConfig applies only to directly addressed comments.
+type CommentExecutionConfig struct {
+	Defaults     CommentDefaults
+	Models       []CommentModel
+	Verification CommentVerification
+}
+
+type CommentDefaults struct {
+	Model  string
+	Effort string
+}
+type CommentModel struct {
+	ID      string
+	Efforts []string
+}
+type CommentVerification struct {
+	Source          string
+	VerifiedAt      string
+	ExecutorVersion string
 }
 
 type CheckoutMode string

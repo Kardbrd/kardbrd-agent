@@ -29,6 +29,7 @@ type agentRuntime struct {
 	WorktreesEnabled bool
 	GitRoot          string
 	WorktreeConfig   *rules.WorktreeConfig
+	CommentExecution *rules.CommentExecutionConfig
 }
 
 var runAgentRuntime = realRunAgentRuntime
@@ -202,6 +203,7 @@ func newAgentStartCommand(root *rootOptions) *cobra.Command {
 				WorktreesEnabled: worktreesEnabled,
 				GitRoot:          gitRoot,
 				WorktreeConfig:   rulesCfg.Worktree,
+				CommentExecution: rulesCfg.CommentExecution,
 			})
 		},
 	}
@@ -329,6 +331,8 @@ func realRunAgentRuntime(ctx context.Context, runtime agentRuntime) error {
 		Timeout:              time.Duration(cfg.TimeoutSeconds) * time.Second,
 		MaxConcurrent:        cfg.MaxConcurrent,
 		ExecutorType:         cfg.Executor,
+		CommentExecution:     runtime.CommentExecution,
+		ClaimDir:             filepath.Join(cfg.CWD, "state", "agent-claims"),
 		Rules:                &runtime.Rules,
 		Schedules:            runtime.Schedules,
 		LifecycleFingerprint: rules.LifecycleFingerprint(rules.Config{Worktree: runtime.WorktreeConfig, Rules: runtime.Rules.Rules}),
@@ -342,12 +346,12 @@ func realRunAgentRuntime(ctx context.Context, runtime agentRuntime) error {
 		manager.Reload = newRuntimeRulesReload(cfg.RulesFile, cfg, manager, scheduleManager)
 	}
 
+	registration := &capabilityRegistrationLoop{manager: manager, client: client}
+	manager.CapabilityRefresh = registration.refresh
+	ws.OnConnected = func(message api.ConnectedMessage) { registration.connected(ctx, message.AgentID, message.InstanceID) }
+	ws.OnDisconnected = registration.disconnected
 	ws.OnBoardEvent = func(raw json.RawMessage) {
-		var message map[string]any
-		if err := json.Unmarshal(raw, &message); err != nil {
-			return
-		}
-		go func() { _ = manager.HandleBoardEvent(ctx, message) }()
+		go func() { _ = manager.HandleBoardEventRaw(ctx, raw) }()
 	}
 
 	errCh := make(chan error, 3)
@@ -359,7 +363,7 @@ func realRunAgentRuntime(ctx context.Context, runtime agentRuntime) error {
 		}()
 	}
 	if cfg.RulesFile != "" {
-		go rulesReloadLoop(ctx, cfg.RulesFile, manager)
+		go rulesReloadLoop(ctx, cfg.RulesFile, manager, registration.refresh)
 	}
 	go statusPingLoop(ctx, ws, manager, cfg)
 	go func() { errCh <- manager.Start(ctx) }()
@@ -413,7 +417,7 @@ func validateLifecycleDeadline(cfg config.AgentConfig, rulesCfg rules.Config) er
 	return nil
 }
 
-func rulesReloadLoop(ctx context.Context, path string, manager *agent.Manager) {
+func rulesReloadLoop(ctx context.Context, path string, manager *agent.Manager, onReload ...func(context.Context)) {
 	lastMod, _ := fileModTime(path)
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
@@ -430,6 +434,9 @@ func rulesReloadLoop(ctx context.Context, path string, manager *agent.Manager) {
 				continue
 			}
 			_ = manager.EnsureBotCard(ctx)
+			for _, refresh := range onReload {
+				refresh(ctx)
+			}
 			lastMod = modTime
 		}
 	}

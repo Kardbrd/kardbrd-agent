@@ -44,7 +44,7 @@ var knownEvents = set(
 	"list_created", "list_deleted",
 )
 
-var knownTopFields = set("board_id", "agent", "api_url", "executor", "worktree", "rules", "schedules")
+var knownTopFields = set("board_id", "agent", "api_url", "executor", "worktree", "rules", "schedules", "comment_execution")
 var knownRuleFields = set("name", "event", "action", "model", "reasoning", "list", "title", "label", "content_contains", "exclude_label", "require_label", "emoji", "require_user", "assignee", "comment_author", "cleanup_command", "comment_command", "execution")
 var knownScheduleFields = set("name", "card_id", "cron", "action", "model", "reasoning", "assignee", "list", "publish_result")
 var validReasoningEfforts = set("low", "medium", "high", "xhigh", "max")

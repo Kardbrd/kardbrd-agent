@@ -31,6 +31,12 @@ func (m *Manager) HandleBoardEvent(ctx context.Context, message map[string]any) 
 		if boolField(message, "author_is_bot") {
 			break
 		}
+		if raw, present := message["execution_request_raw"]; present {
+			return m.handleStructuredComment(ctx, message, raw)
+		}
+		if _, present := message["accepted_defaults_raw"]; present {
+			return m.rejectStructuredComment(ctx, cardID, stringField(message, "author_name"), fmt.Errorf("accepted_defaults: requires execution_request"))
+		}
 		content := stringField(message, "content")
 		if m.isBotCard(message) && strings.HasPrefix(strings.TrimSpace(content), "/") {
 			return m.HandleBotCardCommand(ctx, cardID, content, stringField(message, "author_name"))
@@ -112,8 +118,19 @@ func (m *Manager) HandleCardMoved(ctx context.Context, message map[string]any) e
 	}
 	delete(m.Active, cardID)
 	delete(m.pending, cardID)
+	heldStructured := m.structuredQueue[cardID]
+	delete(m.structuredQueue, cardID)
+	for _, pending := range heldStructured {
+		delete(m.structuredInFlight, pending.commentID)
+	}
 	canceledCommands := m.drainCommandsLocked(cardID)
 	m.mu.Unlock()
+	for _, pending := range heldStructured {
+		if pending.claim != nil {
+			_ = m.setMentionClaimState(*pending.claim, "needs_review")
+		}
+		_, _ = m.Client.AddCommentOnce(ctx, cardID, "**Structured request held**: card entered Done before queued comment "+pending.commentID+" could run. Inspect before retrying.")
+	}
 	if stream != nil {
 		_ = stream.Close()
 	}
@@ -146,6 +163,11 @@ func (m *Manager) HandleStopReaction(ctx context.Context, cardID string, comment
 	session.Streaming = false
 	session.Stopping = true
 	delete(m.pending, cardID)
+	heldStructured := m.structuredQueue[cardID]
+	delete(m.structuredQueue, cardID)
+	for _, pending := range heldStructured {
+		delete(m.structuredInFlight, pending.commentID)
+	}
 	// A live session remains the card owner until its worker reaches its
 	// terminal defer. A subsequent Done cleanup must wait for that point: a
 	// Worktree.Create implementation may be unable to observe cancellation
@@ -156,6 +178,11 @@ func (m *Manager) HandleStopReaction(ctx context.Context, cardID string, comment
 		delete(m.Active, cardID)
 	}
 	m.mu.Unlock()
+	for _, pending := range heldStructured {
+		if pending.claim != nil {
+			_ = m.setMentionClaimState(*pending.claim, "needs_review")
+		}
+	}
 	if stream != nil {
 		_ = stream.Close()
 	}

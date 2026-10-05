@@ -1,5 +1,7 @@
 # Rules (`kardbrd.yml`)
 
+Directly addressed comments use the separate optional [`comment_execution` scope](comment-execution.md). Rule and schedule model fields do not set comment defaults.
+
 The rule engine is the core of kardbrd-agent's automation. Define rules in `kardbrd.yml` to match WebSocket events and trigger AI agent sessions or built-in actions.
 
 ## File format

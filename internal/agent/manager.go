@@ -58,6 +58,8 @@ type Config struct {
 	Timeout              time.Duration
 	MaxConcurrent        int
 	ExecutorType         string
+	CommentExecution     *rules.CommentExecutionConfig
+	ClaimDir             string
 	Rules                *rules.Engine
 	Schedules            []rules.Schedule
 	LifecycleFingerprint string
@@ -70,33 +72,43 @@ type Config struct {
 }
 
 type Manager struct {
-	BoardID           string
-	APIURL            string
-	Token             string
-	AgentName         string
-	Mention           string
-	CWD               string
-	Timeout           time.Duration
-	MaxConcurrent     int
-	ExecutorType      string
-	Rules             *rules.Engine
-	Schedules         []rules.Schedule
-	policyFingerprint string
-	Active            map[string]*ActiveSession
-	pending           map[string]pendingMention
-	commandClaims     map[commandDedupKey]*commandClaim
-	commandQueues     map[string][]*commandClaim
-	commandSeq        uint64
-	commandAccessSeq  uint64
-	Paused            bool
-	BotCardID         string
-	StartTime         time.Time
+	BoardID             string
+	APIURL              string
+	Token               string
+	AgentName           string
+	Mention             string
+	CWD                 string
+	Timeout             time.Duration
+	MaxConcurrent       int
+	ExecutorType        string
+	CommentExecution    *rules.CommentExecutionConfig
+	ClaimDir            string
+	BotID               string
+	InstanceID          string
+	CapabilityRevision  string
+	CapabilityExpiresAt time.Time
+	structuredQueue     map[string][]pendingMention
+	structuredInFlight  map[string]bool
+	suppressedPairs     map[string]bool
+	Rules               *rules.Engine
+	Schedules           []rules.Schedule
+	policyFingerprint   string
+	Active              map[string]*ActiveSession
+	pending             map[string]pendingMention
+	commandClaims       map[commandDedupKey]*commandClaim
+	commandQueues       map[string][]*commandClaim
+	commandSeq          uint64
+	commandAccessSeq    uint64
+	Paused              bool
+	BotCardID           string
+	StartTime           time.Time
 
-	Client    BoardClient
-	Executor  executor.Interface
-	Worktree  Worktree
-	WebSocket WebSocketRunner
-	Reload    func(context.Context) (rules.Config, error)
+	Client            BoardClient
+	Executor          executor.Interface
+	Worktree          Worktree
+	WebSocket         WebSocketRunner
+	Reload            func(context.Context) (rules.Config, error)
+	CapabilityRefresh func(context.Context)
 
 	sem chan struct{}
 	mu  sync.Mutex
@@ -140,29 +152,34 @@ func NewManager(cfg Config) *Manager {
 	}
 
 	return &Manager{
-		BoardID:           cfg.BoardID,
-		APIURL:            cfg.APIURL,
-		Token:             cfg.Token,
-		AgentName:         cfg.AgentName,
-		Mention:           "@" + cfg.AgentName,
-		CWD:               cwd,
-		Timeout:           timeout,
-		MaxConcurrent:     maxConcurrent,
-		ExecutorType:      executorType,
-		Rules:             ruleEngine,
-		Schedules:         cfg.Schedules,
-		policyFingerprint: policyFingerprint,
-		Active:            map[string]*ActiveSession{},
-		pending:           map[string]pendingMention{},
-		commandClaims:     map[commandDedupKey]*commandClaim{},
-		commandQueues:     map[string][]*commandClaim{},
-		StartTime:         time.Now().UTC(),
-		Client:            cfg.Client,
-		Executor:          cfg.Executor,
-		Worktree:          cfg.Worktree,
-		WebSocket:         cfg.WebSocket,
-		Reload:            cfg.Reload,
-		sem:               make(chan struct{}, maxConcurrent),
+		BoardID:            cfg.BoardID,
+		APIURL:             cfg.APIURL,
+		Token:              cfg.Token,
+		AgentName:          cfg.AgentName,
+		Mention:            "@" + cfg.AgentName,
+		CWD:                cwd,
+		Timeout:            timeout,
+		MaxConcurrent:      maxConcurrent,
+		ExecutorType:       executorType,
+		CommentExecution:   cfg.CommentExecution,
+		ClaimDir:           cfg.ClaimDir,
+		structuredQueue:    map[string][]pendingMention{},
+		structuredInFlight: map[string]bool{},
+		suppressedPairs:    map[string]bool{},
+		Rules:              ruleEngine,
+		Schedules:          cfg.Schedules,
+		policyFingerprint:  policyFingerprint,
+		Active:             map[string]*ActiveSession{},
+		pending:            map[string]pendingMention{},
+		commandClaims:      map[commandDedupKey]*commandClaim{},
+		commandQueues:      map[string][]*commandClaim{},
+		StartTime:          time.Now().UTC(),
+		Client:             cfg.Client,
+		Executor:           cfg.Executor,
+		Worktree:           cfg.Worktree,
+		WebSocket:          cfg.WebSocket,
+		Reload:             cfg.Reload,
+		sem:                make(chan struct{}, maxConcurrent),
 	}
 }
 
@@ -206,6 +223,8 @@ func (m *Manager) Stop(ctx context.Context) error {
 		delete(m.Active, cardID)
 	}
 	m.pending = map[string]pendingMention{}
+	m.structuredQueue = map[string][]pendingMention{}
+	m.structuredInFlight = map[string]bool{}
 	return ctx.Err()
 }
 
@@ -220,7 +239,87 @@ func (m *Manager) ActiveCardIDs() []string {
 }
 
 func (m *Manager) ProcessMention(ctx context.Context, cardID, commentID, content, authorName string) error {
-	if m.queueMentionIfActive(ctx, cardID, commentID, content, authorName) {
+	selection, err := parseMentionDispatch(content, m.Mention)
+	if err != nil {
+		return m.processMention(ctx, cardID, commentID, content, authorName, nil, nil)
+	}
+	m.mu.Lock()
+	if m.CommentExecution != nil {
+		if selection.Model == "" {
+			selection.Model = m.CommentExecution.Defaults.Model
+			if selection.Model != "" {
+				selection.ModelSource = "yaml"
+			}
+		}
+		if selection.ReasoningEffort == "" {
+			selection.ReasoningEffort = m.CommentExecution.Defaults.Effort
+			if selection.ReasoningEffort != "" {
+				selection.EffortSource = "yaml"
+			}
+		}
+	}
+	m.mu.Unlock()
+	if selection.ModelSource == "" {
+		selection.ModelSource = "cli_unknown"
+	}
+	if selection.EffortSource == "" {
+		selection.EffortSource = "cli_unknown"
+	}
+	return m.processMention(ctx, cardID, commentID, content, authorName, &selection, nil)
+}
+
+func (m *Manager) ProcessStructuredMention(ctx context.Context, cardID, commentID string, selection mentionDispatch, authorName, acceptedRevision string) error {
+	claim, created, err := m.createOrReadMentionClaim(cardID, commentID, authorName, selection)
+	if err != nil {
+		return err
+	}
+	if !created && claim.State != "accepted" {
+		if claim.State == "started" {
+			if _, err := os.Stat(m.claimPath(cardID, commentID) + ".lock"); errors.Is(err, os.ErrNotExist) {
+				if err := m.setMentionClaimState(claim, "needs_review"); err != nil {
+					return err
+				}
+				return m.rejectStructuredComment(ctx, cardID, authorName, fmt.Errorf("comment_id: prior execution may have started; inspect the card and claim before any retry"))
+			}
+		}
+		return nil
+	}
+	// The persisted snapshot wins on redelivery, including after a config reload.
+	selection = mentionDispatch{Content: claim.Content, Model: claim.Model, ReasoningEffort: claim.Effort, ModelSource: claim.ModelSource, EffortSource: claim.EffortSource}
+	m.mu.Lock()
+	currentRevision, botID, instanceID := m.CapabilityRevision, m.BotID, m.InstanceID
+	m.mu.Unlock()
+	if currentRevision == "" || (created && currentRevision != acceptedRevision) || !m.verifiedPair(selection.Model, selection.ReasoningEffort) {
+		return m.rejectStructuredComment(ctx, cardID, authorName, fmt.Errorf("capability_revision: accepted request is held until a compatible sole v1 reader registers; redeliver the same comment after refresh"))
+	}
+	if reader, ok := m.Client.(interface {
+		GetExecutionCapabilities(context.Context, string, string) (api.ExecutionCapabilityView, error)
+	}); ok {
+		view, err := reader.GetExecutionCapabilities(ctx, botID, m.BoardID)
+		if err != nil || view.Revision != currentRevision || view.InstanceID != instanceID || view.BoardID != m.BoardID || view.Executor != m.ExecutorType || !view.ExpiresAt.After(time.Now()) {
+			return m.rejectStructuredComment(ctx, cardID, authorName, fmt.Errorf("capability_revision: no fresh sole v1 reader registration; accepted request is held"))
+		}
+	}
+	return m.processMention(ctx, cardID, commentID, selection.Content, claim.AuthorName, &selection, &claim)
+}
+
+func (m *Manager) processMention(ctx context.Context, cardID, commentID, content, authorName string, frozen *mentionDispatch, claim *mentionClaim) error {
+	if claim != nil {
+		m.mu.Lock()
+		if m.structuredInFlight[commentID] {
+			m.mu.Unlock()
+			return nil
+		}
+		m.structuredInFlight[commentID] = true
+		if _, active := m.Active[cardID]; active {
+			m.structuredQueue[cardID] = append(m.structuredQueue[cardID], pendingMention{ctx: ctx, cardID: cardID, commentID: commentID, content: content, authorName: authorName, frozen: frozen, claim: claim})
+			m.mu.Unlock()
+			m.addReaction(ctx, cardID, commentID, "👀")
+			return nil
+		}
+		m.mu.Unlock()
+	}
+	if claim == nil && m.queueMentionIfActive(ctx, cardID, commentID, content, authorName) {
 		return nil
 	}
 	if err := m.acquire(ctx); err != nil {
@@ -232,15 +331,21 @@ func (m *Manager) ProcessMention(ctx context.Context, cardID, commentID, content
 	m.mu.Lock()
 	_, exists := m.Active[cardID]
 	if exists {
-		if m.pending == nil {
+		if claim != nil {
+			m.structuredQueue[cardID] = append(m.structuredQueue[cardID], pendingMention{ctx: ctx, cardID: cardID, commentID: commentID, content: content, authorName: authorName, frozen: frozen, claim: claim})
+		} else if m.pending == nil {
 			m.pending = map[string]pendingMention{}
 		}
-		m.pending[cardID] = pendingMention{
-			ctx:        ctx,
-			cardID:     cardID,
-			commentID:  commentID,
-			content:    content,
-			authorName: authorName,
+		if claim == nil {
+			m.pending[cardID] = pendingMention{
+				ctx:        ctx,
+				cardID:     cardID,
+				commentID:  commentID,
+				content:    content,
+				authorName: authorName,
+				frozen:     frozen,
+				claim:      claim,
+			}
 		}
 	}
 	if !exists {
@@ -254,13 +359,18 @@ func (m *Manager) ProcessMention(ctx context.Context, cardID, commentID, content
 		return nil
 	}
 	m.addReaction(ctx, cardID, commentID, "👀")
-	return m.processClaimedMention(ctx, execCtx, session, content, authorName)
+	return m.processClaimedMention(ctx, execCtx, session, content, authorName, frozen, claim)
 }
 
-func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *ActiveSession, content, authorName string) (runErr error) {
+func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *ActiveSession, content, authorName string, frozen *mentionDispatch, claim *mentionClaim) (runErr error) {
 	phase := "validating dispatch selection"
 	terminalHandled := false
 	defer func() {
+		if claim != nil {
+			m.mu.Lock()
+			delete(m.structuredInFlight, claim.CommentID)
+			m.mu.Unlock()
+		}
 		// Preparation and card-loading failures happen before the executor can
 		// produce a reply. Publish here so queued mentions get the same outcome.
 		if !terminalHandled && ctx.Err() == nil && (runErr != nil || errors.Is(execCtx.Err(), context.DeadlineExceeded)) {
@@ -276,8 +386,24 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 		m.finishActiveSession(session)
 		m.release()
 	}()
-	selection, selectionErr := parseMentionDispatch(content, m.Mention)
-	if selectionErr == nil && selection.Model != "" && m.ExecutorType != "codex" {
+	if claim != nil {
+		unlock, acquired, err := m.lockMentionClaim(claim.CardID, claim.CommentID)
+		if err != nil {
+			return err
+		}
+		if !acquired {
+			return nil
+		}
+		defer unlock()
+	}
+	selection := mentionDispatch{}
+	var selectionErr error
+	if frozen != nil {
+		selection = *frozen
+	} else {
+		selection, selectionErr = parseMentionDispatch(content, m.Mention)
+	}
+	if selectionErr == nil && selection.Model != "" && m.ExecutorType != "codex" && (selection.ModelSource == "directive" || m.ExecutorType != "claude") {
 		selectionErr = fmt.Errorf("explicit model selection requires the codex executor; current executor is %q", m.ExecutorType)
 	}
 	if selectionErr != nil {
@@ -285,6 +411,11 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 		m.addReaction(ctx, session.CardID, session.CommentID, "🛑")
 		_, _ = m.Client.AddCommentOnce(ctx, session.CardID, "**Dispatch selection error**: "+selectionErr.Error()+"\n\n"+requesterMention(authorName))
 		return nil
+	}
+	if claim != nil {
+		if err := m.verifyCurrentClaim(execCtx, *claim); err != nil {
+			return err
+		}
 	}
 
 	phase = "checking authentication"
@@ -334,6 +465,11 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 	promptText = m.withBranchContext(execCtx, session.CardID, worktreePath, promptText)
 
 	phase = "running the request"
+	if claim != nil {
+		if err := m.setMentionClaimState(*claim, "started"); err != nil {
+			return fmt.Errorf("persist execution claim: %w", err)
+		}
+	}
 	result := m.Executor.Execute(execCtx, executor.Request{
 		CardID:          session.CardID,
 		BoardID:         m.BoardID,
@@ -343,6 +479,9 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 		ReasoningEffort: selection.ReasoningEffort,
 		OnChunk:         m.makeOnChunk(session.CardID),
 	})
+	if !result.Success && m.withdrawRejectedPair(selection.Model, selection.ReasoningEffort, result.Error) && m.CapabilityRefresh != nil {
+		m.CapabilityRefresh(ctx)
+	}
 	if execCtx.Err() != nil {
 		return nil
 	}
@@ -355,12 +494,21 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 	m.mu.Unlock()
 
 	if result.Success {
-		return m.completeSuccessfulResult(execCtx, session.CardID, session.CommentID, result, authorName, worktreePath, selection.Model, selection.ReasoningEffort)
+		if err := m.completeSuccessfulResult(execCtx, session.CardID, session.CommentID, result, authorName, worktreePath, selection.Model, selection.ReasoningEffort); err != nil {
+			return err
+		}
+		if claim != nil {
+			return m.setMentionClaimState(*claim, "terminal")
+		}
+		return nil
 	}
 
 	m.addReaction(ctx, session.CardID, session.CommentID, "🛑")
 	message := buildErrorComment(result, "Error") + "\n\n" + requesterMention(authorName)
 	_, _ = m.Client.AddComment(ctx, session.CardID, message)
+	if claim != nil {
+		return m.setMentionClaimState(*claim, "terminal")
+	}
 	return nil
 }
 
@@ -381,6 +529,8 @@ type pendingMention struct {
 	commentID  string
 	content    string
 	authorName string
+	frozen     *mentionDispatch
+	claim      *mentionClaim
 }
 
 func (m *Manager) queueMentionIfActive(ctx context.Context, cardID, commentID, content, authorName string) bool {
@@ -433,14 +583,24 @@ func (m *Manager) finishActiveSession(session *ActiveSession) {
 			return
 		}
 	}
-	pending, queued := m.pending[session.CardID]
-	delete(m.pending, session.CardID)
 	if session.Cleanup {
 		m.mu.Unlock()
 		if stream != nil {
 			_ = stream.Close()
 		}
 		return
+	}
+	pending, queued := pendingMention{}, false
+	if queue := m.structuredQueue[session.CardID]; len(queue) > 0 {
+		pending, queued = queue[0], true
+		if len(queue) == 1 {
+			delete(m.structuredQueue, session.CardID)
+		} else {
+			m.structuredQueue[session.CardID] = queue[1:]
+		}
+	} else {
+		pending, queued = m.pending[session.CardID]
+		delete(m.pending, session.CardID)
 	}
 	var pendingSession *ActiveSession
 	var pendingExecCtx context.Context
@@ -466,7 +626,7 @@ func (m *Manager) finishActiveSession(session *ActiveSession) {
 			m.finishActiveSession(pendingSession)
 			return
 		}
-		_ = m.processClaimedMention(pending.ctx, pendingExecCtx, pendingSession, pending.content, pending.authorName)
+		_ = m.processClaimedMention(pending.ctx, pendingExecCtx, pendingSession, pending.content, pending.authorName, pending.frozen, pending.claim)
 	}()
 }
 
@@ -700,8 +860,12 @@ func (m *Manager) ApplyRulesConfig(cfg rules.Config) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.CommentExecution != nil && cfg.CommentExecution != nil && m.CommentExecution.Verification.VerifiedAt != cfg.CommentExecution.Verification.VerifiedAt {
+		m.suppressedPairs = map[string]bool{}
+	}
 	m.Rules = &rules.Engine{Rules: append([]rules.Rule(nil), cfg.Rules...)}
 	m.Schedules = append([]rules.Schedule(nil), cfg.Schedules...)
+	m.CommentExecution = cfg.CommentExecution
 	return nil
 }
 

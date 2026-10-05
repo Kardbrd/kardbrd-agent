@@ -57,7 +57,7 @@ func TestAgentWebSocketReadsEventsAndSendsStatus(t *testing.T) {
 		defer conn.Close()
 
 		messages := []map[string]any{
-			{"type": "connected", "agent_id": "a1", "subscribed_boards": []string{"b1"}},
+			{"type": "connected", "agent_id": "a1", "instance_id": "socket-1", "subscribed_boards": []string{"b1"}},
 			{"type": "board_event", "event_type": "comment_created", "card_id": "card1"},
 			{"type": "pong"},
 			{"type": "error", "error": "bad subscription"},
@@ -99,6 +99,7 @@ func TestAgentWebSocketReadsEventsAndSendsStatus(t *testing.T) {
 
 	connected := receive(t, connectedCh)
 	assertEqual(t, "a1", connected.AgentID)
+	assertEqual(t, "socket-1", connected.InstanceID)
 	assertEqual(t, "b1", connected.SubscribedBoards[0])
 
 	boardRaw := receive(t, boardCh)

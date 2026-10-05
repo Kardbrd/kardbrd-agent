@@ -15,6 +15,7 @@ import (
 type ConnectedMessage struct {
 	Type             string   `json:"type"`
 	AgentID          string   `json:"agent_id"`
+	InstanceID       string   `json:"instance_id"`
 	SubscribedBoards []string `json:"subscribed_boards"`
 }
 
@@ -31,9 +32,10 @@ type WebSocketClient struct {
 	Dialer  *websocket.Dialer
 	Conn    *websocket.Conn
 
-	OnConnected  func(ConnectedMessage)
-	OnBoardEvent func(json.RawMessage)
-	OnError      func(string)
+	OnConnected    func(ConnectedMessage)
+	OnDisconnected func()
+	OnBoardEvent   func(json.RawMessage)
+	OnError        func(string)
 }
 
 type StreamConn interface {
@@ -125,6 +127,9 @@ func (c *WebSocketClient) Run(ctx context.Context) error {
 			delay = time.Second
 			err = c.ReadLoop(ctx, conn)
 			_ = conn.Close()
+			if c.OnDisconnected != nil {
+				c.OnDisconnected()
+			}
 		}
 		if ctx.Err() != nil {
 			return nil

@@ -1,5 +1,7 @@
 # Explicit selection on addressed comments
 
+For the structured Web composer contract and direct-comment YAML defaults, see [Structured Comment Execution](comment-execution.md).
+
 For a daemon started with the Codex executor, place this directive on the **first line** of an addressed comment:
 
 ```text
