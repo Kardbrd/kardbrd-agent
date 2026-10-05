@@ -180,7 +180,9 @@ rules:
     action: /kr
 ```
 
-The repository's existing board rules retain their configured models and `xhigh` effort; this feature now propagates that effort to supported executors. An exact configured slash command is handled by its command rule first; other addressed comments take precedence over matching ordinary `comment_created` rules. For direct comment selection, see [Addressed Comment Dispatch](mention-dispatch.md).
+The bundled MBPBot rules in `kardbrd.yml` keep their existing models and set `reasoning: high`. **Migration warning:** this feature makes previously ignored `reasoning` settings effective. Before upgrading a live MBPBot daemon, inspect the configuration file it actually loads and change the applicable MBPBot rules from `xhigh` to the requested `high`. The bundled file does not update a separate deployed copy. Preserve intentionally configured efforts for other agents and workflows. See the [operator checklist](mention-dispatch.md#operator-migration-checklist) before release.
+
+An exact configured slash command is handled by its command rule first; other addressed comments take precedence over matching ordinary `comment_created` rules. For direct comment selection, see [Addressed Comment Dispatch](mention-dispatch.md).
 
 ## Examples
 
