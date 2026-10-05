@@ -68,6 +68,10 @@ func (m *Manager) RecoverAcceptedMentions(ctx context.Context) error {
 	m.mu.Unlock()
 	sequenceOrder := map[replayIdentity]uint64{}
 	sequenceUnavailable := false
+	sequenceComplete := false
+	sequenceScanning := false
+	currentReplay := map[replayIdentity]bool{}
+	prefixReplay := map[replayIdentity]bool{}
 	uncertainCards := map[string]bool{}
 	if verifiedBotID != "" {
 		sequence, err := m.readReplaySequence(verifiedBotID)
@@ -75,6 +79,14 @@ func (m *Manager) RecoverAcceptedMentions(ctx context.Context) error {
 			itemErrors = append(itemErrors, fmt.Errorf("replay sequence: %w", err))
 			sequenceUnavailable = true
 		} else {
+			sequenceComplete = sequence.Complete
+			sequenceScanning = sequence.Scanning
+			for _, item := range sequence.Current {
+				currentReplay[item] = true
+			}
+			for _, item := range sequence.Prefix {
+				prefixReplay[item] = true
+			}
 			for i, item := range sequence.Items {
 				sequenceOrder[item] = uint64(i + 1)
 			}
@@ -112,6 +124,17 @@ func (m *Manager) RecoverAcceptedMentions(ctx context.Context) error {
 		default:
 			continue
 		}
+		// A completed collection or an interrupted scan's durable prefix
+		// establishes which unstarted claims have a known safe position.
+		// Others remain on disk for the next scan. Saved outcomes above remain
+		// independently publishable after omission or page failure.
+		identity := replayIdentity{CardID: claim.CardID, CommentID: claim.CommentID}
+		if sequenceScanning && !prefixReplay[identity] {
+			continue
+		}
+		if !sequenceScanning && sequenceComplete && !currentReplay[identity] {
+			continue
+		}
 		if sequenceUnavailable {
 			ambiguous[claim.CardID] = true
 			continue
@@ -132,7 +155,7 @@ func (m *Manager) RecoverAcceptedMentions(ctx context.Context) error {
 		acceptedPerCard[claim.CardID]++
 	}
 	for cardID := range uncertainCards {
-		if acceptedPerCard[cardID] > 1 {
+		if len(prefixReplay) == 0 && !sequenceComplete && acceptedPerCard[cardID] > 1 {
 			ambiguous[cardID] = true
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"time"
 )
@@ -25,6 +26,10 @@ type replaySequence struct {
 	BoardID        string           `json:"board_id"`
 	TargetBotID    string           `json:"target_bot_id"`
 	Items          []replayIdentity `json:"items"`
+	Current        []replayIdentity `json:"current,omitempty"`
+	Prefix         []replayIdentity `json:"prefix,omitempty"`
+	Complete       bool             `json:"complete,omitempty"`
+	Scanning       bool             `json:"scanning,omitempty"`
 	UncertainCards []string         `json:"uncertain_cards,omitempty"`
 }
 
@@ -58,6 +63,16 @@ func (m *Manager) readReplaySequence(botID string) (replaySequence, error) {
 			return sequence, fmt.Errorf("replay sequence contains invalid or duplicate identity")
 		}
 		known[item] = true
+	}
+	for _, item := range sequence.Current {
+		if !known[item] {
+			return sequence, fmt.Errorf("replay current identity is absent from durable sequence")
+		}
+	}
+	for _, item := range sequence.Prefix {
+		if !known[item] {
+			return sequence, fmt.Errorf("replay prefix identity is absent from durable sequence")
+		}
 	}
 	return sequence, nil
 }
@@ -108,13 +123,18 @@ func (m *Manager) migrateReplaySequence(sequence replaySequence) (replaySequence
 		}
 	}
 	sort.SliceStable(rankedItems, func(i, j int) bool { return rankedItems[i].order < rankedItems[j].order })
-	for i, item := range rankedItems {
-		if i > 0 {
-			prior := rankedItems[i-1]
-			if prior.order == item.order && prior.identity.CardID == item.identity.CardID && (prior.created.IsZero() || item.created.IsZero() || prior.created.Equal(item.created)) {
-				uncertain[item.identity.CardID] = true
-			}
+	seenTies := map[string]bool{}
+	for _, item := range rankedItems {
+		// Old absolute ranks have no scan provenance. Even unequal ranks
+		// cannot order two tied requests from different mutable scans.
+		key := item.identity.CardID + "\x00" + item.created.Format(time.RFC3339Nano)
+		if item.created.IsZero() {
+			key = item.identity.CardID + "\x00unknown"
 		}
+		if seenTies[key] {
+			uncertain[item.identity.CardID] = true
+		}
+		seenTies[key] = true
 		sequence.Items = append(sequence.Items, item.identity)
 	}
 	for cardID := range uncertain {
@@ -124,7 +144,7 @@ func (m *Manager) migrateReplaySequence(sequence replaySequence) (replaySequence
 	return sequence, nil
 }
 
-func (m *Manager) recordReplaySequence(seen []replayIdentity) error {
+func (m *Manager) recordReplaySequence(seen []replayIdentity, complete bool) error {
 	m.mu.Lock()
 	botID := m.verifiedBotID
 	verified := botID != "" && (m.BotID == "" || m.BotID == botID)
@@ -136,70 +156,37 @@ func (m *Manager) recordReplaySequence(seen []replayIdentity) error {
 	if err != nil {
 		return err
 	}
-	current := make(map[replayIdentity]bool, len(seen))
-	created := make(map[replayIdentity]time.Time, len(sequence.Items)+len(seen))
+	priorItems, priorCurrent, priorPrefix, priorComplete, priorScanning := sequence.Items, sequence.Current, sequence.Prefix, sequence.Complete, sequence.Scanning
+	observed := make(map[replayIdentity]bool, len(seen))
 	for _, item := range seen {
-		if current[item] {
+		if observed[item] {
 			return fmt.Errorf("replay repeated request %s", item.CommentID)
 		}
-		current[item] = true
-		claim, err := m.readMentionClaim(item.CardID, item.CommentID)
-		if err != nil || claim.BoardID != m.BoardID || claim.TargetBotID != botID {
-			return fmt.Errorf("replay request %s has no owned durable claim: %w", item.CommentID, err)
-		}
-		created[item], _ = time.Parse(time.RFC3339Nano, claim.CreatedAt)
+		observed[item] = true
 	}
-	known := make(map[replayIdentity]bool, len(sequence.Items))
+	// The prefix from this scan is canonical among currently visible rows.
+	// Keep all omitted historical IDs after it for local identity/outbox
+	// recovery. Their relative order has no bearing on new execution: a
+	// completed scan holds omitted unstarted claims until they reappear.
+	merged := make([]replayIdentity, 0, len(seen)+len(sequence.Items))
+	merged = append(merged, seen...)
 	for _, item := range sequence.Items {
-		known[item] = true
-		if _, ok := created[item]; !ok {
-			claim, err := m.readMentionClaim(item.CardID, item.CommentID)
-			if err != nil {
-				return err
-			}
-			created[item], _ = time.Parse(time.RFC3339Nano, claim.CreatedAt)
+		if !observed[item] {
+			merged = append(merged, item)
 		}
 	}
-	// Insert each newly seen identity ahead of its next known successor in
-	// Web's current order. If there is none, append it. Existing identities
-	// never acquire a different identity or lose their historical order.
-	for i, item := range seen {
-		if known[item] {
-			continue
-		}
-		at := len(sequence.Items)
-		for _, successor := range seen[i+1:] {
-			if !known[successor] {
-				continue
-			}
-			for j, old := range sequence.Items {
-				if old == successor {
-					at = j
-					break
-				}
-			}
-			break
-		}
-		sequence.Items = append(sequence.Items, replayIdentity{})
-		copy(sequence.Items[at+1:], sequence.Items[at:])
-		sequence.Items[at] = item
-		known[item] = true
+	sequence.Items = merged
+	if complete {
+		sequence.Current = append([]replayIdentity(nil), seen...)
+		sequence.Prefix = nil
+		sequence.Complete = true
+		sequence.Scanning = false
+	} else {
+		sequence.Prefix = append([]replayIdentity(nil), seen...)
+		sequence.Scanning = true
 	}
-	// Creation time is immutable and orders requests across omitted rows;
-	// the stable merge above supplies the server's tie order where observed.
-	// With an older claim lacking creation time, preserve its known relative
-	// order instead of applying an incomplete timestamp comparison.
-	allCreatedKnown := true
-	for _, item := range sequence.Items {
-		if created[item].IsZero() {
-			allCreatedKnown = false
-			break
-		}
-	}
-	if allCreatedKnown {
-		sort.SliceStable(sequence.Items, func(i, j int) bool {
-			return created[sequence.Items[i]].Before(created[sequence.Items[j]])
-		})
+	if priorComplete == sequence.Complete && priorScanning == sequence.Scanning && slices.Equal(priorItems, sequence.Items) && slices.Equal(priorCurrent, sequence.Current) && slices.Equal(priorPrefix, sequence.Prefix) {
+		return nil
 	}
 	path := m.replaySequencePath(botID)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

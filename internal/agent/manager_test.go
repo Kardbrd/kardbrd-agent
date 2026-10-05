@@ -1327,6 +1327,7 @@ type fakeBoardClient struct {
 	claimCalls          int
 	claimResult         api.ExecutionClaim
 	claimErr            error
+	claimErrors         map[string]error
 	receiptCalls        int
 	receiptRequests     []api.ExecutionReceiptRequest
 	receiptErr          error
@@ -1360,6 +1361,9 @@ func (c *fakeBoardClient) ClaimExecution(ctx context.Context, request api.Execut
 	c.claimCalls++
 	if c.claimErr != nil {
 		return api.ExecutionClaim{}, c.claimErr
+	}
+	if err := c.claimErrors[request.CommentID]; err != nil {
+		return api.ExecutionClaim{}, err
 	}
 	if c.claimResult.Status != "" {
 		return c.claimResult, nil

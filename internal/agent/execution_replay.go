@@ -44,6 +44,11 @@ func (m *Manager) ReconcileExecutionRequests(ctx context.Context) error {
 func (m *Manager) scanExecutionRequests(ctx context.Context, reader interface {
 	GetExecutionRequests(context.Context, string, string) (api.ExecutionRequestPage, error)
 }) error {
+	// Mark the previous collection snapshot stale before asking Web for a
+	// fresh one. A failed first page must not dispatch its old unstarted tail.
+	if err := m.recordReplaySequence(nil, false); err != nil {
+		return fmt.Errorf("start execution replay scan: %w", err)
+	}
 	after := ""
 	var seen []replayIdentity
 	for {
@@ -82,17 +87,22 @@ func (m *Manager) scanExecutionRequests(ctx context.Context, reader interface {
 				}
 				return fmt.Errorf("execution replay item %s was not recorded: %w", identity.CommentID, err)
 			}
-			if claim.BoardID != identity.BoardID || claim.CardID != identity.CardID || claim.CommentID != identity.CommentID || claim.State == "" {
+			if claim.BoardID != identity.BoardID || claim.CardID != identity.CardID || claim.CommentID != identity.CommentID || claim.State == "" || !m.ownsRecoveredClaim(claim) {
 				return fmt.Errorf("execution replay item %s has an invalid durable disposition", identity.CommentID)
 			}
 			seen = append(seen, replayIdentity{CardID: identity.CardID, CommentID: identity.CommentID})
 			lastCommentID = identity.CommentID
 		}
+		// Page intake is complete. Persist its observed order before using the
+		// public ID cursor; an interrupted scan still leaves a usable prefix.
+		if err := m.recordReplaySequence(seen, false); err != nil {
+			return fmt.Errorf("persist execution replay page identity: %w", err)
+		}
 		if page.NextAfter == nil {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			return m.recordReplaySequence(seen)
+			return m.recordReplaySequence(seen, true)
 		}
 		if len(page.Requests) == 0 || *page.NextAfter == "" || *page.NextAfter == after || *page.NextAfter != lastCommentID {
 			return fmt.Errorf("execution replay returned an invalid cursor")

@@ -348,7 +348,6 @@ func (m *Manager) processMention(ctx context.Context, cardID, commentID, content
 		if _, active := m.Active[cardID]; active {
 			m.structuredQueue[cardID] = append(m.structuredQueue[cardID], pendingMention{ctx: ctx, cardID: cardID, commentID: commentID, content: content, authorName: authorName, frozen: frozen, claim: claim})
 			m.mu.Unlock()
-			m.addReaction(ctx, cardID, commentID, "👀")
 			return nil
 		}
 		m.mu.Unlock()
@@ -394,10 +393,14 @@ func (m *Manager) processMention(ctx context.Context, cardID, commentID, content
 	if exists {
 		cancel()
 		m.release()
-		m.addReaction(ctx, cardID, commentID, "👀")
+		if claim == nil {
+			m.addReaction(ctx, cardID, commentID, "👀")
+		}
 		return nil
 	}
-	m.addReaction(ctx, cardID, commentID, "👀")
+	if claim == nil {
+		m.addReaction(ctx, cardID, commentID, "👀")
+	}
 	return m.processClaimedMention(ctx, execCtx, session, content, authorName, frozen, claim)
 }
 
@@ -545,6 +548,12 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 		if err != nil {
 			terminalHandled = true
 			var apiErr *api.APIError
+			if errors.As(err, &apiErr) && apiErr.StatusCode == 404 && apiErr.Code == "NOT_FOUND" {
+				// A moved card can later return to this board. Keep the accepted
+				// claim and frozen selection for a later canonical replay, without
+				// posting an error on a card that may now be on another board.
+				return fmt.Errorf("structured request %s is currently unavailable on this board; retry after replay: %w", claim.CommentID, err)
+			}
 			if errors.As(err, &apiErr) && apiErr.Code == "CLAIM_UNCERTAIN" {
 				if saveErr := m.setMentionClaimState(*claim, "needs_review"); saveErr != nil {
 					return saveErr
@@ -573,6 +582,7 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 		if err := m.saveMentionClaim(*claim); err != nil {
 			return fmt.Errorf("persist execution claim: %w", err)
 		}
+		m.addReaction(ctx, session.CardID, session.CommentID, "👀")
 	}
 	result := m.Executor.Execute(execCtx, executor.Request{
 		CardID:          session.CardID,
