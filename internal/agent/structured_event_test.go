@@ -1192,3 +1192,162 @@ func TestStructuredContinuationKeepsFrozenSelection(t *testing.T) {
 		t.Fatalf("requests = %+v", e.requests)
 	}
 }
+
+func TestRecoveryUsesAuthenticatedBotAcrossSharedDirectoryAndDisconnect(t *testing.T) {
+	for _, state := range []string{"rejected", "outcome"} {
+		t.Run(state, func(t *testing.T) {
+			owner := replayManager(t)
+			owner.ClaimDir = t.TempDir()
+			selection := mentionDispatch{Content: "@coder fix", Model: "gpt-6-sol", ReasoningEffort: "high"}
+			claim, _, err := owner.createOrReadMentionClaimWithDisposition("card1", "comment1", "Paul", selection, structuredSnapshot{Revision: "rev-1", Models: []api.ExecutionModel{{ID: "gpt-6-sol", Efforts: []string{"high"}}}}, state, "outcome body")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state == "outcome" {
+				claim.OwnerID = "socket-1"
+				claim.OutcomeStatus = "completed"
+				claim.OutcomeMessage = "completed"
+				if err := owner.saveMentionClaim(claim); err != nil {
+					t.Fatal(err)
+				}
+			}
+			other := replayManager(t)
+			other.ClaimDir = owner.ClaimDir
+			other.SetConnectedBot("bot-2", "socket-2")
+			other.SetCapabilityRevision("rev-2")
+			for range 2 {
+				_ = other.RecoverAcceptedMentions(context.Background())
+			}
+			otherClient := other.Client.(*fakeBoardClient)
+			if got := len(otherClient.commentsSnapshot()); got != 0 || otherClient.receiptCalls != 0 || other.Executor.(*fakeExecutor).executionCount() != 0 {
+				t.Fatalf("other bot acted: comments=%d receipts=%d executions=%d", got, otherClient.receiptCalls, other.Executor.(*fakeExecutor).executionCount())
+			}
+			owner.SetConnectedBot("", "")
+			for range 2 {
+				if err := owner.RecoverAcceptedMentions(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ownerClient := owner.Client.(*fakeBoardClient)
+			wantReceipts := 0
+			if state == "outcome" {
+				wantReceipts = 1
+			}
+			if got := len(ownerClient.commentsSnapshot()); got != 1 || ownerClient.receiptCalls != wantReceipts || owner.Executor.(*fakeExecutor).executionCount() != 0 {
+				t.Fatalf("owner reconciliation: comments=%d receipts=%d executions=%d", got, ownerClient.receiptCalls, owner.Executor.(*fakeExecutor).executionCount())
+			}
+		})
+	}
+}
+
+type orderingExecutor struct{ *fakeExecutor }
+
+func (e *orderingExecutor) BuildPrompt(req executor.PromptRequest) string {
+	return req.CommentContent
+}
+
+func TestReplaySameCardKeepsServerTieOrderAcrossPagesAndRestart(t *testing.T) {
+	intake := replayManager(t)
+	client := intake.Client.(*fakeBoardClient)
+	first := replayEvent(t, "card1", "comment1", "@coder first")
+	second := replayEvent(t, "card1", "comment2", "@coder second")
+	for _, raw := range []*json.RawMessage{&first, &second} {
+		var event map[string]any
+		if err := json.Unmarshal(*raw, &event); err != nil {
+			t.Fatal(err)
+		}
+		event["created_at"] = "2026-10-05T18:00:00Z"
+		*raw = rawJSON(t, event)
+	}
+	cursor := "comment1"
+	client.requestPages = map[string]api.ExecutionRequestPage{
+		"":     {Requests: []json.RawMessage{first}, NextAfter: &cursor},
+		cursor: {Requests: []json.RawMessage{second}},
+	}
+	if err := intake.ReconcileExecutionRequests(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	restarted := replayManager(t)
+	restarted.ClaimDir = intake.ClaimDir
+	underlying := restarted.Executor.(*fakeExecutor)
+	restarted.Executor = &orderingExecutor{underlying}
+	if err := restarted.RecoverAcceptedMentions(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.RecoverAcceptedMentions(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	e := underlying
+	if got := e.executionCount(); got != 2 {
+		t.Fatalf("executions=%d", got)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !strings.Contains(e.requests[0].Prompt, "first") || !strings.Contains(e.requests[1].Prompt, "second") {
+		t.Fatalf("executor order: %q then %q", e.requests[0].Prompt, e.requests[1].Prompt)
+	}
+}
+
+func TestRecoveryHoldsUnknownOwnerAndAmbiguousLegacyOrder(t *testing.T) {
+	owner := replayManager(t)
+	owner.ClaimDir = t.TempDir()
+	selection := mentionDispatch{Content: "@coder fix", Model: "gpt-6-sol", ReasoningEffort: "high"}
+	snapshot := structuredSnapshot{Revision: "rev-1", Models: []api.ExecutionModel{{ID: "gpt-6-sol", Efforts: []string{"high"}}}}
+	for _, id := range []string{"comment1", "comment2"} {
+		if _, _, err := owner.createOrReadMentionClaim("card1", id, "Paul", selection, snapshot); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := owner.createOrReadMentionClaim("card2", "comment3", "Paul", selection, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	unknown := replayManager(t)
+	unknown.ClaimDir = owner.ClaimDir
+	unknown.SetConnectedBot("", "")
+	unknown.verifiedBotID = ""
+	if err := unknown.RecoverAcceptedMentions(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := unknown.Executor.(*fakeExecutor).executionCount(); got != 0 {
+		t.Fatalf("unverified owner executed %d requests", got)
+	}
+	if got := len(unknown.Client.(*fakeBoardClient).commentsSnapshot()); got != 0 {
+		t.Fatalf("unverified owner published %d comments", got)
+	}
+	if err := owner.RecoverAcceptedMentions(context.Background()); err == nil || !strings.Contains(err.Error(), "replay order") {
+		t.Fatalf("missing order error = %v", err)
+	}
+	if got := owner.Executor.(*fakeExecutor).executionCount(); got != 1 {
+		t.Fatalf("different-card executions=%d, want 1", got)
+	}
+	for _, id := range []string{"comment1", "comment2"} {
+		claim, err := owner.readMentionClaim("card1", id)
+		if err != nil || claim.State != "accepted" {
+			t.Fatalf("claim %s=%+v err=%v", id, claim, err)
+		}
+	}
+}
+
+func TestRecoveryOrdersLegacyClaimsByDistinctCreationTime(t *testing.T) {
+	m := replayManager(t)
+	underlying := m.Executor.(*fakeExecutor)
+	m.Executor = &orderingExecutor{underlying}
+	selection := mentionDispatch{Content: "@coder first", Model: "gpt-6-sol", ReasoningEffort: "high"}
+	snapshot := structuredSnapshot{Revision: "rev-1", Models: []api.ExecutionModel{{ID: "gpt-6-sol", Efforts: []string{"high"}}}, CreatedAt: "2026-10-05T18:00:00Z"}
+	if _, _, err := m.createOrReadMentionClaim("card1", "comment1", "Paul", selection, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	selection.Content = "@coder second"
+	snapshot.CreatedAt = "2026-10-05T18:01:00Z"
+	if _, _, err := m.createOrReadMentionClaim("card1", "comment2", "Paul", selection, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RecoverAcceptedMentions(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	underlying.mu.Lock()
+	defer underlying.mu.Unlock()
+	if len(underlying.requests) != 2 || !strings.Contains(underlying.requests[0].Prompt, "first") || !strings.Contains(underlying.requests[1].Prompt, "second") {
+		t.Fatalf("executor order: %+v", underlying.requests)
+	}
+}

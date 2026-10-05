@@ -26,6 +26,7 @@ func (m *Manager) ReconcileExecutionRequests(ctx context.Context) error {
 		return fmt.Errorf("structured request replay API is unavailable")
 	}
 	after := ""
+	var order uint64
 	for {
 		page, err := reader.GetExecutionRequests(ctx, m.BoardID, after)
 		if err != nil {
@@ -36,6 +37,7 @@ func (m *Manager) ReconcileExecutionRequests(ctx context.Context) error {
 		}
 		lastCommentID := ""
 		for _, raw := range page.Requests {
+			order++
 			var identity struct {
 				BoardID   string `json:"board_id"`
 				CardID    string `json:"card_id"`
@@ -60,6 +62,9 @@ func (m *Manager) ReconcileExecutionRequests(ctx context.Context) error {
 			}
 			if claim.BoardID != identity.BoardID || claim.CardID != identity.CardID || claim.CommentID != identity.CommentID || claim.State == "" {
 				return fmt.Errorf("execution replay item %s has an invalid durable disposition", identity.CommentID)
+			}
+			if err := m.recordReplayOrder(claim, order); err != nil {
+				return fmt.Errorf("persist execution replay order for %s: %w", identity.CommentID, err)
 			}
 			lastCommentID = identity.CommentID
 		}

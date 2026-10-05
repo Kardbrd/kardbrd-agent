@@ -37,6 +37,11 @@ func (m *Manager) SetConnectedBot(botID, instanceID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.BotID = botID
+	if botID != "" {
+		// The connected message comes from the authenticated Web socket. Keep
+		// that identity for outbox reconciliation after the socket disconnects.
+		m.verifiedBotID = botID
+	}
 	m.InstanceID = instanceID
 	m.CapabilityRevision = ""
 	m.CapabilityExpiresAt = time.Time{}
@@ -190,6 +195,9 @@ func (m *Manager) rejectStructuredIntake(ctx context.Context, message map[string
 }
 
 func (m *Manager) publishStructuredRejection(ctx context.Context, claim mentionClaim) error {
+	if !m.ownsRecoveredClaim(claim) {
+		return fmt.Errorf("structured intake rejection held: authenticated bot ownership is unverified")
+	}
 	publisher, ok := m.Client.(interface {
 		AddCommentIdempotent(context.Context, string, string, string) (json.RawMessage, error)
 	})

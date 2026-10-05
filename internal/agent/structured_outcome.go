@@ -134,6 +134,9 @@ func terminalSummaryBody(text, authorName string) string {
 }
 
 func (m *Manager) publishMentionOutcome(ctx context.Context, claim mentionClaim) error {
+	if !m.ownsRecoveredClaim(claim) {
+		return errors.New("structured outcome held: authenticated bot ownership is unverified")
+	}
 	client, ok := m.Client.(executionClaimClient)
 	if !ok {
 		return errors.New("structured outcome is held: Web receipt API is unavailable")
@@ -154,6 +157,9 @@ func (m *Manager) publishMentionOutcome(ctx context.Context, claim mentionClaim)
 }
 
 func (m *Manager) publishStructuredHold(ctx context.Context, claim mentionClaim, phase string, reason error) error {
+	if !m.ownsRecoveredClaim(claim) {
+		return errors.New("structured hold: authenticated bot ownership is unverified")
+	}
 	current, err := m.readMentionClaim(claim.CardID, claim.CommentID)
 	if err != nil {
 		return err

@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Kardbrd/kardbrd-agent/internal/api"
 )
@@ -27,6 +29,7 @@ type mentionClaim struct {
 	AuthorID         string               `json:"author_id,omitempty"`
 	AuthorIsBot      bool                 `json:"author_is_bot"`
 	CreatedAt        string               `json:"created_at,omitempty"`
+	ReplayOrder      uint64               `json:"replay_order,omitempty"`
 	AcceptedRevision string               `json:"accepted_revision,omitempty"`
 	Request          json.RawMessage      `json:"execution_request,omitempty"`
 	AcceptedDefaults json.RawMessage      `json:"accepted_defaults,omitempty"`
@@ -57,6 +60,8 @@ func (m *Manager) RecoverAcceptedMentions(ctx context.Context) error {
 		return err
 	}
 	var itemErrors []error
+	var claims []mentionClaim
+	ambiguous := map[string]bool{}
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -74,6 +79,53 @@ func (m *Manager) RecoverAcceptedMentions(ctx context.Context) error {
 		}
 		if claim.Version != 1 || claim.BoardID != m.BoardID {
 			continue
+		}
+		if !m.ownsRecoveredClaim(claim) {
+			continue
+		}
+		claim.ReplayOrder, err = m.readReplayOrder(claim)
+		if err != nil {
+			itemErrors = append(itemErrors, fmt.Errorf("request %s replay order: %w", claim.CommentID, err))
+			ambiguous[claim.CardID] = true
+			continue
+		}
+		claims = append(claims, claim)
+	}
+	// Web replay position preserves the server's order when timestamps tie.
+	sort.SliceStable(claims, func(i, j int) bool {
+		if claims[i].CardID != claims[j].CardID {
+			return claims[i].CardID < claims[j].CardID
+		}
+		left, leftErr := time.Parse(time.RFC3339Nano, claims[i].CreatedAt)
+		right, rightErr := time.Parse(time.RFC3339Nano, claims[j].CreatedAt)
+		if leftErr == nil && rightErr == nil && !left.Equal(right) {
+			return left.Before(right)
+		}
+		return claims[i].ReplayOrder < claims[j].ReplayOrder
+	})
+	for i := 1; i < len(claims); i++ {
+		prev, current := claims[i-1], claims[i]
+		if prev.CardID != current.CardID {
+			continue
+		}
+		left, leftErr := time.Parse(time.RFC3339Nano, prev.CreatedAt)
+		right, rightErr := time.Parse(time.RFC3339Nano, current.CreatedAt)
+		if leftErr == nil && rightErr == nil && !left.Equal(right) {
+			continue
+		}
+		if prev.ReplayOrder == 0 || current.ReplayOrder == 0 || prev.ReplayOrder == current.ReplayOrder {
+			ambiguous[current.CardID] = true
+		}
+	}
+	for cardID := range ambiguous {
+		itemErrors = append(itemErrors, fmt.Errorf("card %s has requests without unambiguous replay order; reconcile canonical replay before recovery", cardID))
+	}
+	for _, claim := range claims {
+		if ambiguous[claim.CardID] {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		switch claim.State {
 		case "rejected":
@@ -117,6 +169,96 @@ func (m *Manager) RecoverAcceptedMentions(ctx context.Context) error {
 		}
 	}
 	return errors.Join(itemErrors...)
+}
+
+func (m *Manager) ownsRecoveredClaim(claim mentionClaim) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return claim.TargetBotID != "" && m.verifiedBotID == claim.TargetBotID && (m.BotID == "" || m.BotID == claim.TargetBotID)
+}
+
+type replayOrderRecord struct {
+	Version     int    `json:"version"`
+	BoardID     string `json:"board_id"`
+	CardID      string `json:"card_id"`
+	CommentID   string `json:"comment_id"`
+	TargetBotID string `json:"target_bot_id"`
+	Order       uint64 `json:"order"`
+}
+
+func (m *Manager) replayOrderPath(claim mentionClaim) string {
+	return m.claimPath(claim.CardID, claim.CommentID) + ".order"
+}
+
+func (m *Manager) readReplayOrder(claim mentionClaim) (uint64, error) {
+	data, err := os.ReadFile(m.replayOrderPath(claim))
+	if errors.Is(err, os.ErrNotExist) {
+		return claim.ReplayOrder, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	var record replayOrderRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return 0, err
+	}
+	if record.Version != 1 || record.BoardID != claim.BoardID || record.CardID != claim.CardID || record.CommentID != claim.CommentID || record.TargetBotID != claim.TargetBotID || record.Order == 0 {
+		return 0, fmt.Errorf("replay order identity mismatch")
+	}
+	return record.Order, nil
+}
+
+func (m *Manager) recordReplayOrder(claim mentionClaim, order uint64) error {
+	if !m.ownsRecoveredClaim(claim) || order == 0 {
+		return fmt.Errorf("replay order owner is unverified")
+	}
+	if existing, err := m.readReplayOrder(claim); err != nil || existing != 0 {
+		if err != nil {
+			return err
+		}
+		if existing != order {
+			return fmt.Errorf("canonical order changed from %d to %d", existing, order)
+		}
+		return nil
+	}
+	path := m.replayOrderPath(claim)
+	data, err := json.Marshal(replayOrderRecord{Version: 1, BoardID: claim.BoardID, CardID: claim.CardID, CommentID: claim.CommentID, TargetBotID: claim.TargetBotID, Order: order})
+	if err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(filepath.Dir(path), "order-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(file.Name(), path); errors.Is(err, os.ErrExist) {
+		existing, readErr := m.readReplayOrder(claim)
+		if readErr != nil {
+			return readErr
+		}
+		if existing != order {
+			return fmt.Errorf("concurrent replay order conflict: got %d, want %d", existing, order)
+		}
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return syncClaimDirectory(filepath.Dir(path))
 }
 
 func (m *Manager) claimPath(cardID, commentID string) string {

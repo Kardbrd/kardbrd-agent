@@ -84,6 +84,7 @@ type Manager struct {
 	CommentExecution    *rules.CommentExecutionConfig
 	ClaimDir            string
 	BotID               string
+	verifiedBotID       string
 	InstanceID          string
 	CapabilityRevision  string
 	CapabilityExpiresAt time.Time
