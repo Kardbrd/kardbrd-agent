@@ -56,6 +56,51 @@ func TestStoppedDoneCleanupKillsForkedDescendants(t *testing.T) {
 	}
 }
 
+func TestStopPublishesCleanupCancellationBeforeProcessKill(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Timeout = 5 * time.Second
+	outputFile := filepath.Join(t.TempDir(), "cleanup-output")
+	manager.Client.(*fakeBoardClient).card = rawJSON(t, map[string]any{"list": map[string]any{"name": "Done"}})
+	manager.Rules = &rules.Engine{Rules: []rules.Rule{doneCleanupRule(outputFile, "fork")}}
+	cleanupDone := make(chan error, 1)
+	go func() { cleanupDone <- manager.HandleBoardEvent(context.Background(), doneCardMovedEvent("card1")) }()
+	childOutput := outputFile + ".child"
+	registerCleanupChildKill(t, childOutput)
+	pid := waitForCleanupChildPID(t, childOutput, 5*time.Second)
+
+	stopped := make(chan *ActiveSession, 1)
+	release := make(chan struct{})
+	manager.cleanupProcessStopped = func(session *ActiveSession) {
+		stopped <- session
+		<-release
+	}
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- manager.HandleStopReaction(context.Background(), "card1", "") }()
+	select {
+	case session := <-stopped:
+		if session.Context.Err() == nil {
+			close(release)
+			t.Fatal("cleanup process was killed before session cancellation")
+		}
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("stop did not signal cleanup process")
+	}
+	close(release)
+	if err := <-stopDone; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-cleanupDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cleanup did not finish")
+	}
+	assertCleanupProcessGone(t, pid)
+}
+
 func TestDoneCleanupOwnershipLossKillsForkedDescendants(t *testing.T) {
 	manager := newTestManager(t)
 	manager.Timeout = 5 * time.Second

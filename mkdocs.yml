@@ -63,6 +63,7 @@ nav:
       - Environment Variables: configuration/env-vars.md
       - Rules (kardbrd.yml): configuration/rules.md
       - Addressed Comment Dispatch: configuration/mention-dispatch.md
+      - Structured Comment Execution: configuration/comment-execution.md
       - Worktree Lifecycle: configuration/worktree-lifecycle.md
       - Schedules: configuration/schedules.md
       - Personal worker: configuration/personal-worker.md

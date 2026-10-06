@@ -115,6 +115,10 @@ func LoadFile(path string) (Config, error) {
 // which intentionally handle ordinary-rule validation themselves. Lifecycle,
 // command-rule, and cleanup-command strict decoding still applies here.
 func LoadBytes(data []byte) (Config, error) {
+	commentExecution, err := parseCommentExecution(data)
+	if err != nil {
+		return Config{}, err
+	}
 	if err := validateLoadedCleanupCommands(data); err != nil {
 		return Config{}, err
 	}
@@ -134,10 +138,11 @@ func LoadBytes(data []byte) (Config, error) {
 	}
 
 	cfg := Config{
-		BoardID:   raw.BoardID,
-		AgentName: raw.AgentName,
-		APIURL:    raw.APIURL,
-		Executor:  stringsLower(raw.Executor),
+		BoardID:          raw.BoardID,
+		AgentName:        raw.AgentName,
+		APIURL:           raw.APIURL,
+		Executor:         stringsLower(raw.Executor),
+		CommentExecution: commentExecution,
 	}
 	if raw.Worktree != nil {
 		worktree, err := normalizeWorktree(*raw.Worktree)

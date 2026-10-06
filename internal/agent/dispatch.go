@@ -11,6 +11,8 @@ type mentionDispatch struct {
 	Content         string
 	Model           string
 	ReasoningEffort string
+	ModelSource     string
+	EffortSource    string
 }
 
 func parseMentionDispatch(content, mention string) (mentionDispatch, error) {
@@ -69,6 +71,8 @@ func parseMentionDispatch(content, mention string) (mentionDispatch, error) {
 	if !supportedEfforts[selected.ReasoningEffort] {
 		return plain, fmt.Errorf("unsupported effort %q; use low, medium, high, xhigh, or max", selected.ReasoningEffort)
 	}
+	selected.ModelSource = "directive"
+	selected.EffortSource = "directive"
 	return selected, nil
 }
 

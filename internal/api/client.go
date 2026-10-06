@@ -447,6 +447,13 @@ func (c *Client) AddCommentOnce(ctx context.Context, cardID, content string) (js
 	return c.requestRaw(ctx, "POST", "/api/cards/"+url.PathEscape(cardID)+"/comments/", map[string]any{"content": content}, 1)
 }
 
+// AddCommentIdempotent uses Web's stable client_request_id for retryable
+// structured request outcomes. The server returns the original comment when
+// the same author, card, key and body are submitted again.
+func (c *Client) AddCommentIdempotent(ctx context.Context, cardID, content, requestID string) (json.RawMessage, error) {
+	return c.RequestRaw(ctx, "POST", "/api/cards/"+url.PathEscape(cardID)+"/comments/", map[string]any{"content": content, "client_request_id": requestID})
+}
+
 func (c *Client) GetComment(ctx context.Context, cardID, commentID string) (json.RawMessage, error) {
 	return c.RequestRaw(ctx, "GET", "/api/cards/"+url.PathEscape(cardID)+"/comments/"+url.PathEscape(commentID)+"/", nil)
 }

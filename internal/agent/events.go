@@ -31,6 +31,12 @@ func (m *Manager) HandleBoardEvent(ctx context.Context, message map[string]any) 
 		if boolField(message, "author_is_bot") {
 			break
 		}
+		if raw, present := message["execution_request_raw"]; present {
+			return m.handleStructuredComment(ctx, message, raw)
+		}
+		if _, present := message["accepted_defaults_raw"]; present {
+			return m.rejectStructuredComment(ctx, cardID, stringField(message, "author_name"), fmt.Errorf("accepted_defaults: requires execution_request"))
+		}
 		content := stringField(message, "content")
 		if m.isBotCard(message) && strings.HasPrefix(strings.TrimSpace(content), "/") {
 			return m.HandleBotCardCommand(ctx, cardID, content, stringField(message, "author_name"))
@@ -61,6 +67,7 @@ func (m *Manager) HandleBoardEvent(ctx context.Context, message map[string]any) 
 		}
 		if matchedCleanup {
 			if m.Paused {
+				m.holdQueuedStructuredForDone(ctx, cardID)
 				return nil
 			}
 			return m.runCleanup(ctx, cardID, cleanupRule)
@@ -100,10 +107,11 @@ func (m *Manager) HandleCardMoved(ctx context.Context, message map[string]any) e
 	}
 	m.mu.Lock()
 	session := m.Active[cardID]
-	stopSessionProcess(session)
 	if session != nil && session.Cancel != nil {
+		session.Stopping = true
 		session.Cancel()
 	}
+	stopSessionProcess(session)
 	var stream api.StreamConn
 	if session != nil {
 		stream = session.Stream
@@ -112,8 +120,13 @@ func (m *Manager) HandleCardMoved(ctx context.Context, message map[string]any) e
 	}
 	delete(m.Active, cardID)
 	delete(m.pending, cardID)
+	heldStructured := m.drainStructuredLocked(cardID)
 	canceledCommands := m.drainCommandsLocked(cardID)
 	m.mu.Unlock()
+	if session != nil && session.StructuredClaim != nil {
+		_ = m.holdUnstartedClaim(*session.StructuredClaim)
+	}
+	m.reportHeldStructured(ctx, cardID, heldStructured)
 	if stream != nil {
 		_ = stream.Close()
 	}
@@ -137,15 +150,19 @@ func (m *Manager) HandleStopReaction(ctx context.Context, cardID string, comment
 		m.mu.Unlock()
 		return nil
 	}
-	stopSessionProcess(session)
+	session.Stopping = true
 	if session.Cancel != nil {
 		session.Cancel()
+	}
+	stopSessionProcess(session)
+	if session.Cleanup && m.cleanupProcessStopped != nil {
+		m.cleanupProcessStopped(session)
 	}
 	stream := session.Stream
 	session.Stream = nil
 	session.Streaming = false
-	session.Stopping = true
 	delete(m.pending, cardID)
+	heldStructured := m.drainStructuredLocked(cardID)
 	// A live session remains the card owner until its worker reaches its
 	// terminal defer. A subsequent Done cleanup must wait for that point: a
 	// Worktree.Create implementation may be unable to observe cancellation
@@ -156,6 +173,11 @@ func (m *Manager) HandleStopReaction(ctx context.Context, cardID string, comment
 		delete(m.Active, cardID)
 	}
 	m.mu.Unlock()
+	for _, pending := range heldStructured {
+		if pending.claim != nil {
+			_ = m.setMentionClaimState(*pending.claim, "needs_review")
+		}
+	}
 	if stream != nil {
 		_ = stream.Close()
 	}

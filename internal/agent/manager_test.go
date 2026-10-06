@@ -1305,6 +1305,8 @@ type fakeBoardClient struct {
 	comment             json.RawMessage
 	markdown            string
 	markdownErr         error
+	markdownStarted     chan struct{}
+	markdownRelease     chan struct{}
 	getBoardCalled      bool
 	getCardCalls        int
 	getCardErr          error
@@ -1322,6 +1324,90 @@ type fakeBoardClient struct {
 	commentAttempts     []commentCall
 	commentOnceAttempts int
 	events              []string
+	claimCalls          int
+	claimResult         api.ExecutionClaim
+	claimErr            error
+	claimErrors         map[string]error
+	receiptCalls        int
+	receiptRequests     []api.ExecutionReceiptRequest
+	receiptErr          error
+	idempotentComments  map[string]json.RawMessage
+	loseCommentResponse bool
+	loseReceiptResponse bool
+	requestPages        map[string]api.ExecutionRequestPage
+	requestPageErrors   map[string]error
+	requestPagesOnError map[string]api.ExecutionRequestPage
+	requestCursors      []string
+}
+
+func (c *fakeBoardClient) GetExecutionRequests(ctx context.Context, boardID, after string) (api.ExecutionRequestPage, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.requestCursors = append(c.requestCursors, after)
+	if err := c.requestPageErrors[after]; err != nil {
+		delete(c.requestPageErrors, after)
+		if c.requestPagesOnError != nil {
+			c.requestPages = c.requestPagesOnError
+			c.requestPagesOnError = nil
+		}
+		return api.ExecutionRequestPage{}, err
+	}
+	return c.requestPages[after], nil
+}
+
+func (c *fakeBoardClient) ClaimExecution(ctx context.Context, request api.ExecutionClaimRequest) (api.ExecutionClaim, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.claimCalls++
+	if c.claimErr != nil {
+		return api.ExecutionClaim{}, c.claimErr
+	}
+	if err := c.claimErrors[request.CommentID]; err != nil {
+		return api.ExecutionClaim{}, err
+	}
+	if c.claimResult.Status != "" {
+		return c.claimResult, nil
+	}
+	return api.ExecutionClaim{BoardID: request.BoardID, CardID: request.CardID, CommentID: request.CommentID, InstanceID: request.InstanceID, Effective: request.Effective, Status: "claimed"}, nil
+}
+
+func (c *fakeBoardClient) PutExecutionReceipt(ctx context.Context, commentID string, request api.ExecutionReceiptRequest) (api.ExecutionClaim, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.receiptCalls++
+	c.receiptRequests = append(c.receiptRequests, request)
+	if c.loseReceiptResponse {
+		c.loseReceiptResponse = false
+		return api.ExecutionClaim{}, context.DeadlineExceeded
+	}
+	if c.receiptErr != nil {
+		return api.ExecutionClaim{}, c.receiptErr
+	}
+	return api.ExecutionClaim{BoardID: request.BoardID, CardID: request.CardID, CommentID: commentID, InstanceID: request.InstanceID, Status: request.Status, Receipt: &api.ExecutionReceipt{Status: request.Status, Message: request.Message}}, nil
+}
+
+func (c *fakeBoardClient) AddCommentIdempotent(ctx context.Context, cardID, content, requestID string) (json.RawMessage, error) {
+	c.mu.Lock()
+	if c.idempotentComments == nil {
+		c.idempotentComments = map[string]json.RawMessage{}
+	}
+	if saved, exists := c.idempotentComments[requestID]; exists {
+		c.mu.Unlock()
+		return saved, nil
+	}
+	c.mu.Unlock()
+	raw, err := c.AddCommentOnce(ctx, cardID, content)
+	if err == nil {
+		c.mu.Lock()
+		c.idempotentComments[requestID] = raw
+		if c.loseCommentResponse {
+			c.loseCommentResponse = false
+			c.mu.Unlock()
+			return nil, context.DeadlineExceeded
+		}
+		c.mu.Unlock()
+	}
+	return raw, err
 }
 
 type commentCall struct {
@@ -1351,6 +1437,14 @@ func (c *fakeBoardClient) GetCard(ctx context.Context, cardID string) (json.RawM
 }
 
 func (c *fakeBoardClient) GetCardMarkdown(ctx context.Context, cardID string) (string, error) {
+	if c.markdownStarted != nil {
+		close(c.markdownStarted)
+		select {
+		case <-c.markdownRelease:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
 	return c.markdown, c.markdownErr
 }
 
