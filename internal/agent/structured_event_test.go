@@ -952,6 +952,122 @@ func TestMovedInEarlierRequestRunsBeforeHeldLaterRequest(t *testing.T) {
 	}
 }
 
+func TestMovedInSourceRevisionUsesDestinationReaderAndClaim(t *testing.T) {
+	m := replayManager(t)
+	m.SetCapabilityRevision("destination-rev")
+	client := m.Client.(*fakeBoardClient)
+	underlying := m.Executor.(*fakeExecutor)
+	m.Executor = &orderingExecutor{underlying}
+	replays := 0
+	m.OrderPending = func() { replays++ }
+	sourceEvent := func(commentID, content, createdAt string) json.RawMessage {
+		var event map[string]any
+		if err := json.Unmarshal(replayEvent(t, "cardY", commentID, content), &event); err != nil {
+			t.Fatal(err)
+		}
+		request := event["execution_request"].(map[string]any)
+		request["capability_revision"] = "source-rev"
+		event["created_at"] = createdAt
+		return rawJSON(t, event)
+	}
+	y1 := sourceEvent("y1", "@coder Y1", "2026-10-05T18:00:00Z")
+	y2 := sourceEvent("y2", "@coder Y2", "2026-10-05T18:02:00Z")
+	client.claimErrors = map[string]error{"y2": &api.APIError{StatusCode: 409, Code: "CLAIM_ORDER_PENDING", Message: "Y1 is pending"}}
+	// The destination first hears Y2 while the accepted source revision is
+	// different from its current sole reader. Web, not that old revision,
+	// decides whether the frozen request may run here.
+	if err := m.HandleBoardEventRaw(context.Background(), y2); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := m.readMentionClaim("cardY", "y2")
+	if err != nil || claim.State != "accepted" || claim.AcceptedRevision != "source-rev" || claim.Model != "gpt-6-sol" || claim.Effort != "high" {
+		t.Fatalf("moved-in Y2=%+v err=%v", claim, err)
+	}
+	if client.claimCalls != 1 || replays != 1 || len(client.commentsSnapshot()) != 0 || client.receiptCalls != 0 || underlying.executionCount() != 0 {
+		t.Fatalf("moved-in Y2 bypassed Web guard or published error: claims=%d replays=%d comments=%d receipts=%d executions=%d", client.claimCalls, replays, len(client.commentsSnapshot()), client.receiptCalls, underlying.executionCount())
+	}
+	client.requestPages = map[string]api.ExecutionRequestPage{"": {Requests: []json.RawMessage{y1, y2}}}
+	if err := m.ReconcileExecutionRequests(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	delete(client.claimErrors, "y2")
+	m.CommentExecution = &rules.CommentExecutionConfig{
+		Defaults:     rules.CommentDefaults{Model: "gpt-6-astra", Effort: "low"},
+		Models:       []rules.CommentModel{{ID: "gpt-6-sol", Efforts: []string{"high"}}, {ID: "gpt-6-astra", Efforts: []string{"low"}}},
+		Verification: rules.CommentVerification{Source: "operator_probe"},
+	}
+	for range 2 {
+		if err := m.RecoverAcceptedMentions(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	underlying.mu.Lock()
+	defer underlying.mu.Unlock()
+	if len(underlying.requests) != 2 || client.receiptCalls != 2 {
+		t.Fatalf("executions=%d receipts=%d", len(underlying.requests), client.receiptCalls)
+	}
+	for i, want := range []string{"Y1", "Y2"} {
+		got := underlying.requests[i]
+		if !strings.Contains(got.Prompt, want) || got.Model != "gpt-6-sol" || got.ReasoningEffort != "high" {
+			t.Fatalf("execution %d=%+v, want frozen %s", i, got, want)
+		}
+	}
+}
+
+func TestAcceptedOldRevisionUsesFreshSameBoardReader(t *testing.T) {
+	m := replayManager(t)
+	m.SetConnectedBot("bot-1", "socket-2")
+	m.SetCapabilityRevision("current-rev")
+	var event map[string]any
+	if err := json.Unmarshal(replayEvent(t, "card1", "request", "@coder task"), &event); err != nil {
+		t.Fatal(err)
+	}
+	event["execution_request"].(map[string]any)["capability_revision"] = "accepted-old-rev"
+	if err := m.HandleBoardEventRaw(context.Background(), rawJSON(t, event)); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := m.readMentionClaim("card1", "request")
+	client := m.Client.(*fakeBoardClient)
+	if err != nil || claim.AcceptedRevision != "accepted-old-rev" || claim.State != "terminal" || m.Executor.(*fakeExecutor).executionCount() != 1 || client.claimCalls != 1 || client.receiptCalls != 1 {
+		t.Fatalf("reconnected claim=%+v executions=%d claims=%d receipts=%d err=%v", claim, m.Executor.(*fakeExecutor).executionCount(), client.claimCalls, client.receiptCalls, err)
+	}
+}
+
+func TestOldAcceptedRevisionCannotBypassValidationOrBotIdentity(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		request string
+		content string
+		models  string
+		current []rules.CommentModel
+	}{
+		{name: "wrong bot", request: `{"version":1,"target_bot_id":"bot-2","capability_revision":"old-rev"}`, content: "@coder task"},
+		{name: "malformed directive", request: `{"version":1,"target_bot_id":"bot-1","capability_revision":"old-rev"}`, content: "@coder [dispatch model=gpt-6-sol effort=broken]\nTask"},
+		{name: "unsupported accepted pair", request: `{"version":1,"target_bot_id":"bot-1","capability_revision":"old-rev"}`, content: "@coder task", models: `[{"id":"m","efforts":["high"]}]`},
+		{name: "unsupported current pair", request: `{"version":1,"target_bot_id":"bot-1","capability_revision":"old-rev"}`, content: "@coder task", current: []rules.CommentModel{{ID: "gpt-6-astra", Efforts: []string{"low"}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := replayManager(t)
+			m.SetCapabilityRevision("current-rev")
+			if test.current != nil {
+				m.CommentExecution.Models = test.current
+			}
+			event := structuredEvent(test.request, `{"model":"gpt-6-sol","effort":"high"}`)
+			event["content"] = test.content
+			if test.models != "" {
+				event["accepted_models_raw"] = json.RawMessage(test.models)
+			}
+			if err := m.HandleBoardEvent(context.Background(), event); err != nil {
+				t.Fatal(err)
+			}
+			client := m.Client.(*fakeBoardClient)
+			if m.Executor.(*fakeExecutor).executionCount() != 0 || client.claimCalls != 0 || client.receiptCalls != 0 {
+				t.Fatalf("old revision bypassed %s check: executions=%d claims=%d receipts=%d", test.name, m.Executor.(*fakeExecutor).executionCount(), client.claimCalls, client.receiptCalls)
+			}
+		})
+	}
+}
+
 type rejectionGuardClient struct {
 	*fakeBoardClient
 	markerKey string

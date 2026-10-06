@@ -324,7 +324,9 @@ func (m *Manager) processStructuredMentionSnapshot(ctx context.Context, cardID, 
 	m.mu.Lock()
 	currentRevision, botID, instanceID := m.CapabilityRevision, m.BotID, m.InstanceID
 	m.mu.Unlock()
-	if currentRevision == "" || (created && currentRevision != snapshot.Revision) || !m.verifiedPair(selection.Model, selection.ReasoningEffort) {
+	// An accepted request can retain the revision of a prior board or socket.
+	// Validate this reader and pair now; Web's claim is authoritative before spawn.
+	if currentRevision == "" || !m.verifiedPair(selection.Model, selection.ReasoningEffort) {
 		return m.rejectStructuredComment(ctx, cardID, authorName, fmt.Errorf("capability_revision: accepted request is held until a compatible sole v1 reader registers; redeliver the same comment after refresh"))
 	}
 	if reader, ok := m.Client.(interface {

@@ -42,8 +42,9 @@ func TestOrderPendingCoalescesBoundedFromStartReplay(t *testing.T) {
 	m.SetCapabilityRevision("rev-1")
 	r := &capabilityRegistrationLoop{manager: m, orderRetryDelay: 10 * time.Millisecond, orderRetryCh: make(chan struct{}, 1)}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go r.orderReplayLoop(ctx, r.orderRetryCh)
+	done := make(chan struct{})
+	defer func() { cancel(); <-done }()
+	go func() { defer close(done); r.orderReplayLoop(ctx, r.orderRetryCh) }()
 	r.orderPending()
 	r.orderPending()
 	select {
@@ -85,8 +86,9 @@ func TestOrderPendingRetriesBackOffWhileHeld(t *testing.T) {
 	m.SetCapabilityRevision("rev-1")
 	loop = &capabilityRegistrationLoop{manager: m, orderRetryDelay: 20 * time.Millisecond, orderRetryCh: make(chan struct{}, 1)}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go loop.orderReplayLoop(ctx, loop.orderRetryCh)
+	done := make(chan struct{})
+	defer func() { cancel(); <-done }()
+	go func() { defer close(done); loop.orderReplayLoop(ctx, loop.orderRetryCh) }()
 	loop.orderPending()
 	var observed [3]time.Time
 	for i := range observed {
