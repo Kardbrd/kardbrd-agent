@@ -33,12 +33,14 @@ func publishExecutionCapabilities(ctx context.Context, manager *agent.Manager, c
 }
 
 type capabilityRegistrationLoop struct {
-	mu        sync.Mutex
-	publishMu sync.Mutex
-	replayMu  sync.Mutex
-	cancel    context.CancelFunc
-	manager   *agent.Manager
-	client    *api.Client
+	mu              sync.Mutex
+	publishMu       sync.Mutex
+	replayMu        sync.Mutex
+	cancel          context.CancelFunc
+	orderRetryCh    chan struct{}
+	orderRetryDelay time.Duration
+	manager         *agent.Manager
+	client          *api.Client
 }
 
 func (r *capabilityRegistrationLoop) connected(parent context.Context, botID, instanceID string) {
@@ -50,7 +52,10 @@ func (r *capabilityRegistrationLoop) connected(parent context.Context, botID, in
 	ctx, cancel := context.WithCancel(parent)
 	r.mu.Lock()
 	r.cancel = cancel
+	r.orderRetryCh = make(chan struct{}, 1)
+	orderRetryCh := r.orderRetryCh
 	r.mu.Unlock()
+	go r.orderReplayLoop(ctx, orderRetryCh)
 	go func() {
 		for {
 			err := r.publish(ctx)
@@ -86,9 +91,69 @@ func (r *capabilityRegistrationLoop) disconnected() {
 		r.cancel()
 		r.cancel = nil
 	}
+	r.orderRetryCh = nil
 	r.mu.Unlock()
 	if r.manager != nil {
 		r.manager.SetConnectedBot("", "")
+	}
+}
+
+// A claim-order hold requests one fresh collection scan. The buffered signal
+// coalesces concurrent holds, and each repeated hold backs off without
+// recursing into an active replay or starting another dispatch path.
+func (r *capabilityRegistrationLoop) orderPending() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.orderRetryCh == nil {
+		return
+	}
+	select {
+	case r.orderRetryCh <- struct{}{}:
+	default:
+	}
+}
+
+func (r *capabilityRegistrationLoop) orderReplayLoop(ctx context.Context, signals <-chan struct{}) {
+	base := r.orderRetryDelay
+	if base <= 0 {
+		base = time.Second
+	}
+	delay := base
+	pending := false
+	for {
+		if !pending {
+			select {
+			case <-ctx.Done():
+				return
+			case <-signals:
+			}
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		// Holds accumulated during the wait are covered by this same scan.
+		select {
+		case <-signals:
+		default:
+		}
+		r.reconcile(ctx)
+		select {
+		case <-signals:
+			pending = true
+			if delay < 30*time.Second {
+				delay *= 2
+				if delay > 30*time.Second {
+					delay = 30 * time.Second
+				}
+			}
+		default:
+			pending = false
+			delay = base
+		}
 	}
 }
 

@@ -849,6 +849,225 @@ func TestStaleWebClaimHoldsAcceptedRequestForRetry(t *testing.T) {
 	}
 }
 
+func TestClaimOrderPendingHoldsWithoutPublishingOrExecuting(t *testing.T) {
+	m := replayManager(t)
+	replays := 0
+	m.OrderPending = func() { replays++ }
+	client := m.Client.(*fakeBoardClient)
+	client.claimErr = &api.APIError{StatusCode: 409, Code: "CLAIM_ORDER_PENDING", Message: "earlier request is pending"}
+	event := replayEvent(t, "card1", "later", "@coder task")
+	if err := m.HandleBoardEventRaw(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := m.readMentionClaim("card1", "later")
+	if err != nil || claim.State != "accepted" || claim.Model != "gpt-6-sol" || claim.Effort != "high" {
+		t.Fatalf("held claim=%+v err=%v", claim, err)
+	}
+	if got := m.Executor.(*fakeExecutor).executionCount(); got != 0 {
+		t.Fatalf("executions=%d", got)
+	}
+	if client.receiptCalls != 0 || len(client.commentsSnapshot()) != 0 {
+		t.Fatalf("hold published receipt or comment: receipts=%d comments=%d", client.receiptCalls, len(client.commentsSnapshot()))
+	}
+	if replays != 1 {
+		t.Fatalf("replay requests=%d", replays)
+	}
+}
+
+func TestMovedInEarlierRequestRunsBeforeHeldLaterRequest(t *testing.T) {
+	m := replayManager(t)
+	client := m.Client.(*fakeBoardClient)
+	underlying := m.Executor.(*fakeExecutor)
+	m.Executor = &orderingExecutor{underlying}
+	replays := 0
+	m.OrderPending = func() { replays++ }
+	withTime := func(raw json.RawMessage, createdAt string) json.RawMessage {
+		var event map[string]any
+		if err := json.Unmarshal(raw, &event); err != nil {
+			t.Fatal(err)
+		}
+		event["created_at"] = createdAt
+		return rawJSON(t, event)
+	}
+	y1 := withTime(replayEvent(t, "cardY", "y1", "@coder Y1"), "2026-10-05T18:00:00Z")
+	x := withTime(replayEvent(t, "cardX", "x", "@coder X"), "2026-10-05T18:01:00Z")
+	y2 := withTime(replayEvent(t, "cardY", "y2", "@coder Y2"), "2026-10-05T18:02:00Z")
+	cursor := "x"
+	// A card moves in after the first page. Web's still-valid cursor shows Y2
+	// but misses its earlier same-card Y1 until a new from-start scan.
+	client.requestPages = map[string]api.ExecutionRequestPage{
+		"":     {Requests: []json.RawMessage{x}, NextAfter: &cursor},
+		cursor: {Requests: []json.RawMessage{y2}},
+	}
+	client.claimErrors = map[string]error{"y2": &api.APIError{StatusCode: 409, Code: "CLAIM_ORDER_PENDING", Message: "Y1 is pending"}}
+	if err := m.ReconcileExecutionRequests(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RecoverAcceptedMentions(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if replays != 1 || underlying.executionCount() != 1 || client.receiptCalls != 1 {
+		t.Fatalf("initial scan: replay requests=%d executions=%d receipts=%d", replays, underlying.executionCount(), client.receiptCalls)
+	}
+	if claim, err := m.readMentionClaim("cardY", "y2"); err != nil || claim.State != "accepted" {
+		t.Fatalf("held Y2=%+v err=%v", claim, err)
+	}
+	if len(client.commentsSnapshot()) != 1 {
+		t.Fatal("held Y2 published an error or result")
+	}
+	client.requestPages = map[string]api.ExecutionRequestPage{"": {Requests: []json.RawMessage{y1, x, y2}}}
+	if err := m.ReconcileExecutionRequests(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	m.CommentExecution = &rules.CommentExecutionConfig{
+		Defaults:     rules.CommentDefaults{Model: "gpt-6-astra", Effort: "low"},
+		Models:       []rules.CommentModel{{ID: "gpt-6-sol", Efforts: []string{"high"}}, {ID: "gpt-6-astra", Efforts: []string{"low"}}},
+		Verification: rules.CommentVerification{Source: "operator_probe"},
+	}
+	if err := m.RecoverAcceptedMentions(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if replays != 2 || underlying.executionCount() != 2 || client.receiptCalls != 2 {
+		t.Fatalf("second hold: replay requests=%d executions=%d receipts=%d", replays, underlying.executionCount(), client.receiptCalls)
+	}
+	delete(client.claimErrors, "y2")
+	for range 2 {
+		if err := m.RecoverAcceptedMentions(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.ReconcileExecutionRequests(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	underlying.mu.Lock()
+	defer underlying.mu.Unlock()
+	if len(underlying.requests) != 3 || client.receiptCalls != 3 {
+		t.Fatalf("executions=%d receipts=%d", len(underlying.requests), client.receiptCalls)
+	}
+	for i, want := range []string{"X", "Y1", "Y2"} {
+		got := underlying.requests[i]
+		if !strings.Contains(got.Prompt, want) || got.Model != "gpt-6-sol" || got.ReasoningEffort != "high" {
+			t.Fatalf("execution %d=%+v, want frozen %s", i, got, want)
+		}
+	}
+}
+
+type rejectionGuardClient struct {
+	*fakeBoardClient
+	markerKey string
+}
+
+func (c *rejectionGuardClient) ClaimExecution(ctx context.Context, request api.ExecutionClaimRequest) (api.ExecutionClaim, error) {
+	if request.CommentID == "later" {
+		c.mu.Lock()
+		_, rejected := c.idempotentComments[c.markerKey]
+		c.mu.Unlock()
+		if !rejected {
+			return api.ExecutionClaim{}, &api.APIError{StatusCode: 409, Code: "CLAIM_ORDER_PENDING", Message: "earlier request has no terminal rejection"}
+		}
+	}
+	return c.fakeBoardClient.ClaimExecution(ctx, request)
+}
+
+func TestRejectedPredecessorMarkerReleasesLaterRequest(t *testing.T) {
+	m := replayManager(t)
+	base := m.Client.(*fakeBoardClient)
+	marker := "execution-rejected:board1:card1:bad"
+	m.Client = &rejectionGuardClient{fakeBoardClient: base, markerKey: marker}
+	base.requestPages = map[string]api.ExecutionRequestPage{"": {Requests: []json.RawMessage{
+		replayEvent(t, "card1", "bad", "@coder [dispatch model=oops]\nBad"),
+		replayEvent(t, "card1", "later", "@coder valid"),
+	}}}
+	for range 2 {
+		if err := m.ReconcileExecutionRequests(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.RecoverAcceptedMentions(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if claim, err := m.readMentionClaim("card1", "bad"); err != nil || claim.State != "rejected" || claim.Model != "" || claim.Effort != "" {
+		t.Fatalf("rejection=%+v err=%v", claim, err)
+	}
+	base.mu.Lock()
+	_, marked := base.idempotentComments[marker]
+	base.mu.Unlock()
+	if !marked || m.Executor.(*fakeExecutor).executionCount() != 1 || base.receiptCalls != 1 || len(base.commentsSnapshot()) != 2 {
+		t.Fatalf("marker=%t executions=%d receipts=%d comments=%d", marked, m.Executor.(*fakeExecutor).executionCount(), base.receiptCalls, len(base.commentsSnapshot()))
+	}
+}
+
+func TestStartedPredecessorKeepsLaterRequestHeld(t *testing.T) {
+	m := replayManager(t)
+	client := m.Client.(*fakeBoardClient)
+	client.requestPages = map[string]api.ExecutionRequestPage{"": {Requests: []json.RawMessage{
+		replayEvent(t, "card1", "earlier", "@coder first"),
+		replayEvent(t, "card1", "later", "@coder second"),
+	}}}
+	if err := m.ReconcileExecutionRequests(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	earlier, err := m.readMentionClaim("card1", "earlier")
+	if err != nil {
+		t.Fatal(err)
+	}
+	earlier.State, earlier.OwnerID = "started", "other-socket"
+	if err := m.saveMentionClaim(earlier); err != nil {
+		t.Fatal(err)
+	}
+	client.claimErrors = map[string]error{"later": &api.APIError{StatusCode: 409, Code: "CLAIM_ORDER_PENDING", Message: "earlier claim is unreceipted"}}
+	for range 2 {
+		if err := m.RecoverAcceptedMentions(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if m.Executor.(*fakeExecutor).executionCount() != 0 || client.receiptCalls != 0 || len(client.commentsSnapshot()) != 0 {
+		t.Fatalf("started predecessor was taken over: executions=%d receipts=%d comments=%d", m.Executor.(*fakeExecutor).executionCount(), client.receiptCalls, len(client.commentsSnapshot()))
+	}
+	if later, err := m.readMentionClaim("card1", "later"); err != nil || later.State != "accepted" {
+		t.Fatalf("later=%+v err=%v", later, err)
+	}
+}
+
+func TestUnknownClaimConflictRemainsActionableAndUnexecuted(t *testing.T) {
+	m := replayManager(t)
+	client := m.Client.(*fakeBoardClient)
+	client.claimErr = &api.APIError{StatusCode: 409, Code: "FUTURE_CONFLICT", Message: "inspect the claim"}
+	if err := m.HandleBoardEventRaw(context.Background(), replayEvent(t, "card1", "request", "@coder task")); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := m.readMentionClaim("card1", "request")
+	if err != nil || claim.State != "accepted" || m.Executor.(*fakeExecutor).executionCount() != 0 || client.receiptCalls != 0 {
+		t.Fatalf("unknown conflict claim=%+v executions=%d receipts=%d err=%v", claim, m.Executor.(*fakeExecutor).executionCount(), client.receiptCalls, err)
+	}
+	comments := client.commentsSnapshot()
+	if len(comments) != 1 || !strings.Contains(comments[0].content, "FUTURE_CONFLICT") {
+		t.Fatalf("unknown conflict lacked an actionable error: %+v", comments)
+	}
+}
+
+func TestWebRejectedTargetBecomesTerminalWithoutNewPublication(t *testing.T) {
+	m := replayManager(t)
+	client := m.Client.(*fakeBoardClient)
+	client.claimErr = &api.APIError{StatusCode: 409, Code: "CLAIM_REJECTED", Message: "trusted rejection marker exists"}
+	if err := m.HandleBoardEventRaw(context.Background(), replayEvent(t, "card1", "request", "@coder task")); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := m.readMentionClaim("card1", "request")
+	if err != nil || claim.State != "terminal" || claim.OutcomeStatus != "rejected" {
+		t.Fatalf("rejected target=%+v err=%v", claim, err)
+	}
+	if m.Executor.(*fakeExecutor).executionCount() != 0 || client.receiptCalls != 0 || len(client.commentsSnapshot()) != 0 {
+		t.Fatalf("rejected target produced an effect: executions=%d receipts=%d comments=%d", m.Executor.(*fakeExecutor).executionCount(), client.receiptCalls, len(client.commentsSnapshot()))
+	}
+	if err := m.HandleBoardEventRaw(context.Background(), replayEvent(t, "card1", "request", "@coder task")); err != nil {
+		t.Fatal(err)
+	}
+	if client.claimCalls != 1 || len(client.commentsSnapshot()) != 0 {
+		t.Fatalf("terminal rejection retried claim or published comment: claims=%d comments=%d", client.claimCalls, len(client.commentsSnapshot()))
+	}
+}
+
 func TestConcurrentStructuredRetryClaimsOnce(t *testing.T) {
 	m := newTestManager(t)
 	m.ExecutorType = "codex"

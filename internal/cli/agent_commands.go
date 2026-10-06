@@ -348,6 +348,7 @@ func realRunAgentRuntime(ctx context.Context, runtime agentRuntime) error {
 
 	registration := &capabilityRegistrationLoop{manager: manager, client: client}
 	manager.CapabilityRefresh = registration.refresh
+	manager.OrderPending = registration.orderPending
 	ws.OnConnected = func(message api.ConnectedMessage) { registration.connected(ctx, message.AgentID, message.InstanceID) }
 	ws.OnDisconnected = registration.disconnected
 	ws.OnBoardEvent = func(raw json.RawMessage) {

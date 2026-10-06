@@ -110,6 +110,7 @@ type Manager struct {
 	WebSocket         WebSocketRunner
 	Reload            func(context.Context) (rules.Config, error)
 	CapabilityRefresh func(context.Context)
+	OrderPending      func()
 
 	sem chan struct{}
 	mu  sync.Mutex
@@ -548,6 +549,21 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 		if err != nil {
 			terminalHandled = true
 			var apiErr *api.APIError
+			if errors.As(err, &apiErr) && apiErr.StatusCode == 409 && apiErr.Code == "CLAIM_ORDER_PENDING" {
+				// Web has not granted this first claim. Keep the accepted frozen
+				// selection and replay from the beginning before another attempt.
+				if m.OrderPending != nil {
+					m.OrderPending()
+				}
+				return nil
+			}
+			if errors.As(err, &apiErr) && apiErr.StatusCode == 409 && apiErr.Code == "CLAIM_REJECTED" {
+				// The trusted rejection marker is already terminal on Web. Do not
+				// create a claim, receipt, or another error comment for this target.
+				claim.State = "terminal"
+				claim.OutcomeStatus = "rejected"
+				return m.saveMentionClaim(*claim)
+			}
 			if errors.As(err, &apiErr) && apiErr.StatusCode == 404 && apiErr.Code == "NOT_FOUND" {
 				// A moved card can later return to this board. Keep the accepted
 				// claim and frozen selection for a later canonical replay, without
