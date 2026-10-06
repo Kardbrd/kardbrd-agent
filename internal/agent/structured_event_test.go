@@ -1498,13 +1498,34 @@ func TestReplayPersistsIdentityBeforeAcceptedClaimOnInterruptedPage(t *testing.T
 	restarted.Client = client
 	underlying := restarted.Executor.(*fakeExecutor)
 	restarted.Executor = &orderingExecutor{underlying}
+	// Recovery happens after the restart but before the new scan. A is still
+	// an eligible observed prefix here, so its authoritative 404 is exercised.
+	if err := restarted.RecoverAcceptedMentions(context.Background()); err == nil || !strings.Contains(err.Error(), "request no longer on board") {
+		t.Fatalf("deleted A claim error=%v", err)
+	}
+	if client.claimCalls != 1 || underlying.executionCount() != 0 {
+		t.Fatalf("deleted A: claims=%d executions=%d", client.claimCalls, underlying.executionCount())
+	}
 	for range 2 {
 		if err := restarted.ReconcileExecutionRequests(context.Background()); err != nil {
 			t.Fatal(err)
 		}
+		// The accepted B/C choices are frozen even if YAML defaults change
+		// before recovery and on the next scan.
+		restarted.CommentExecution = &rules.CommentExecutionConfig{
+			Defaults: rules.CommentDefaults{Model: "gpt-6-astra", Effort: "low"},
+			Models: []rules.CommentModel{
+				{ID: "gpt-6-sol", Efforts: []string{"high"}},
+				{ID: "gpt-6-astra", Efforts: []string{"low"}},
+			},
+			Verification: rules.CommentVerification{Source: "operator_probe"},
+		}
 		if err := restarted.RecoverAcceptedMentions(context.Background()); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if client.claimCalls != 3 {
+		t.Fatalf("claim calls=%d, want A 404 then B and C once", client.claimCalls)
 	}
 	underlying.mu.Lock()
 	defer underlying.mu.Unlock()
