@@ -409,7 +409,7 @@ func TestNoRetryMakesAttachmentCommandOneAttempt(t *testing.T) {
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/cards/card1/attachments/presign/":
-			writeCLITestJSON(t, w, map[string]any{"data": map[string]string{"upload_url": uploadServer.URL, "s3_key": "uploads/report.md"}})
+			writeCLITestJSON(t, w, map[string]any{"data": map[string]string{"upload_url": uploadServer.URL, "s3_key": "uploads/report.md", "content_type": "text/markdown; charset=utf-8"}})
 		case "/api/cards/card1/attachments/confirm/":
 			confirmations++
 			writeCLITestJSON(t, w, map[string]any{"data": map[string]string{"id": "unexpected"}})
@@ -699,8 +699,9 @@ func TestAttachmentMarkdownContentExpandsEscapedNewlines(t *testing.T) {
 			}
 			writeCLITestJSON(t, w, map[string]any{
 				"data": map[string]string{
-					"upload_url": uploadServer.URL,
-					"s3_key":     "uploads/notes.md",
+					"upload_url":   uploadServer.URL,
+					"s3_key":       "uploads/notes.md",
+					"content_type": "text/markdown; charset=utf-8",
 				},
 			})
 		case "/api/cards/card1/attachments/confirm/":
