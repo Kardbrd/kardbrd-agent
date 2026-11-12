@@ -31,18 +31,22 @@ func (c *Client) UploadAttachment(ctx context.Context, cardID, filePath string) 
 		return nil, err
 	}
 	var presign struct {
-		UploadURL string `json:"upload_url"`
-		S3Key     string `json:"s3_key"`
+		UploadURL   string `json:"upload_url"`
+		S3Key       string `json:"s3_key"`
+		ContentType string `json:"content_type"`
 	}
 	if err := json.Unmarshal(presignRaw, &presign); err != nil {
 		return nil, err
+	}
+	if _, _, err := mime.ParseMediaType(presign.ContentType); err != nil {
+		return nil, fmt.Errorf("invalid presigned content_type: %w", err)
 	}
 
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.uploadToPresignedURL(ctx, presign.UploadURL, content, contentType); err != nil {
+	if err := c.uploadToPresignedURL(ctx, presign.UploadURL, content, presign.ContentType); err != nil {
 		return nil, err
 	}
 
@@ -50,7 +54,7 @@ func (c *Client) UploadAttachment(ctx context.Context, cardID, filePath string) 
 		"s3_key":       presign.S3Key,
 		"filename":     filename,
 		"file_size":    info.Size(),
-		"content_type": contentType,
+		"content_type": presign.ContentType,
 	})
 }
 
