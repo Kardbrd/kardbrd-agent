@@ -36,3 +36,19 @@ func TestREDBotCLICommentBoundaryAfterExpansion(t *testing.T) {
 		})
 	}
 }
+
+func TestREDCLIUncertainCommentWriteHasOneAttempt(t *testing.T) {
+	posts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	_, _, err := executeRoot("--api-url", server.URL, "--token", "tok", "comment", "add", "card1", "decision retained")
+	if err == nil {
+		t.Fatal("expected uncertain write error")
+	}
+	if posts != 1 {
+		t.Fatalf("unkeyed CLI comment POST attempted %d times", posts)
+	}
+}

@@ -1,0 +1,195 @@
+{
+  "limit": 250,
+  "separator_codepoints": [
+    "U+0009-U+000D",
+    "U+0020",
+    "U+0085",
+    "U+00A0",
+    "U+1680",
+    "U+2000-U+200A",
+    "U+2028",
+    "U+2029",
+    "U+202F",
+    "U+205F",
+    "U+3000"
+  ],
+  "fixtures": [
+    {
+      "id": "empty",
+      "body": "",
+      "words": 0
+    },
+    {
+      "id": "only_separators",
+      "body": " \t\n 　",
+      "words": 0
+    },
+    {
+      "id": "249_with_mention",
+      "body": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word @Paul",
+      "words": 249
+    },
+    {
+      "id": "250_with_mention",
+      "body": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word @Paul",
+      "words": 250
+    },
+    {
+      "id": "251_after_mention",
+      "body": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word @Paul",
+      "words": 251
+    },
+    {
+      "id": "markdown_link_code_mention",
+      "body": "**ready** [proof](https://x.test/a) `日本語` @Paul",
+      "words": 4
+    },
+    {
+      "id": "zwsp_is_not_separator",
+      "body": "alpha​beta",
+      "words": 1
+    },
+    {
+      "id": "emoji_sequence_is_one_word",
+      "body": "👍🏽 done",
+      "words": 2
+    },
+    {
+      "id": "cli_expanded_newline",
+      "cli_input": "alpha\\nbeta",
+      "body": "alpha\nbeta",
+      "words": 2
+    },
+    {
+      "id": "unicode_mixed_251",
+      "cli_input": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word [résumé](https://example.test/a) `日本語`\\n@Paul",
+      "body": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word [résumé](https://example.test/a) `日本語`\n@Paul",
+      "words": 251
+    },
+    {
+      "id": "separator_u0009",
+      "body": "a\tb",
+      "words": 2
+    },
+    {
+      "id": "separator_u000a",
+      "body": "a\nb",
+      "words": 2
+    },
+    {
+      "id": "separator_u000b",
+      "body": "a\u000bb",
+      "words": 2
+    },
+    {
+      "id": "separator_u000c",
+      "body": "a\fb",
+      "words": 2
+    },
+    {
+      "id": "separator_u000d",
+      "body": "a\rb",
+      "words": 2
+    },
+    {
+      "id": "separator_u0020",
+      "body": "a b",
+      "words": 2
+    },
+    {
+      "id": "separator_u0085",
+      "body": "ab",
+      "words": 2
+    },
+    {
+      "id": "separator_u00a0",
+      "body": "a b",
+      "words": 2
+    },
+    {
+      "id": "separator_u1680",
+      "body": "a b",
+      "words": 2
+    },
+    {
+      "id": "separator_u2000",
+      "body": "a b",
+      "words": 2
+    },
+    {
+      "id": "separator_u2001",
+      "body": "a b",
+      "words": 2
+    },
+    {
+      "id": "separator_u2002",
+      "body": "a b",
+      "words": 2
+    },
+    {
+      "id": "separator_u2003",
+      "body": "a b",
+      "words": 2
+    },
+    {
+      "id": "separator_u2004",
+      "body": "a b",
+      "words": 2
+    },
+    {
+      "id": "separator_u2005",
+      "body": "a b",
+      "words": 2
+    },
+    {
+      "id": "separator_u2006",
+      "body": "a b",
+      "words": 2
+    },
+    {
+      "id": "separator_u2007",
+      "body": "a b",
+      "words": 2
+    },
+    {
+      "id": "separator_u2008",
+      "body": "a b",
+      "words": 2
+    },
+    {
+      "id": "separator_u2009",
+      "body": "a b",
+      "words": 2
+    },
+    {
+      "id": "separator_u200a",
+      "body": "a b",
+      "words": 2
+    },
+    {
+      "id": "separator_u2028",
+      "body": "a b",
+      "words": 2
+    },
+    {
+      "id": "separator_u2029",
+      "body": "a b",
+      "words": 2
+    },
+    {
+      "id": "separator_u202f",
+      "body": "a b",
+      "words": 2
+    },
+    {
+      "id": "separator_u205f",
+      "body": "a b",
+      "words": 2
+    },
+    {
+      "id": "separator_u3000",
+      "body": "a　b",
+      "words": 2
+    }
+  ]
+}
