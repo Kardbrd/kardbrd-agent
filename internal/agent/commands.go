@@ -194,7 +194,7 @@ func (m *Manager) runCommand(session *ActiveSession, claim *commandClaim) (runEr
 	}()
 
 	if err := m.recheckCommand(actionCtx, claim); err != nil {
-		return commandRunFailure(err, "**Command rejected**\n\n"+err.Error())
+		return commandRunFailure(err, "**Command rejected**\n\nThe command is not authorized in the card's current state. Check its rule and card status before retrying.")
 	}
 	return m.executeRule(actionCtx, session, claim.rule, claim.message, true, claim.rule.Execution)
 }
@@ -237,7 +237,7 @@ func (m *Manager) recheckCommand(ctx context.Context, claim *commandClaim) error
 
 func (m *Manager) executeRule(ctx context.Context, session *ActiveSession, rule rules.Rule, message map[string]any, publishResult bool, policy rules.ExecutionPolicy) error {
 	if err := validateReasoning(m.ExecutorType, rule.Reasoning); err != nil {
-		return commandRunFailure(err, "**Command selection error**: "+err.Error())
+		return commandRunFailure(err, "**Command selection error**\n\nThe requested model or effort is unsupported. Check the configured selection before retrying.")
 	}
 	if err := ctx.Err(); err != nil {
 		return m.publishCommandExecutionFailure(session.CardID, rule, err, publishResult)
@@ -326,8 +326,7 @@ func (m *Manager) postCommandFailure(ctx context.Context, cardID string, err err
 		content = commandErr.comment
 	}
 	if content == "" {
-		diagnostic := redactCleanupDiagnostic(err.Error(), m.Token)
-		content = "**Command Error**\n\n" + diagnostic
+		content = "**Command Error**\n\nWorkspace preparation or execution failed. Check the agent service logs before retrying."
 	}
 	publishCtx, cancel := context.WithTimeout(context.Background(), commandPublishWait)
 	defer cancel()

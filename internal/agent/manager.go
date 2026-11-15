@@ -474,7 +474,7 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 	if selectionErr != nil {
 		terminalHandled = true
 		m.addReaction(ctx, session.CardID, session.CommentID, "🛑")
-		_, _ = m.publishBotNotice(ctx, session.CardID, "**Dispatch selection error**: "+selectionErr.Error()+"\n\n"+requesterMention(authorName))
+		_, _ = m.publishBotNotice(ctx, session.CardID, dispatchSelectionNotice(selectionErr)+"\n\n"+requesterMention(authorName))
 		return nil
 	}
 	if claim != nil {
@@ -999,11 +999,35 @@ Do not do any new work. Return the concise terminal summary normally so the agen
 }
 
 func buildErrorComment(result executor.Result, label string) string {
-	message := fmt.Sprintf("**%s**\n\nThe executor failed. Inspect the agent run log before retrying.", label)
+	detail := "The executor failed. Check its configuration and the agent service logs before retrying."
+	lower := strings.ToLower(result.Error)
+	switch {
+	case strings.Contains(lower, "model") && (strings.Contains(lower, "not supported") || strings.Contains(lower, "unsupported") || strings.Contains(lower, "not available")):
+		detail = "The selected model is unavailable for this provider account. Check model access before retrying."
+	case strings.Contains(lower, "rate limit"):
+		detail = "The provider rate limit blocked this run. Check the provider limits before retrying."
+	case strings.Contains(lower, "quota"):
+		detail = "The provider quota blocked this run. Check provider credits before retrying."
+	case strings.Contains(lower, "deadline") || strings.Contains(lower, "timed out"):
+		detail = "The executor timed out. Check the agent service logs and timeout setting before retrying."
+	}
+	message := fmt.Sprintf("**%s**\n\n%s", label, detail)
 	if result.ReturnCode != nil {
 		message += fmt.Sprintf("\n\n**Exit code:** `%d`", *result.ReturnCode)
 	}
 	return message
+}
+
+func dispatchSelectionNotice(err error) string {
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "codex executor"):
+		return "**Dispatch selection error**\n\nThis model selection requires the codex executor. Change the executor or selection."
+	case strings.Contains(lower, "reasoning effort"):
+		return "**Dispatch selection error**\n\nThe reasoning effort requires a supported executor. Change the effort or executor."
+	default:
+		return "**Dispatch selection error**\n\nThe selection contains an unsupported model. Choose a listed model and retry."
+	}
 }
 
 func (m *Manager) makeOnChunk(cardID string) func(content string, chunkType string) {

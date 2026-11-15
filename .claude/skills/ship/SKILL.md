@@ -83,7 +83,7 @@ Do NOT use regular merge or rebase merge unless explicitly requested.
 - Merging without running local tests and lint
 - Using regular merge instead of squash
 - Not deleting the feature branch after merge
-- No comment posted on the card confirming the merge
+- No final response prepared for manager publication confirming the merge
 - Merging a PR that's already merged or closed
 
 ## Verification Before Completion
@@ -93,7 +93,7 @@ Do NOT use regular merge or rebase merge unless explicitly requested.
 3. Verify local tests and lint passed
 4. Verify merge completed successfully (PR state is "MERGED")
 5. Verify feature branch was deleted
-6. Verify card comment was posted with merge confirmation
+6. Verify the final response contains merge confirmation; do not post it separately
 7. Only then claim completion
 
 ## Bot comment writing

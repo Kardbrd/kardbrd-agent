@@ -27,6 +27,22 @@ func TestStructuredIntakePersistsConciseRejection(t *testing.T) {
 	}
 }
 
+func TestStructuredIntakeDoesNotPublishShortDiagnostic(t *testing.T) {
+	m := newTestManager(t)
+	m.ClaimDir = t.TempDir()
+	ctx := context.WithValue(context.Background(), replayIntakeKey{}, true)
+	if err := m.rejectStructuredIntake(ctx, map[string]any{"card_id": "card1", "comment_id": "trigger", "author_name": "Paul"}, nil, errors.New("secret credential")); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := m.readMentionClaim("card1", "trigger")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(claim.OutcomeBody, "secret credential") || !strings.Contains(claim.OutcomeBody, "request") {
+		t.Fatalf("unsafe rejection: %q", claim.OutcomeBody)
+	}
+}
+
 func TestStructuredHoldPersistsStableConciseBody(t *testing.T) {
 	m := newTestManager(t)
 	m.ClaimDir = t.TempDir()
@@ -55,7 +71,14 @@ func TestStructuredHoldPersistsStableConciseBody(t *testing.T) {
 
 func TestErrorCommentKeepsDiagnosticOutOfCard(t *testing.T) {
 	body := buildErrorComment(executor.Result{Error: "secret credential", Stderr: "secret stderr"}, "Error")
-	if strings.Contains(body, "secret") || !strings.Contains(body, "run log") {
+	if strings.Contains(body, "secret") || !strings.Contains(body, "service logs") {
 		t.Fatalf("error notice = %q", body)
+	}
+}
+
+func TestModelFailureHasActionableSafeCategory(t *testing.T) {
+	body := buildErrorComment(executor.Result{Error: "model not supported by account; secret credential"}, "Error")
+	if !strings.Contains(body, "model") || !strings.Contains(body, "account") || strings.Contains(body, "secret") {
+		t.Fatalf("model failure notice = %q", body)
 	}
 }

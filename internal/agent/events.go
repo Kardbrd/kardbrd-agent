@@ -380,8 +380,13 @@ func isCleanupEnvironmentKey(key string) bool {
 }
 
 func (m *Manager) postCleanupFailure(ctx context.Context, cardID string, rule rules.Rule, err error, output string) {
-	diagnostic := redactCleanupDiagnostic(err.Error()+"\n"+output, m.Token)
-	_, _ = m.publishBotNotice(ctx, cardID, "**Cleanup Error** ("+rule.Name+")\n\n"+diagnostic)
+	detail := "Cleanup failed. Check the agent service logs before retrying."
+	if strings.Contains(strings.ToLower(err.Error()), "timed out") {
+		detail = "Cleanup timed out. Check its deadline and agent service logs before retrying."
+	} else if strings.Contains(strings.ToLower(err.Error()), "database") {
+		detail = "The authoritative state update failed during cleanup. Reconcile state before retrying."
+	}
+	_, _ = m.publishBotNotice(ctx, cardID, "**Cleanup Error** ("+rule.Name+")\n\n"+detail)
 }
 
 func redactCleanupDiagnostic(value, token string) string {
@@ -457,7 +462,11 @@ func (m *Manager) processRuleWithExecution(ctx context.Context, cardID string, r
 		if !publishResult {
 			return err
 		}
-		_, _ = m.publishBotNotice(ctx, cardID, "**Automation selection error** ("+rule.Name+"): "+err.Error())
+		detail := "The requested model or effort is unsupported. Check the rule selection before retrying."
+		if strings.Contains(strings.ToLower(err.Error()), "reasoning effort") {
+			detail = "The reasoning effort requires a supported executor. Change the rule effort or executor."
+		}
+		_, _ = m.publishBotNotice(ctx, cardID, "**Automation selection error** ("+rule.Name+")\n\n"+detail)
 		return nil
 	}
 	if err := m.acquire(ctx); err != nil {

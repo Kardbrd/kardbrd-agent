@@ -217,7 +217,7 @@ func TestSelectedExecutorFailureIsReported(t *testing.T) {
 	if err := m.ProcessMention(context.Background(), "card1", "comment1", "@coder [dispatch model=gpt-6.1-sol effort=high]\nWork", "Paul"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(m.Client.(*fakeBoardClient).comments[0].content, "executor failed") || strings.Contains(m.Client.(*fakeBoardClient).comments[0].content, "model not supported by account") {
+	if !strings.Contains(m.Client.(*fakeBoardClient).comments[0].content, "model is unavailable for this provider account") || strings.Contains(m.Client.(*fakeBoardClient).comments[0].content, "model not supported by account") {
 		t.Fatal("provider failure notice must point to the run log without printing raw diagnostics")
 	}
 }
