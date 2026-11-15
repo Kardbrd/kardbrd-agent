@@ -25,7 +25,7 @@ func TestIndependentSupervisorFailedExecutorDoesNotBecomeSucceededClaim(t *testi
 		t.Fatalf("failed executor recorded as %q", got)
 	}
 	comments := m.Client.(*fakeBoardClient).commentsSnapshot()
-	if len(comments) != 1 || !strings.Contains(comments[0].content, "synthetic failure") {
+	if len(comments) != 1 || !strings.Contains(comments[0].content, "executor failed") || strings.Contains(comments[0].content, "synthetic failure") {
 		t.Fatalf("failed executor did not publish one diagnostic: %#v", comments)
 	}
 }
@@ -53,7 +53,7 @@ func TestIndependentSupervisorFailedAuthenticationAndTimeoutDoNotBecomeSucceeded
 				exec.blockUntilCancel = true
 			},
 			exec: 1,
-			text: "context deadline exceeded",
+			text: "timed out",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -149,7 +149,7 @@ func TestIndependentSupervisorQueuedFailuresPreserveOutcomeAndSingleDiagnostic(t
 				m.Executor.(*fakeExecutor).result = executor.Result{Success: false, Error: "queued executor failure"}
 			},
 			exec: 1,
-			text: "queued executor failure",
+			text: "executor failed",
 		},
 		{
 			name: "authentication",
@@ -166,7 +166,7 @@ func TestIndependentSupervisorQueuedFailuresPreserveOutcomeAndSingleDiagnostic(t
 				m.Executor.(*fakeExecutor).blockUntilCancel = true
 			},
 			exec: 1,
-			text: "context deadline exceeded",
+			text: "timed out",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

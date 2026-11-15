@@ -381,7 +381,7 @@ func isCleanupEnvironmentKey(key string) bool {
 
 func (m *Manager) postCleanupFailure(ctx context.Context, cardID string, rule rules.Rule, err error, output string) {
 	diagnostic := redactCleanupDiagnostic(err.Error()+"\n"+output, m.Token)
-	_, _ = m.publishBotNotice(ctx, cardID, "**Cleanup Error** ("+rule.Name+")\n\n```\n"+diagnostic+"\n```")
+	_, _ = m.publishBotNotice(ctx, cardID, "**Cleanup Error** ("+rule.Name+")\n\n"+diagnostic)
 }
 
 func redactCleanupDiagnostic(value, token string) string {
@@ -485,7 +485,7 @@ func (m *Manager) processRuleWithExecution(ctx context.Context, cardID string, r
 		if !publishResult {
 			return errors.New("executor authentication failed")
 		}
-		_, _ = m.publishBotNotice(ctx, cardID, "**Automation Error** ("+rule.Name+")\n\nAgent not authenticated: `"+auth.Error+"`")
+		_, _ = m.publishBotNotice(ctx, cardID, "**Automation Error** ("+rule.Name+")\n\nAgent not authenticated. Check the LLM provider configuration and agent run log.")
 		return nil
 	}
 
@@ -691,7 +691,7 @@ func (m *Manager) HandleBotCardCommand(ctx context.Context, cardID string, conte
 		}
 		loaded, err := m.ReloadAndApply(ctx)
 		if err != nil {
-			_, _ = m.publishBotNotice(ctx, cardID, "**Reload failed**\n\n```\n"+err.Error()+"\n```\n\n@"+authorName)
+			_, _ = m.publishBotNotice(ctx, cardID, "**Reload failed**\n\nThe rules could not be applied. Inspect the agent run log before retrying.\n\n@"+authorName)
 			return nil
 		}
 		_ = m.EnsureBotCard(ctx)

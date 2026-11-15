@@ -53,7 +53,7 @@ If the task is purely configuration, documentation, or non-testable infrastructu
    - Any deviations from the plan and why
    - Test results (paste actual output)
    - Lint results (paste actual output)
-7. Post comment: completion summary + "Ready for /review" + @mention requester
+7. Return a completion summary with "Ready for /review" and the requester mention; the manager publishes it once
 
 ## Anti-Rationalization Guards
 
@@ -82,9 +82,9 @@ If the task is purely configuration, documentation, or non-testable infrastructu
 3. Run `pre-commit run --all-files` — read FULL output, confirm lint passes
 4. Verify implementation-report.md attachment exists
 5. Verify ALL "Implementation Tasks" checklist items are marked complete
-6. Verify completion comment was posted
+6. Verify the final response contains the completion summary; do not post it separately
 7. Only then claim completion
 
 ## Bot comment writing
 
-Keep each published bot comment within 250 words of the raw submitted body, including Markdown and any appended requester mention. Preserve the decision, reasoning, evidence takeaway, blockers and unresolved questions. Link detailed logs or reports with a useful pointer. Write a short, natural summary instead of repeating the same status across comments. Preserve every prior card comment in its original order when building context. The manager owns terminal publication; return the final response normally and do not also post it with `kardbrd comment add`.
+Keep each published bot comment within 250 words of the raw Web-stored body after outer trim, including Markdown and any appended requester mention. Preserve the decision, reasoning, evidence takeaway, blockers and unresolved questions. Link detailed logs or reports with a useful pointer. Write a short, natural summary instead of repeating the same status across comments. Preserve every prior card comment in its original order when building context. The manager owns terminal publication; return the final response normally and do not also post it with `kardbrd comment add`.

@@ -17,7 +17,7 @@ func TestREDHandoffRetainsAllCommentsAndDoesNotRepeatTrigger(t *testing.T) {
 		t.Run(command, func(t *testing.T) {
 			trigger := "@Bot " + command
 			got := Build(Request{
-				CardID: "card1", CardMarkdown: history.String() + "### Trigger\n" + trigger, Command: command,
+				CardID: "card1", CardMarkdown: "## Comments\n" + history.String() + "### Trigger\n" + trigger, Command: command,
 				CommentContent: trigger, AuthorName: "Paul",
 			})
 			previous := -1
@@ -39,5 +39,13 @@ func TestREDHandoffRetainsAllCommentsAndDoesNotRepeatTrigger(t *testing.T) {
 				t.Fatal("handoff lacks concise, substantive writing guidance")
 			}
 		})
+	}
+}
+
+func TestTriggerInDescriptionDoesNotHideCurrentRequest(t *testing.T) {
+	trigger := "@Bot fix this"
+	got := Build(Request{CardID: "card1", CardMarkdown: "## Description\n" + trigger + "\n\n## Comments\n### Earlier\nUnrelated", CommentContent: trigger, Command: "fix this"})
+	if strings.Count(got, trigger) != 2 {
+		t.Fatalf("current request missing when description matches: %q", got)
 	}
 }

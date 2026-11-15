@@ -905,7 +905,8 @@ func TestRuleDispatchPostsAuthError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	assertContains(t, manager.Client.(*fakeBoardClient).comments[0].content, "login required")
+	assertContains(t, manager.Client.(*fakeBoardClient).comments[0].content, "not authenticated")
+	assertNotContains(t, manager.Client.(*fakeBoardClient).comments[0].content, "login required")
 }
 
 func TestRuleDispatchPublishesTerminalSummaryWithoutResume(t *testing.T) {

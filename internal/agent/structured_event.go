@@ -164,7 +164,7 @@ func (m *Manager) rejectStructuredIntake(ctx context.Context, message map[string
 		_ = json.Unmarshal(models, &snapshot.Models)
 	}
 	selection := mentionDispatch{Content: content}
-	body := "**Execution request error**: " + reason.Error() + "\n\n" + requesterMention(authorName)
+	body := botNoticeBody("**Execution request error**: " + reason.Error() + "\n\n" + requesterMention(authorName))
 	claim, _, err := m.createOrReadMentionClaimWithDisposition(cardID, commentID, authorName, selection, snapshot, "rejected", body)
 	if err != nil {
 		return err

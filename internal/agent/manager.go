@@ -491,11 +491,7 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 	if !auth.Authenticated {
 		terminalHandled = true
 		m.addReaction(ctx, session.CardID, session.CommentID, "🛑")
-		hint := auth.AuthHint
-		if hint == "" {
-			hint = "Check your LLM provider configuration."
-		}
-		message := fmt.Sprintf("**Agent not authenticated**\n\n```\n%s\n```\n\n%s\n\n%s", auth.Error, hint, requesterMention(authorName))
+		message := "**Agent not authenticated**\n\nCheck the LLM provider configuration and agent run log before retrying.\n\n" + requesterMention(authorName)
 		_, _ = m.publishBotNotice(ctx, session.CardID, message)
 		return nil
 	}
@@ -648,8 +644,8 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 	message := buildErrorComment(result, "Error") + "\n\n" + requesterMention(authorName)
 	if claim != nil {
 		claim.OutcomeStatus = "failed"
-		claim.OutcomeBody = message
-		claim.OutcomeMessage = truncateUTF8(result.Error, 1000)
+		claim.OutcomeBody = botNoticeBody(message)
+		claim.OutcomeMessage = "executor failed; inspect agent run log"
 		claim.State = "outcome"
 		if err := m.saveMentionClaim(*claim); err != nil {
 			return err
@@ -665,9 +661,8 @@ func (m *Manager) postMentionFailure(session *ActiveSession, authorName, phase s
 	ctx, cancel := context.WithTimeout(context.Background(), commandPublishWait)
 	defer cancel()
 	m.addReaction(ctx, session.CardID, session.CommentID, "🛑")
-	diagnostic := redactCleanupDiagnostic(err.Error(), m.Token)
-	message := "**Unable to complete request**\n\nThe request failed while " + phase +
-		". It was not marked successful.\n\n```\n" + diagnostic + "\n```\n\n" + requesterMention(authorName)
+	message := "**Unable to complete request**\n\nThe request timed out or failed while " + phase +
+		". It was not marked successful. Inspect the agent run log.\n\n" + requesterMention(authorName)
 	_, _ = m.publishBotNotice(ctx, session.CardID, message)
 }
 
@@ -1004,35 +999,11 @@ Do not do any new work. Return the concise terminal summary normally so the agen
 }
 
 func buildErrorComment(result executor.Result, label string) string {
-	var parts []string
-	if result.Error == "" {
-		result.Error = "unknown error"
-	}
-	parts = append(parts, fmt.Sprintf("**%s**\n\n```\n%s\n```", label, result.Error))
-	var details []string
+	message := fmt.Sprintf("**%s**\n\nThe executor failed. Inspect the agent run log before retrying.", label)
 	if result.ReturnCode != nil {
-		details = append(details, fmt.Sprintf("**Exit code:** `%d`", *result.ReturnCode))
+		message += fmt.Sprintf("\n\n**Exit code:** `%d`", *result.ReturnCode)
 	}
-	if len(result.Command) > 0 {
-		details = append(details, fmt.Sprintf("**Command:** `%s`", result.Command[0]))
-	}
-	if result.DurationMS != nil {
-		details = append(details, fmt.Sprintf("**Duration:** %.1fs", float64(*result.DurationMS)/1000))
-	}
-	if result.Stderr != "" {
-		stderr := result.Stderr
-		if len(stderr) > 2000 {
-			stderr = stderr[:2000] + fmt.Sprintf("\n... (%d chars truncated)", len(result.Stderr)-2000)
-		}
-		details = append(details, "**stderr:**\n```\n"+stderr+"\n```")
-	}
-	if result.Logs != "" {
-		details = append(details, "**Logs:**\n```\n"+result.Logs+"\n```")
-	}
-	if len(details) > 0 {
-		parts = append(parts, strings.Join(details, "\n"))
-	}
-	return strings.Join(parts, "\n\n")
+	return message
 }
 
 func (m *Manager) makeOnChunk(cardID string) func(content string, chunkType string) {

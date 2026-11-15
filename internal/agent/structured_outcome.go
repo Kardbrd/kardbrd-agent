@@ -120,7 +120,7 @@ Do not do any new work. Return the concise terminal summary normally so the agen
 			claim.OutcomeMessage = "no terminal response"
 		} else {
 			claim.OutcomeBody = buildErrorComment(result, "Error") + "\n\n" + requesterMention(claim.AuthorName)
-			claim.OutcomeMessage = truncateUTF8(result.Error, 1000)
+			claim.OutcomeMessage = "executor failed; inspect agent run log"
 		}
 	}
 	claim.OutcomeBody = botNoticeBody(claim.OutcomeBody)
@@ -174,7 +174,7 @@ func (m *Manager) publishStructuredHold(ctx context.Context, claim mentionClaim,
 		return nil
 	}
 	if current.IntakeErrorBody == "" {
-		current.IntakeErrorBody = "**Execution request held** while " + phase + ": " + reason.Error() + "\n\n" + requesterMention(current.AuthorName)
+		current.IntakeErrorBody = botNoticeBody("**Execution request held** while " + phase + ". Inspect the agent run log and reconcile the claim before retrying.\n\n" + requesterMention(current.AuthorName))
 		if err := m.saveMentionClaim(current); err != nil {
 			return err
 		}

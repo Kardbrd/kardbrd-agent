@@ -299,7 +299,7 @@ func (m *Manager) publishCommandExecutionFailure(cardID string, rule rules.Rule,
 		return canceledCommandRunFailure(err)
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return commandRunFailure(fmt.Errorf("executor timed out: %w", err), buildErrorComment(executor.Result{Success: false, Error: err.Error()}, "Automation Error ("+rule.Name+")"))
+		return commandRunFailure(fmt.Errorf("executor timed out: %w", err), "**Automation timed out** ("+rule.Name+")\n\nThe executor exceeded its deadline. Inspect the agent run log before retrying.")
 	}
 	return commandRunFailure(err, "**Automation Error** ("+rule.Name+")\n\nAgent not authenticated.")
 }
@@ -327,7 +327,7 @@ func (m *Manager) postCommandFailure(ctx context.Context, cardID string, err err
 	}
 	if content == "" {
 		diagnostic := redactCleanupDiagnostic(err.Error(), m.Token)
-		content = "**Command Error**\n\n```\n" + diagnostic + "\n```"
+		content = "**Command Error**\n\n" + diagnostic
 	}
 	publishCtx, cancel := context.WithTimeout(context.Background(), commandPublishWait)
 	defer cancel()
