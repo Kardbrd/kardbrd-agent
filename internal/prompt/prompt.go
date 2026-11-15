@@ -72,6 +72,8 @@ links, reactions, and other card updates are allowed during the run; they do not
 finish the task and are never a substitute for the final response.
 
 Return your final response normally when the task is complete. Do not use ` + "`kardbrd comment add`" + ` to publish the completion response. The agent manager will publish it once as the terminal summary and mention the requester. This instruction overrides any earlier generic instruction to post a comment when finished.
+
+Each bot comment, including the final requester mention, must fit within 250 words of its raw submitted body. Keep the decision, reasoning, evidence takeaway, blockers and unresolved questions; link detailed artifacts with useful pointers. Write naturally and avoid repeated status text. Keep every prior card comment in its original order in the context.
 `
 
 	labelInstructions := ""
@@ -107,6 +109,10 @@ Environment variables `+"`"+`KARDBRD_TOKEN`+"`"+` and `+"`"+`KARDBRD_API_URL`+"`
 	}
 
 	if strings.HasPrefix(req.Command, "/") {
+		trigger := req.CommentContent
+		if trigger != "" && strings.Contains(req.CardMarkdown, trigger) {
+			trigger = "(see triggering comment in Card Content)"
+		}
 		return fmt.Sprintf(`%s%s
 
 ---
@@ -121,9 +127,13 @@ Environment variables `+"`"+`KARDBRD_TOKEN`+"`"+` and `+"`"+`KARDBRD_API_URL`+"`
 
 %s
 %s%s%s
-`, preamble.String(), req.Command, req.CardID, req.AuthorName, req.CommentContent, req.CardMarkdown, labelInstructions, cliInstructions, responseInstructions)
+`, preamble.String(), req.Command, req.CardID, req.AuthorName, trigger, req.CardMarkdown, labelInstructions, cliInstructions, responseInstructions)
 	}
 
+	taskRequest := req.CommentContent
+	if taskRequest != "" && strings.Contains(req.CardMarkdown, taskRequest) {
+		taskRequest = "Complete the triggering request in the card history below."
+	}
 	return fmt.Sprintf(`%s## Task Request
 
 %s
@@ -142,7 +152,7 @@ Environment variables `+"`"+`KARDBRD_TOKEN`+"`"+` and `+"`"+`KARDBRD_API_URL`+"`
 
 Please complete this request.
 %s
-`, preamble.String(), req.CommentContent, req.CardID, req.CardMarkdown, labelInstructions, cliInstructions, req.AuthorName, responseInstructions)
+`, preamble.String(), taskRequest, req.CardID, req.CardMarkdown, labelInstructions, cliInstructions, req.AuthorName, responseInstructions)
 }
 
 func ExtractCommand(commentContent string, mentionKeyword string) string {

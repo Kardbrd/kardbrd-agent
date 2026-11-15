@@ -415,7 +415,7 @@ func executorEnvironment(parent []string, cfg Config, cardID, boardID string) []
 	env := make([]string, 0, len(parent)+4)
 	for _, entry := range parent {
 		name, _, _ := strings.Cut(entry, "=")
-		if name == "KARDBRD_CARD_ID" || name == "KARDBRD_BOARD_ID" {
+		if name == "KARDBRD_CARD_ID" || name == "KARDBRD_BOARD_ID" || name == "KARDBRD_AGENT_COMMENT_LIMIT" {
 			continue
 		}
 		env = append(env, entry)
@@ -423,7 +423,7 @@ func executorEnvironment(parent []string, cfg Config, cardID, boardID string) []
 	if cfg.Token != "" && cfg.APIURL != "" {
 		env = append(env, "KARDBRD_TOKEN="+cfg.Token, "KARDBRD_API_URL="+cfg.APIURL)
 	}
-	return append(env, "KARDBRD_CARD_ID="+cardID, "KARDBRD_BOARD_ID="+boardID)
+	return append(env, "KARDBRD_CARD_ID="+cardID, "KARDBRD_BOARD_ID="+boardID, "KARDBRD_AGENT_COMMENT_LIMIT=250")
 }
 
 func durationOrDefault(value time.Duration) time.Duration {

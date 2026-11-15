@@ -143,7 +143,7 @@ type structuredSnapshot struct {
 }
 
 func (m *Manager) rejectStructuredComment(ctx context.Context, cardID, authorName string, err error) error {
-	_, _ = m.Client.AddCommentOnce(ctx, cardID, "**Execution request error**: "+err.Error()+"\n\n"+requesterMention(authorName))
+	_, _ = m.publishBotNotice(ctx, cardID, "**Execution request error**: "+err.Error()+"\n\n"+requesterMention(authorName))
 	return nil
 }
 

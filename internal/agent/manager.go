@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Kardbrd/kardbrd-agent/internal/api"
+	"github.com/Kardbrd/kardbrd-agent/internal/commentpolicy"
 	"github.com/Kardbrd/kardbrd-agent/internal/executor"
 	"github.com/Kardbrd/kardbrd-agent/internal/rules"
 )
@@ -308,7 +309,7 @@ func (m *Manager) processStructuredMentionSnapshot(ctx context.Context, cardID, 
 				_, err := publisher.AddCommentIdempotent(ctx, cardID, body, "execution-uncertain:"+claim.BoardID+":"+claim.CardID+":"+claim.CommentID)
 				return err
 			}
-			_, err := m.Client.AddCommentOnce(ctx, cardID, body)
+			_, err := m.publishBotNotice(ctx, cardID, body)
 			return err
 		}
 		return nil
@@ -473,7 +474,7 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 	if selectionErr != nil {
 		terminalHandled = true
 		m.addReaction(ctx, session.CardID, session.CommentID, "🛑")
-		_, _ = m.Client.AddCommentOnce(ctx, session.CardID, "**Dispatch selection error**: "+selectionErr.Error()+"\n\n"+requesterMention(authorName))
+		_, _ = m.publishBotNotice(ctx, session.CardID, "**Dispatch selection error**: "+selectionErr.Error()+"\n\n"+requesterMention(authorName))
 		return nil
 	}
 	if claim != nil {
@@ -495,7 +496,7 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 			hint = "Check your LLM provider configuration."
 		}
 		message := fmt.Sprintf("**Agent not authenticated**\n\n```\n%s\n```\n\n%s\n\n%s", auth.Error, hint, requesterMention(authorName))
-		_, _ = m.Client.AddComment(ctx, session.CardID, message)
+		_, _ = m.publishBotNotice(ctx, session.CardID, message)
 		return nil
 	}
 
@@ -655,7 +656,7 @@ func (m *Manager) processClaimedMention(ctx, execCtx context.Context, session *A
 		}
 		return m.publishMentionOutcome(publicationCtx, *claim)
 	}
-	_, _ = m.Client.AddComment(ctx, session.CardID, message)
+	_, _ = m.publishBotNotice(ctx, session.CardID, message)
 	return nil
 }
 
@@ -667,7 +668,7 @@ func (m *Manager) postMentionFailure(session *ActiveSession, authorName, phase s
 	diagnostic := redactCleanupDiagnostic(err.Error(), m.Token)
 	message := "**Unable to complete request**\n\nThe request failed while " + phase +
 		". It was not marked successful.\n\n```\n" + diagnostic + "\n```\n\n" + requesterMention(authorName)
-	_, _ = m.Client.AddCommentOnce(ctx, session.CardID, message)
+	_, _ = m.publishBotNotice(ctx, session.CardID, message)
 }
 
 type pendingMention struct {
@@ -830,7 +831,7 @@ func (m *Manager) reserveCleanup(ctx context.Context, cardID string) (*ActiveSes
 	}
 	m.reportHeldStructured(ctx, cardID, heldStructured)
 	for range canceledCommands {
-		_, _ = m.Client.AddComment(ctx, cardID, "**Command canceled**\n\nThe card entered Done before this queued command could run.")
+		_, _ = m.publishBotNotice(ctx, cardID, "**Command canceled**\n\nThe card entered Done before this queued command could run.")
 	}
 	return cleanup, previousDone
 }
@@ -857,7 +858,7 @@ func (m *Manager) reportHeldStructured(ctx context.Context, cardID string, held 
 		if pending.claim != nil {
 			_ = m.setMentionClaimState(*pending.claim, "needs_review")
 		}
-		_, _ = m.Client.AddCommentOnce(ctx, cardID, "**Structured request held**: card entered Done before queued comment "+pending.commentID+" could run. Inspect before retrying.")
+		_, _ = m.publishBotNotice(ctx, cardID, "**Structured request held**: card entered Done before queued comment "+pending.commentID+" could run. Inspect before retrying.")
 	}
 }
 
@@ -905,7 +906,11 @@ func requesterMention(authorName string) string {
 
 func (m *Manager) completeSuccessfulResult(ctx context.Context, cardID, commentID string, result executor.Result, authorName, worktreePath, model, effort string) error {
 	if strings.TrimSpace(result.ResultText) != "" {
-		m.publishTerminalSummary(ctx, cardID, commentID, result.ResultText, authorName)
+		body, valid := m.prepareTerminalBody(ctx, cardID, result, authorName, worktreePath, model, effort)
+		if !valid {
+			m.addReaction(ctx, cardID, commentID, "⚠️")
+		}
+		m.publishTerminalSummary(ctx, cardID, commentID, body, valid)
 		return nil
 	}
 	if result.SessionID != "" {
@@ -915,25 +920,38 @@ func (m *Manager) completeSuccessfulResult(ctx context.Context, cardID, commentI
 	return nil
 }
 
-func (m *Manager) publishTerminalSummary(ctx context.Context, cardID, commentID, text, authorName string) bool {
-	const maxCommentLength = 12000
-	mention := requesterMention(authorName)
-	suffix := ""
-	if mention != "" {
-		suffix = "\n\n" + mention
-	}
-	const truncationMarker = "\n\n*(output truncated)*"
-	maxTextLength := maxCommentLength - len(suffix)
-	if len(text) > maxTextLength {
-		text = truncateUTF8(text, maxTextLength-len(truncationMarker)) + truncationMarker
-	}
-	if _, err := m.Client.AddCommentOnce(ctx, cardID, text+suffix); err != nil {
+func (m *Manager) publishTerminalSummary(ctx context.Context, cardID, commentID, body string, completed bool) bool {
+	if _, err := m.Client.AddCommentOnce(ctx, cardID, body); err != nil {
 		m.addReaction(ctx, cardID, commentID, "🛑")
-		m.postTerminalPublishFailure(ctx, cardID, authorName)
 		return false
 	}
-	m.addReaction(ctx, cardID, commentID, "✅")
+	if completed {
+		m.addReaction(ctx, cardID, commentID, "✅")
+	}
 	return true
+}
+
+func (m *Manager) prepareTerminalBody(ctx context.Context, cardID string, result executor.Result, authorName, worktreePath, model, effort string) (string, bool) {
+	body := terminalSummaryBody(result.ResultText, authorName)
+	if validTerminalBody(body) && strings.TrimSpace(result.ResultText) != "" {
+		return body, true
+	}
+	if result.SessionID != "" {
+		revised := m.Executor.Execute(ctx, executor.Request{
+			CardID: cardID, BoardID: m.BoardID, ResumeSessionID: result.SessionID,
+			CWD: worktreePath, Model: model, ReasoningEffort: effort,
+			Prompt: "Revise only the final response to at most 250 words including the requester mention. Keep the decision, reasoning, evidence takeaway, blockers, unresolved questions, and meaningful artifact pointers. Do no new work and do not publish a comment. Return the revised final response normally.",
+		})
+		body = terminalSummaryBody(revised.ResultText, authorName)
+		if revised.Success && strings.TrimSpace(revised.ResultText) != "" && validTerminalBody(body) {
+			return body, true
+		}
+	}
+	return terminalSummaryBody("**Final response needs revision**\n\nThe response could not fit the comment limits, or the revision was empty. The run was not marked successful. Review the available artifacts and retry with a concise substantive summary.", authorName), false
+}
+
+func validTerminalBody(body string) bool {
+	return len(body) <= 12000 && commentpolicy.ValidateBotComment(commentpolicy.WebStoredBody(body)) == nil
 }
 
 func truncateUTF8(text string, maxLength int) string {
@@ -946,14 +964,9 @@ func truncateUTF8(text string, maxLength int) string {
 	return text[:maxLength]
 }
 
-func (m *Manager) postTerminalPublishFailure(ctx context.Context, cardID, authorName string) {
-	message := "**Unable to confirm terminal summary publication**\n\nThe final response may or may not have been saved. Check the card before retrying.\n\n" + requesterMention(authorName)
-	_, _ = m.Client.AddComment(ctx, cardID, message)
-}
-
 func (m *Manager) postEmptyResultWarning(ctx context.Context, cardID, commentID, authorName string) {
 	m.addReaction(ctx, cardID, commentID, "⚠️")
-	_, _ = m.Client.AddComment(ctx, cardID, "**No terminal response received**\n\nThe executor completed without a final response, so this run was not marked successful.\n\n"+requesterMention(authorName))
+	_, _ = m.publishBotNotice(ctx, cardID, "**No terminal response received**\n\nThe executor completed without a final response, so this run was not marked successful.\n\n"+requesterMention(authorName))
 }
 
 func (m *Manager) resumeToPublish(ctx context.Context, cardID, commentID, sessionID, authorName, worktreePath, model, effort string) error {
@@ -970,16 +983,23 @@ Do not do any new work. Return the concise terminal summary normally so the agen
 		Model:           model,
 		ReasoningEffort: effort,
 	})
+	if result.SessionID == "" {
+		result.SessionID = sessionID
+	}
 	if result.Success {
 		if strings.TrimSpace(result.ResultText) != "" {
-			m.publishTerminalSummary(ctx, cardID, commentID, result.ResultText, authorName)
+			body, valid := m.prepareTerminalBody(ctx, cardID, result, authorName, worktreePath, model, effort)
+			if !valid {
+				m.addReaction(ctx, cardID, commentID, "⚠️")
+			}
+			m.publishTerminalSummary(ctx, cardID, commentID, body, valid)
 			return nil
 		}
 		m.postEmptyResultWarning(ctx, cardID, commentID, authorName)
 		return nil
 	}
 	m.addReaction(ctx, cardID, commentID, "🛑")
-	_, _ = m.Client.AddComment(ctx, cardID, fmt.Sprintf("**Error resuming session**\n\n```\n%s\n```\n\n%s", result.Error, requesterMention(authorName)))
+	_, _ = m.publishBotNotice(ctx, cardID, "**Error resuming session**\n\nThe executor failed while preparing the final response. Inspect the run log.\n\n"+requesterMention(authorName))
 	return nil
 }
 

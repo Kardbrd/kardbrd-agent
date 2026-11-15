@@ -88,3 +88,51 @@ func TestREDPublicationFailureIsNotMarkedSuccessful(t *testing.T) {
 		}
 	}
 }
+
+func TestREDTerminalRevisionPreservesDecisionAndEvidence(t *testing.T) {
+	m := newTestManager(t)
+	exec := m.Executor.(*fakeExecutor)
+	exec.results = []executor.Result{
+		{Success: true, SessionID: "session1", ResultText: strings.Repeat("draft ", 250)},
+		{Success: true, ResultText: "Decision: open the PR. Evidence: all tests passed. Blocker: Web build pending."},
+	}
+	if err := m.ProcessMention(context.Background(), "card1", "trigger", "@coder investigate", "Paul"); err != nil {
+		t.Fatal(err)
+	}
+	if exec.executionCount() != 2 || exec.requests[1].ResumeSessionID != "session1" {
+		t.Fatalf("revision did not resume once: %#v", exec.requests)
+	}
+	comments := m.Client.(*fakeBoardClient).commentsSnapshot()
+	if len(comments) != 1 || !strings.Contains(comments[0].content, "Evidence: all tests passed") || !strings.Contains(comments[0].content, "@Paul") {
+		t.Fatalf("missing substantive final: %#v", comments)
+	}
+}
+
+func TestTerminalMentionBoundaryAndNoSession(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		words       int
+		wantSuccess bool
+	}{
+		{"250 with mention", 249, true}, {"251 with mention and no session", 250, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestManager(t)
+			m.Executor.(*fakeExecutor).result = executor.Result{Success: true, ResultText: strings.Repeat("evidence ", tc.words)}
+			if err := m.ProcessMention(context.Background(), "card1", "trigger", "@coder investigate", "Paul"); err != nil {
+				t.Fatal(err)
+			}
+			comments := m.Client.(*fakeBoardClient).commentsSnapshot()
+			if len(comments) != 1 {
+				t.Fatalf("comments = %d", len(comments))
+			}
+			isSuccess := strings.Contains(comments[0].content, "evidence evidence")
+			if isSuccess != tc.wantSuccess {
+				t.Fatalf("body = %.100q", comments[0].content)
+			}
+			if m.Executor.(*fakeExecutor).executionCount() != 1 {
+				t.Fatal("no session must not resume")
+			}
+		})
+	}
+}

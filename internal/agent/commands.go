@@ -73,7 +73,7 @@ func (m *Manager) ProcessCommentCommand(ctx context.Context, cardID string, rule
 	}
 	if !rules.RuleMatches(rule, "comment_created", message) {
 		if m.reserveTerminalCommand(cardID, rule, message, "denied") {
-			_, _ = m.Client.AddComment(ctx, cardID, "**Command denied**\n\nThis command is not authorized by its configured rule.")
+			_, _ = m.publishBotNotice(ctx, cardID, "**Command denied**\n\nThis command is not authorized by its configured rule.")
 		}
 		return nil
 	}
@@ -82,11 +82,11 @@ func (m *Manager) ProcessCommentCommand(ctx context.Context, cardID string, rule
 		return nil
 	}
 	if queuePosition > 0 {
-		_, _ = m.Client.AddComment(ctx, cardID, fmt.Sprintf("**Command queued** (position %d)", queuePosition))
+		_, _ = m.publishBotNotice(ctx, cardID, fmt.Sprintf("**Command queued** (position %d)", queuePosition))
 		return nil
 	}
 	if rejected != "" {
-		_, _ = m.Client.AddComment(ctx, cardID, "**Command rejected**\n\n"+rejected)
+		_, _ = m.publishBotNotice(ctx, cardID, "**Command rejected**\n\n"+rejected)
 		return nil
 	}
 	if err := m.runCommand(session, claim); err != nil {
@@ -331,7 +331,7 @@ func (m *Manager) postCommandFailure(ctx context.Context, cardID string, err err
 	}
 	publishCtx, cancel := context.WithTimeout(context.Background(), commandPublishWait)
 	defer cancel()
-	_, _ = m.Client.AddComment(publishCtx, cardID, content)
+	_, _ = m.publishBotNotice(publishCtx, cardID, content)
 }
 
 func (m *Manager) commandQueueSnapshot(cardID string) []*commandClaim {

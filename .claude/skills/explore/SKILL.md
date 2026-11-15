@@ -58,3 +58,7 @@ Deep-dive exploration producing structured artifacts on the card — not just a 
 2. Verify the checklist exists with items: `kardbrd md card <card_id>` and confirm "Exploration Findings" checklist appears
 3. Verify the comment was posted
 4. Only then claim completion
+
+## Bot comment writing
+
+Keep each published bot comment within 250 words of the raw submitted body, including Markdown and any appended requester mention. Preserve the decision, reasoning, evidence takeaway, blockers and unresolved questions. Link detailed logs or reports with a useful pointer. Write a short, natural summary instead of repeating the same status across comments. Preserve every prior card comment in its original order when building context. The manager owns terminal publication; return the final response normally and do not also post it with `kardbrd comment add`.

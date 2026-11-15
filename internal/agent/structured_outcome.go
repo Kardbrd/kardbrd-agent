@@ -94,15 +94,25 @@ func (m *Manager) claimOnWeb(ctx context.Context, claim mentionClaim) (api.Execu
 
 func (m *Manager) finishStructuredResult(ctx context.Context, claim mentionClaim, result executor.Result, worktreePath string, allowResume bool) error {
 	if allowResume && strings.TrimSpace(result.ResultText) == "" && result.SessionID != "" {
+		sessionID := result.SessionID
 		result = m.Executor.Execute(ctx, executor.Request{CardID: claim.CardID, BoardID: claim.BoardID, Prompt: `The previous execution completed without a final response.
 
 Do not do any new work. Return the concise terminal summary normally so the agent manager can publish it. Do not call kardbrd comment add.`, ResumeSessionID: result.SessionID, CWD: worktreePath, Model: claim.Model, ReasoningEffort: claim.Effort})
+		if result.SessionID == "" {
+			result.SessionID = sessionID
+		}
 	}
 	claim.State = "outcome"
 	if result.Success && strings.TrimSpace(result.ResultText) != "" {
-		claim.OutcomeStatus = "completed"
-		claim.OutcomeBody = terminalSummaryBody(result.ResultText, claim.AuthorName)
-		claim.OutcomeMessage = "completed"
+		body, valid := m.prepareTerminalBody(ctx, claim.CardID, result, claim.AuthorName, worktreePath, claim.Model, claim.Effort)
+		claim.OutcomeBody = body
+		if valid {
+			claim.OutcomeStatus = "completed"
+			claim.OutcomeMessage = "completed"
+		} else {
+			claim.OutcomeStatus = "failed"
+			claim.OutcomeMessage = "final response needs revision"
+		}
 	} else {
 		claim.OutcomeStatus = "failed"
 		if result.Success {
@@ -113,6 +123,7 @@ Do not do any new work. Return the concise terminal summary normally so the agen
 			claim.OutcomeMessage = truncateUTF8(result.Error, 1000)
 		}
 	}
+	claim.OutcomeBody = botNoticeBody(claim.OutcomeBody)
 	if err := m.saveMentionClaim(claim); err != nil {
 		return err
 	}
@@ -120,15 +131,10 @@ Do not do any new work. Return the concise terminal summary normally so the agen
 }
 
 func terminalSummaryBody(text, authorName string) string {
-	const maxCommentLength = 12000
 	mention := requesterMention(authorName)
 	suffix := ""
 	if mention != "" {
 		suffix = "\n\n" + mention
-	}
-	const marker = "\n\n*(output truncated)*"
-	if len(text) > maxCommentLength-len(suffix) {
-		text = truncateUTF8(text, maxCommentLength-len(suffix)-len(marker)) + marker
 	}
 	return text + suffix
 }

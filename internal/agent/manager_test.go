@@ -792,9 +792,8 @@ func TestProcessMentionDoesNotMarkSuccessWhenTerminalPublishFails(t *testing.T) 
 
 	assertEqual(t, 1, manager.Executor.(*fakeExecutor).executionCount())
 	assertEqual(t, 1, client.commentOnceAttemptCount())
-	assertEqual(t, 2, client.commentAttemptCount())
-	assertEqual(t, 1, client.commentCount())
-	assertContains(t, client.commentsSnapshot()[0].content, "Unable to confirm terminal summary publication")
+	assertEqual(t, 1, client.commentAttemptCount())
+	assertEqual(t, 0, client.commentCount())
 	assertReaction(t, client.reactionsSnapshot(), "comment1", "🛑")
 	assertNoReaction(t, client.reactionsSnapshot(), "comment1", "✅")
 }
@@ -814,7 +813,7 @@ func TestProcessMentionBoundsTerminalSummaryWithoutBreakingUTF8(t *testing.T) {
 	if !utf8.ValidString(content) {
 		t.Fatal("terminal summary is not valid UTF-8")
 	}
-	assertContains(t, content, "*(output truncated)*")
+	assertContains(t, content, "Final response needs revision")
 	assertContains(t, content, "@Paul")
 }
 
