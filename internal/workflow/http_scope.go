@@ -17,6 +17,7 @@ import (
 // ScopeLimits bound one observational pass, including confirming board reads.
 type ScopeLimits struct {
 	MaxBoards, MaxCardsPerBoard, MaxDetailsPerBoard int
+	MaxRetainedRecords                              int // observational inventory cap; unused by verified reader
 	MaxBoardBytes                                   int64
 	MaxBoardDuration                                time.Duration
 }

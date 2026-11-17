@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -15,10 +17,140 @@ import (
 
 func observedProjector(origin, enrolled bool) ObservationProjector {
 	f := fixtureScopeEvidence{
-		origin:   map[string]bool{"DSO-due": origin, "BY-old": origin, "BY-new": origin},
-		enrolled: map[string]bool{"DSO-due": enrolled, "BY-old": enrolled, "BY-new": enrolled},
+		origin:   map[string]bool{"DSO-due": origin, "BY-old": origin, "BY-new": origin, "BY-peer": origin},
+		enrolled: map[string]bool{"DSO-due": enrolled, "BY-old": enrolled, "BY-new": enrolled, "BY-peer": enrolled},
 	}
 	return f.Project
+}
+
+func TestObservedScopeRepeatedMoveRecoveryKeepsEarlierEvidence(t *testing.T) {
+	mode := 0
+	client, closeServer := observedMultiBoardClient(t, &mode)
+	defer closeServer()
+	old := observedPrior("BY-old")
+	limits := scopeLimits()
+	limits.MaxBoards = 4
+	for cycle := 0; cycle < 3; cycle++ {
+		mode = 0
+		missing, err := ReadObservedScope(context.Background(), client, []string{"B1", "B2"}, old, limits, observedProjector(false, true), pilotNow)
+		if err != nil || !missing.PassComplete || len(missing.Observations) != 0 || !hasUnresolvedKind(missing.Unresolved, "prior_card_omitted") {
+			t.Fatalf("cycle %d omission: %+v err=%v", cycle, missing, err)
+		}
+		assertRetainedPrior(t, missing, old, "BY-old")
+		mode = 1
+		recovered, err := ReadObservedScope(context.Background(), client, []string{"B1", "B2"}, missing.Next, limits, observedProjector(false, true), pilotNow.Add(time.Duration(cycle+1)*time.Minute))
+		if err != nil || !recovered.PassComplete || len(recovered.Observations) != 1 || recovered.Observations[0].Card.BoardID != "B2" {
+			t.Fatalf("cycle %d recovery: %+v err=%v", cycle, recovered, err)
+		}
+		old = recovered.Next
+	}
+}
+
+func TestObservedScopeRetainedHistoryCapDoesNotEvictUnknownPrior(t *testing.T) {
+	mode := 0
+	client, closeServer := observedMultiBoardClient(t, &mode)
+	defer closeServer()
+	limits := scopeLimits()
+	limits.MaxBoards, limits.MaxRetainedRecords = 4, 2
+	old := observedPrior("unknown-1")
+	old.Records["unknown-2"] = old.Records["unknown-1"]
+	first, err := ReadObservedScope(context.Background(), client, []string{"B1", "B2"}, old, limits, observedProjector(false, true), pilotNow)
+	if err != nil || !first.PassComplete || len(first.Next.Records) != 2 {
+		t.Fatalf("within retained cap: %+v err=%v", first, err)
+	}
+	old = first.Next
+	old.Records["unknown-3"] = old.Records["unknown-1"]
+	got, _ := ReadObservedScope(context.Background(), client, []string{"B1", "B2"}, old, limits, observedProjector(false, true), pilotNow)
+	if got.PassComplete || len(got.Observations) != 0 || len(got.Next.Records) != 3 || !hasUnresolvedKind(got.Unresolved, "inventory_limit") {
+		t.Fatalf("cap silently evicted unresolved history: %+v", got)
+	}
+	for id := range old.Records {
+		assertRetainedPrior(t, got, old, id)
+	}
+}
+
+func TestObservedScopeNewCardAtRetainedCapIsIncomplete(t *testing.T) {
+	f := defaultScopeFixture()
+	client, closeServer := fixtureClient(t, f)
+	defer closeServer()
+	old := observedPrior("unknown-1")
+	limits := scopeLimits()
+	limits.MaxRetainedRecords = 1
+	got, _ := ReadObservedScope(context.Background(), client, []string{"B"}, old, limits, observedProjector(true, true), pilotNow)
+	if got.PassComplete || len(got.Observations) != 0 || len(got.Next.Records) != 1 || !hasUnresolvedKind(got.Unresolved, "inventory_limit") {
+		t.Fatalf("new card exceeded retained cap without incomplete pass: %+v", got)
+	}
+	assertRetainedPrior(t, got, old, "unknown-1")
+}
+
+func TestObservedScopeCancellationAfterApparentCandidatePublishesNothing(t *testing.T) {
+	f := defaultScopeFixture()
+	client, closeServer := fixtureClient(t, f)
+	defer closeServer()
+	old := observedPrior("BY-old")
+	ctx, cancel := context.WithCancel(context.Background())
+	project := observedProjector(true, true)
+	got, err := ReadObservedScope(ctx, client, []string{"B"}, old, scopeLimits(), func(id string, raw json.RawMessage) (Snapshot, bool) {
+		card, ok := project(id, raw)
+		cancel()
+		return card, ok
+	}, pilotNow)
+	if !errors.Is(err, context.Canceled) || got.PassComplete || len(got.Observations) != 0 {
+		t.Fatalf("cancelled pass published partial observations: %+v err=%v", got, err)
+	}
+	assertRetainedPrior(t, got, old, "BY-old")
+}
+
+func TestObservedScopeConflictingCurrentMembershipIsIncomplete(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := observedBoard("B1", summaryJSON("BY-new", "todo", false))
+		if strings.Contains(r.URL.Path, "/B2/") {
+			body = observedBoard("B2", summaryJSON("BY-new", "todo", false))
+		}
+		_, _ = w.Write([]byte(body))
+	}))
+	defer s.Close()
+	client := api.NewClient(s.URL, "fixture-token")
+	client.SetNoRetry(true)
+	old := observedPrior("BY-old")
+	limits := scopeLimits()
+	limits.MaxBoards = 4
+	got, _ := ReadObservedScope(context.Background(), client, []string{"B1", "B2"}, old, limits, observedProjector(false, true), pilotNow)
+	if got.PassComplete || len(got.Observations) != 0 || !hasUnresolvedKind(got.Unresolved, "scope_identity_conflict") {
+		t.Fatalf("conflicting membership accepted: %+v", got)
+	}
+	assertRetainedPrior(t, got, old, "BY-old")
+}
+
+func TestObservedScopePriorDetailOutsideScopeIsObservedExit(t *testing.T) {
+	mode := 0
+	client, closeServer := observedMultiBoardClient(t, &mode)
+	defer closeServer()
+	old := observedPrior("BY-old")
+	limits := scopeLimits()
+	limits.MaxBoards = 4
+	got, err := ReadObservedScope(context.Background(), client, []string{"B1"}, old, limits, observedProjector(false, true), pilotNow)
+	if err != nil || !got.PassComplete || len(got.Observations) != 0 || !hasUnresolvedKind(got.Unresolved, "prior_card_observed_exit") {
+		t.Fatalf("prior detail move outside scope was missed: %+v err=%v", got, err)
+	}
+	assertRetainedPrior(t, got, old, "BY-old")
+}
+
+func TestObservedScopePriorDetailReadsCountTowardRequestCap(t *testing.T) {
+	mode := 1
+	client, closeServer := observedMultiBoardClient(t, &mode)
+	defer closeServer()
+	old := observedPrior("unknown-1")
+	old.Records["unknown-2"] = observedPrior("unknown-2").Records["unknown-2"]
+	limits := scopeLimits()
+	limits.MaxBoards, limits.MaxDetailsPerBoard = 4, 1
+	got, _ := ReadObservedScope(context.Background(), client, []string{"B1", "B2"}, old, limits, observedProjector(false, true), pilotNow)
+	if got.PassComplete || len(got.Observations) != 0 || !hasUnresolvedKind(got.Unresolved, "detail_limit") {
+		t.Fatalf("prior detail reads omitted from request budget: %+v", got)
+	}
+	for id := range old.Records {
+		assertRetainedPrior(t, got, old, id)
+	}
 }
 
 func observedPrior(id string) ObservedInventory {
@@ -72,7 +204,7 @@ func TestObservedScopeRepeatsDueUnchangedWithoutClaimingPermission(t *testing.T)
 				due = &got.Observations[i]
 			}
 		}
-		if due == nil || !due.ObservedAt.Equal(now) || due.DecisionEvidence != "unverified_original_decision" || due.Card.Enrollment.Verified {
+		if due == nil || !due.ObservedAt.Equal(now) || due.DecisionEvidence != "unverified_original_decision" || due.Card.Enrollment.Verified || !due.Card.Report.CanDeliver {
 			t.Fatalf("pass %d: due observation missing or improperly verified: %+v", pass, due)
 		}
 		if decision := Evaluate(due.Card, now); decision.Status == "ready" || decision.Candidate != "" {
@@ -218,6 +350,9 @@ func TestObservedScopeProvenanceRemainsUnverifiedAcrossCommentRoutes(t *testing.
 		for _, observation := range got.Observations {
 			if observation.DecisionEvidence != "unverified_original_decision" || observation.Card.Enrollment.Verified {
 				t.Fatalf("comment attribution promoted to approval: %+v", observation)
+			}
+			if !hasUnresolvedKind(got.Unresolved, "decision_provenance_unverified") {
+				t.Fatalf("unknown provenance was not exposed as unresolved: %+v", got)
 			}
 		}
 	}

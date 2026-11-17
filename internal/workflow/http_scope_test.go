@@ -174,7 +174,7 @@ func fixtureClient(t *testing.T, f *httpScopeFixture) (*api.Client, func()) {
 	return c, s.Close
 }
 func scopeLimits() ScopeLimits {
-	return ScopeLimits{MaxBoards: 2, MaxCardsPerBoard: 2000, MaxDetailsPerBoard: 2000, MaxBoardBytes: 20 << 20, MaxBoardDuration: 30 * time.Second}
+	return ScopeLimits{MaxBoards: 2, MaxCardsPerBoard: 2000, MaxDetailsPerBoard: 2000, MaxRetainedRecords: 2000, MaxBoardBytes: 20 << 20, MaxBoardDuration: 30 * time.Second}
 }
 func verifiedFixture() fixtureScopeEvidence {
 	return fixtureScopeEvidence{complete: true, origin: map[string]bool{"BY-new": true, "BY-peer": true, "DSO-due": true}, enrolled: map[string]bool{"BY-new": true, "BY-peer": true, "DSO-due": true}}
