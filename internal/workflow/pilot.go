@@ -18,6 +18,7 @@ type Decision struct {
 
 type Gate struct {
 	DecisionID       string
+	Candidate        string // empty binds the gate to Snapshot.NextStep
 	ExcludesNextStep bool
 	Evidence         string // supported, disputed, or withdrawn
 }

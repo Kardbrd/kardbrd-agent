@@ -236,6 +236,96 @@ func TestPilotReportAndDeploymentEndpoints(t *testing.T) {
 	}
 }
 
+func TestPilotCandidateDecisionsDoNotBypassGates(t *testing.T) {
+	for _, candidate := range []string{"SYM_REPORT_CREATE_AND_DELIVER", "SYM_DEPLOY", "SYM_INVESTIGATE_NEXT"} {
+		for _, state := range []string{"negative", "pending", "disputed", "unrelated"} {
+			t.Run(candidate+"/"+state, func(t *testing.T) {
+				s := pilotCard("DSO", "DSO-decision")
+				s.Decisions = []Decision{{ID: "choice", Text: "Do not take this step", Accepted: true}}
+				s.Gate = Gate{DecisionID: "choice", Candidate: candidate, ExcludesNextStep: true, Evidence: "supported"}
+				switch candidate {
+				case "SYM_REPORT_CREATE_AND_DELIVER":
+					s.Report.DueAt = pilotNow.Add(-time.Hour)
+				case "SYM_DEPLOY":
+					s.Endpoint = "deployed_verified"
+					s.Deployment = Deployment{CandidateReady: true, CanDeploy: true, ReleaseVerified: true, AccessVerified: true}
+				case "SYM_INVESTIGATE_NEXT":
+					s.Report.DueAt = pilotNow.Add(-time.Hour)
+					s.Report.DeliveredAt = s.Report.DueAt.Add(-time.Minute)
+					s.Report.CriteriaComplete = true
+					s.Report.ContinueRequested = true
+					s.Effect = Effect{Kind: "report_send", State: "confirmed", Receipt: "send-1"}
+				}
+				wantStatus, wantCandidate, wantGate, wantReason := "blocked", "", "", "accepted_negative_excludes_step"
+				switch state {
+				case "pending":
+					s.Decisions[0].Accepted = false
+					wantStatus, wantGate, wantReason = "waiting_user", "choice", "dependent_decision_unresolved"
+				case "disputed":
+					s.Gate.Evidence = "disputed"
+					wantStatus, wantGate, wantReason = "waiting_user", "choice", "dependent_decision_unresolved"
+				case "unrelated":
+					s.Gate.Candidate = "SYM_OTHER_STEP"
+					wantStatus, wantCandidate = "ready", candidate
+					if candidate == "SYM_REPORT_CREATE_AND_DELIVER" {
+						wantReason = "report_due"
+					} else if candidate == "SYM_DEPLOY" {
+						wantReason = "deployment_candidate"
+					} else {
+						wantReason = "continued_investigation"
+					}
+				}
+				got := Evaluate(s, pilotNow)
+				assertResult(t, got, wantStatus, wantCandidate, wantGate, "", "undetermined", false)
+				if len(got.Reasons) != 1 || got.Reasons[0] != wantReason {
+					t.Fatalf("reasons = %v, want [%s]", got.Reasons, wantReason)
+				}
+			})
+		}
+	}
+}
+
+func TestPilotCompletedEndpointIgnoresLaterPendingChoice(t *testing.T) {
+	for _, endpoint := range []string{"report", "deployed_verified"} {
+		t.Run(endpoint, func(t *testing.T) {
+			s := pilotCard("DSO", "DSO-complete")
+			s.Decisions = []Decision{{ID: "later", Accepted: false}}
+			s.Gate = Gate{DecisionID: "later", Candidate: "SYM_INVESTIGATE_NEXT", Evidence: "supported"}
+			s.Effect = Effect{State: "confirmed", Receipt: "receipt-1"}
+			if endpoint == "report" {
+				s.Report.DueAt = pilotNow.Add(-time.Hour)
+				s.Report.DeliveredAt = s.Report.DueAt.Add(-time.Minute)
+				s.Report.CriteriaComplete = true
+				s.Effect.Kind = "report_send"
+				assertResult(t, Evaluate(s, pilotNow), "stopped", "", "", "", "met", true)
+			} else {
+				s.Endpoint = endpoint
+				s.Effect.Kind = "deploy"
+				s.Deployment = Deployment{TransitionReceipt: "move-1", LiveEvidenceCurrent: true, LiveVerifiedAt: pilotNow}
+				assertResult(t, Evaluate(s, pilotNow), "complete", "", "", "", "met", true)
+			}
+		})
+	}
+}
+
+func TestPilotFutureReportDeliveryRequiresReview(t *testing.T) {
+	for _, continueRequested := range []bool{false, true} {
+		t.Run(map[bool]string{false: "terminal", true: "continued_investigation"}[continueRequested], func(t *testing.T) {
+			s := pilotCard("DSO", "DSO-future-report")
+			s.Report.DueAt = pilotNow.Add(-time.Hour)
+			s.Report.DeliveredAt = pilotNow.Add(time.Minute)
+			s.Report.CriteriaComplete = true
+			s.Report.ContinueRequested = continueRequested
+			s.Effect = Effect{Kind: "report_send", State: "confirmed", Receipt: "send-1"}
+			got := Evaluate(s, pilotNow)
+			assertResult(t, got, "needs_review", "", "", "", "undetermined", false)
+			if len(got.Reasons) != 1 || got.Reasons[0] != "future_report_delivery" {
+				t.Fatalf("reasons = %v, want future_report_delivery", got.Reasons)
+			}
+		})
+	}
+}
+
 type pageKey struct {
 	feed   Feed
 	cursor string
