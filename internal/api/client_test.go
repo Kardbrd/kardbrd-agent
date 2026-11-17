@@ -12,6 +12,66 @@ import (
 	"testing"
 )
 
+func TestBoundedBoardReadStopsBeforeFullBody(t *testing.T) {
+	const body = `{"data":{"id":"B","lists":[]}}`
+	read := 0
+	c := NewClient("https://fixture.invalid", "token")
+	c.HTTPClient.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.RequestURI() != "/api/boards/B/?include_archived=true" {
+			t.Fatalf("path=%s", r.URL.RequestURI())
+		}
+		return &http.Response{StatusCode: 200, Body: &countingReader{Reader: strings.NewReader(body), count: &read}, Header: make(http.Header), Request: r}, nil
+	})
+	_, err := c.GetBoardBounded(context.Background(), "B", true, 8)
+	if !errors.Is(err, ErrResponseTooLarge) || read != 9 {
+		t.Fatalf("error=%v bytes read=%d", err, read)
+	}
+	read = 0
+	raw, err := c.GetBoardBounded(context.Background(), "B", true, int64(len(body)))
+	if err != nil || string(raw) != `{"id":"B","lists":[]}` || read != len(body) {
+		t.Fatalf("raw=%s error=%v bytes read=%d", raw, err, read)
+	}
+}
+
+func TestBoundedCardReadDoesNotRetryOrFollowRedirect(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusFound} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			calls := 0
+			c := NewClient("https://fixture.invalid", "token")
+			c.HTTPClient.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.URL.RequestURI() != "/api/cards/X/" {
+					t.Fatalf("path=%s", r.URL.RequestURI())
+				}
+				h := make(http.Header)
+				h.Set("Location", "https://other.invalid/")
+				return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(`{"error":"denied"}`)), Header: h, Request: r}, nil
+			})
+			_, err := c.GetCardBounded(context.Background(), "X", 128)
+			if err == nil || calls != 1 {
+				t.Fatalf("error=%v calls=%d", err, calls)
+			}
+		})
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type countingReader struct {
+	io.Reader
+	count *int
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	*r.count += n
+	return n, err
+}
+
+func (r *countingReader) Close() error { return nil }
+
 func TestCardLabelEndpointsEscapeIDs(t *testing.T) {
 	var paths []string
 	var addBody struct {

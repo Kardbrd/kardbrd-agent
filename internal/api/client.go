@@ -25,6 +25,8 @@ type APIError struct {
 	StatusCode int
 }
 
+var ErrResponseTooLarge = fmt.Errorf("API response exceeds byte limit")
+
 func (e *APIError) Error() string {
 	parts := []string{e.Message}
 	if e.Code != "" {
@@ -168,6 +170,15 @@ func (c *Client) RequestRaw(ctx context.Context, method, path string, body any) 
 	return nil, lastErr
 }
 
+// RequestRawBounded makes one GET attempt and reads at most maxBytes+1 bytes.
+// It never follows a redirect or retries a denied or failed read.
+func (c *Client) RequestRawBounded(ctx context.Context, path string, maxBytes int64) (json.RawMessage, error) {
+	if maxBytes <= 0 || maxBytes == int64(^uint64(0)>>1) {
+		return nil, fmt.Errorf("invalid response byte limit")
+	}
+	return c.doJSONLimited(ctx, http.MethodGet, path, nil, maxBytes)
+}
+
 func (c *Client) RequestMarkdown(ctx context.Context, path string) (string, error) {
 	var lastErr error
 	for attempt := 0; attempt < c.maxAttempts(); attempt++ {
@@ -184,6 +195,10 @@ func (c *Client) RequestMarkdown(ctx context.Context, path string) (string, erro
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, body []byte) (json.RawMessage, error) {
+	return c.doJSONLimited(ctx, method, path, body, 0)
+}
+
+func (c *Client) doJSONLimited(ctx context.Context, method, path string, body []byte, maxBytes int64) (json.RawMessage, error) {
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
@@ -195,17 +210,30 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body []byte) (
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.HTTPClient.Do(req)
+	httpClient := c.HTTPClient
+	if maxBytes > 0 {
+		copyClient := *httpClient
+		copyClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+		httpClient = &copyClient
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	var responseBody io.Reader = resp.Body
+	if maxBytes > 0 {
+		responseBody = io.LimitReader(resp.Body, maxBytes+1)
+	}
+	data, err := io.ReadAll(responseBody)
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode >= 400 || (c.noRetry && resp.StatusCode >= 300) {
+	if maxBytes > 0 && int64(len(data)) > maxBytes {
+		return nil, ErrResponseTooLarge
+	}
+	if resp.StatusCode >= 400 || (c.noRetry && resp.StatusCode >= 300) || (maxBytes > 0 && resp.StatusCode >= 300) {
 		return nil, parseAPIError(resp.StatusCode, data)
 	}
 	if len(data) == 0 {
@@ -280,6 +308,10 @@ func (c *Client) GetBoard(ctx context.Context, boardID string, includeArchived b
 	return c.RequestRaw(ctx, "GET", "/api/boards/"+url.PathEscape(boardID)+"/"+includeArchivedQuery(includeArchived), nil)
 }
 
+func (c *Client) GetBoardBounded(ctx context.Context, boardID string, includeArchived bool, maxBytes int64) (json.RawMessage, error) {
+	return c.RequestRawBounded(ctx, "/api/boards/"+url.PathEscape(boardID)+"/"+includeArchivedQuery(includeArchived), maxBytes)
+}
+
 func (c *Client) ListBoardsMarkdown(ctx context.Context) (string, error) {
 	return c.RequestMarkdown(ctx, "/api/boards/")
 }
@@ -332,6 +364,10 @@ func (c *Client) BoardCardSearch(ctx context.Context, boardID, query string, lim
 
 func (c *Client) GetCard(ctx context.Context, cardID string) (json.RawMessage, error) {
 	return c.RequestRaw(ctx, "GET", "/api/cards/"+url.PathEscape(cardID)+"/", nil)
+}
+
+func (c *Client) GetCardBounded(ctx context.Context, cardID string, maxBytes int64) (json.RawMessage, error) {
+	return c.RequestRawBounded(ctx, "/api/cards/"+url.PathEscape(cardID)+"/", maxBytes)
 }
 
 func (c *Client) GetCardLabelState(ctx context.Context, cardID string) (CardLabelState, error) {

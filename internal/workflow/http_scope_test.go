@@ -20,13 +20,46 @@ import (
 // Neither assertion is inferred from a server field, author display, account
 // ID, comment reference, via_agent, or a matching repeated response.
 type fixtureScopeEvidence struct {
-	complete bool
-	origin   map[string]bool
-	enrolled map[string]bool
+	complete   bool
+	origin     map[string]bool
+	enrolled   map[string]bool
+	onComplete func()
+	consistent func() bool
+	digestOnly bool
 }
 
-func (f fixtureScopeEvidence) Complete(_ string, _ json.RawMessage) bool      { return f.complete }
+func (f fixtureScopeEvidence) Complete(_ string, _ json.RawMessage) bool {
+	if f.onComplete != nil {
+		f.onComplete()
+	}
+	return f.complete
+}
 func (f fixtureScopeEvidence) VerifyOrigin(id string, _ json.RawMessage) bool { return f.origin[id] }
+func (f fixtureScopeEvidence) VerifyConsistency(details map[string][32]byte) bool {
+	if f.digestOnly {
+		for _, detail := range details {
+			if len(detail) > 32 {
+				return false
+			}
+		}
+	}
+	if f.consistent != nil {
+		return f.consistent()
+	}
+	return f.complete
+}
+
+func TestHTTPFullScopeConsistencySeamRetainsOnlyDigests(t *testing.T) {
+	f := defaultScopeFixture()
+	client, closeServer := fixtureClient(t, f)
+	defer closeServer()
+	proof := verifiedFixture()
+	proof.digestOnly = true
+	got, err := ReadFullScope(context.Background(), client, []string{"B"}, ScopeInventory{}, scopeLimits(), proof, pilotNow)
+	if err != nil || len(got.Unresolved) != 0 || len(got.Cards) != 3 {
+		t.Fatalf("result=%+v err=%v", got, err)
+	}
+}
 func (f fixtureScopeEvidence) Project(id string, raw json.RawMessage) (Snapshot, bool) {
 	var detail struct {
 		ID    string `json:"id"`
@@ -351,6 +384,14 @@ func TestHTTPFullScopePriorMembershipAndCancellation(t *testing.T) {
 			old := ScopeInventory{IDs: []string{"BY-new"}, Generation: "old"}
 			got, _ := ReadFullScope(context.Background(), client, []string{"B"}, old, scopeLimits(), proof, pilotNow)
 			assertUnresolvedNoAdvance(t, got, old, tc.kind)
+			observedExit := false
+			for _, unresolved := range got.Unresolved {
+				observedExit = observedExit || unresolved.Kind == "prior_card_observed_exit"
+			}
+			wantExit := tc.name == "archived prior card" || tc.name == "moved prior card" || tc.name == "unopted prior card"
+			if observedExit != wantExit {
+				t.Fatalf("observed exit=%t, want %t; unresolved=%+v", observedExit, wantExit, got.Unresolved)
+			}
 			if tc.name == "omitted prior ID" {
 				f.mu.Lock()
 				paths := append([]string(nil), f.paths...)
@@ -394,4 +435,119 @@ func TestHTTPFullScopeBoardLimit(t *testing.T) {
 	old := ScopeInventory{IDs: []string{"BY-new"}, Generation: "old"}
 	got, _ := ReadFullScope(context.Background(), client, []string{"B", "B", "B"}, old, scopeLimits(), verifiedFixture(), pilotNow)
 	assertUnresolvedNoAdvance(t, got, old, "board_limit")
+}
+
+func TestHTTPFullScopeFailureInventoryDoesNotAliasCaller(t *testing.T) {
+	f := defaultScopeFixture()
+	client, closeServer := fixtureClient(t, f)
+	defer closeServer()
+	old := ScopeInventory{IDs: []string{"BY-new"}, Generation: "old"}
+	got, _ := ReadFullScope(context.Background(), client, []string{"B"}, old, ScopeLimits{MaxBoards: 1}, verifiedFixture(), pilotNow)
+	assertUnresolvedNoAdvance(t, got, old, "board_limit")
+	got.Next.IDs[0] = "mutated"
+	if old.IDs[0] != "BY-new" {
+		t.Fatalf("caller inventory was aliased: %+v", old)
+	}
+}
+
+func TestHTTPFullScopeCountsOmittedPriorDetailsInPassBudget(t *testing.T) {
+	f := defaultScopeFixture()
+	f.boards = []string{boardJSON(listJSON("todo", summaryJSON("DSO-due", "todo", false)), listJSON("review", summaryJSON("archived", "review", true)))}
+	client, closeServer := fixtureClient(t, f)
+	defer closeServer()
+	limits := scopeLimits()
+	limits.MaxDetailsPerBoard = 2 // two visible details consume the budget
+	old := ScopeInventory{IDs: []string{"BY-new"}, Generation: "old"}
+	got, _ := ReadFullScope(context.Background(), client, []string{"B"}, old, limits, verifiedFixture(), pilotNow)
+	assertUnresolvedNoAdvance(t, got, old, "detail_limit")
+}
+
+func TestHTTPFullScopeCancellationWinsOverEvidenceFailure(t *testing.T) {
+	f := defaultScopeFixture()
+	client, closeServer := fixtureClient(t, f)
+	defer closeServer()
+	ctx, cancel := context.WithCancel(context.Background())
+	proof := fixtureScopeEvidence{onComplete: cancel}
+	old := ScopeInventory{IDs: []string{"BY-new"}, Generation: "old"}
+	got, err := ReadFullScope(ctx, client, []string{"B"}, old, scopeLimits(), proof, pilotNow)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation error=%v", err)
+	}
+	assertUnresolvedNoAdvance(t, got, old, "cancelled")
+}
+
+func TestHTTPFullScopeReconcilesPriorAcrossBoardUnion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.RequestURI() {
+		case "/api/boards/B1/?include_archived=true":
+			_, _ = w.Write([]byte(`{"data":{"id":"B1","stats":{"archived_cards":0},"lists":[{"id":"todo","cards":[]}]}}`))
+		case "/api/boards/B2/?include_archived=true":
+			_, _ = w.Write([]byte(`{"data":{"id":"B2","stats":{"archived_cards":0},"lists":[{"id":"todo","cards":[` + summaryJSON("BY-old", "todo", false) + `]}]}}`))
+		case "/api/cards/BY-old/":
+			_, _ = w.Write([]byte(detailJSON("BY-old", "B2", "todo", false, "null", `[]`)))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	client := api.NewClient(server.URL, "fixture-token")
+	client.SetNoRetry(true)
+	old := ScopeInventory{IDs: []string{"BY-old"}, Generation: "old"}
+	limits := scopeLimits()
+	limits.MaxBoards = 4
+	proof := fixtureScopeEvidence{complete: true, origin: map[string]bool{"BY-old": true}, enrolled: map[string]bool{"BY-old": true}}
+	got, err := ReadFullScope(context.Background(), client, []string{"B1", "B2"}, old, limits, proof, pilotNow)
+	if err != nil || len(got.Unresolved) != 0 || !reflect.DeepEqual(ids(got.Cards), []string{"BY-old"}) {
+		t.Fatalf("multi-board prior reconciliation: result=%+v err=%v", got, err)
+	}
+}
+
+func TestHTTPFullScopeEnforcesDetailCapPerBoard(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.RequestURI() {
+		case "/api/boards/B1/?include_archived=true":
+			_, _ = w.Write([]byte(`{"data":{"id":"B1","stats":{"archived_cards":0},"lists":[{"id":"todo","cards":[` + summaryJSON("a", "todo", false) + `,` + summaryJSON("b", "todo", false) + `,` + summaryJSON("c", "todo", false) + `]}]}}`))
+		case "/api/boards/B2/?include_archived=true":
+			_, _ = w.Write([]byte(`{"data":{"id":"B2","stats":{"archived_cards":0},"lists":[{"id":"todo","cards":[]}]}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	client := api.NewClient(server.URL, "fixture-token")
+	client.SetNoRetry(true)
+	limits := scopeLimits()
+	limits.MaxBoards, limits.MaxDetailsPerBoard = 4, 2
+	old := ScopeInventory{IDs: []string{"prior"}, Generation: "old"}
+	got, _ := ReadFullScope(context.Background(), client, []string{"B1", "B2"}, old, limits, fixtureScopeEvidence{complete: true}, pilotNow)
+	assertUnresolvedNoAdvance(t, got, old, "detail_limit")
+}
+
+func TestHTTPFullScopeRejectsDetailDriftAfterRead(t *testing.T) {
+	f := defaultScopeFixture()
+	proof := verifiedFixture()
+	proof.consistent = func() bool { return proof.enrolled["BY-new"] }
+	f.onRequest = func(r *http.Request) {
+		if r.URL.Path == "/api/boards/B/" {
+			f.mu.Lock()
+			if f.boardReads > 0 {
+				proof.enrolled["BY-new"] = false
+			}
+			f.mu.Unlock()
+		}
+	}
+	client, closeServer := fixtureClient(t, f)
+	defer closeServer()
+	old := ScopeInventory{IDs: []string{"BY-new"}, Generation: "old"}
+	got, _ := ReadFullScope(context.Background(), client, []string{"B"}, old, scopeLimits(), proof, pilotNow)
+	assertUnresolvedNoAdvance(t, got, old, "snapshot_consistency_unproved")
+}
+
+func TestHTTPFullScopeNilEvidenceFailsClosed(t *testing.T) {
+	f := defaultScopeFixture()
+	client, closeServer := fixtureClient(t, f)
+	defer closeServer()
+	old := ScopeInventory{IDs: []string{"BY-new"}, Generation: "old"}
+	got, _ := ReadFullScope(context.Background(), client, []string{"B"}, old, scopeLimits(), nil, pilotNow)
+	assertUnresolvedNoAdvance(t, got, old, "scope_completeness_unproved")
 }
