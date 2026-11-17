@@ -427,8 +427,7 @@ func TestDoneCleanupReportsNonzeroCommandFailureWithoutSecrets(t *testing.T) {
 	comments := manager.Client.(*fakeBoardClient).commentsSnapshot()
 	assertEqual(t, 1, len(comments))
 	assertContains(t, comments[0].content, "Cleanup Error")
-	assertContains(t, comments[0].content, "[REDACTED]")
-	assertContains(t, comments[0].content, "cleanup failed with [REDACTED]")
+	assertContains(t, comments[0].content, "Check the agent service logs")
 	assertNotContains(t, comments[0].content, "tok_secret")
 	worktrees := manager.Worktree.(*fakeWorktree)
 	assertEqual(t, "", worktrees.createdCard)
@@ -447,7 +446,8 @@ func TestDoneCleanupReportsAuthoritativeStateFailure(t *testing.T) {
 	assertContains(t, err.Error(), "database denied")
 	comments := manager.Client.(*fakeBoardClient).commentsSnapshot()
 	assertEqual(t, 1, len(comments))
-	assertContains(t, comments[0].content, "database denied")
+	assertContains(t, comments[0].content, "authoritative state update failed")
+	assertNotContains(t, comments[0].content, "database denied")
 	worktrees := manager.Worktree.(*fakeWorktree)
 	assertEqual(t, "", worktrees.createdCard)
 	assertEqual(t, "", worktrees.removedCard)
@@ -905,7 +905,8 @@ func TestRuleDispatchPostsAuthError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	assertContains(t, manager.Client.(*fakeBoardClient).comments[0].content, "login required")
+	assertContains(t, manager.Client.(*fakeBoardClient).comments[0].content, "not authenticated")
+	assertNotContains(t, manager.Client.(*fakeBoardClient).comments[0].content, "login required")
 }
 
 func TestRuleDispatchPublishesTerminalSummaryWithoutResume(t *testing.T) {

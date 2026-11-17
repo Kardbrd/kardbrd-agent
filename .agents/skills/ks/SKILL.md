@@ -44,7 +44,7 @@ Before merging, verify ALL of the following:
    - `--squash` — clean single-commit history on main
    - `--delete-branch` — clean up the feature branch after merge
 5. Verify the merge succeeded: `gh pr view <number> --json state`
-6. Post completion comment on card
+6. Return the merge confirmation in the final response; the manager publishes it once
 
 ## Merge Strategy
 
@@ -58,7 +58,7 @@ Do NOT use regular merge or rebase merge unless explicitly requested.
 ## Outputs (mandatory, every time)
 
 - **PR merged** via `gh pr merge --squash --delete-branch`
-- **Comment on card:** Merge confirmation with:
+- **Final response:** Merge confirmation for manager publication with:
   - PR number and URL
   - Merge commit SHA (from `gh pr view --json mergeCommit`)
   - "Shipped to main" confirmation
@@ -82,7 +82,7 @@ Do NOT use regular merge or rebase merge unless explicitly requested.
 - Merging without running local tests and lint
 - Using regular merge instead of squash
 - Not deleting the feature branch after merge
-- No comment posted on the card confirming the merge
+- No final response prepared for manager publication confirming the merge
 - Merging a PR that's already merged or closed
 
 ## Verification Before Completion
@@ -92,5 +92,9 @@ Do NOT use regular merge or rebase merge unless explicitly requested.
 3. Verify local tests and lint passed
 4. Verify merge completed successfully (PR state is "MERGED")
 5. Verify feature branch was deleted
-6. Verify card comment was posted with merge confirmation
+6. Verify the final response contains merge confirmation; do not post it separately
 7. Only then claim completion
+
+## Bot comment writing
+
+Keep each published bot comment within 250 words of the raw Web-stored body after outer trim, including Markdown and any appended requester mention. Preserve the decision, reasoning, evidence takeaway, blockers and unresolved questions. Link detailed logs or reports with a useful pointer. Write a short, natural summary instead of repeating the same status across comments. Preserve every prior card comment in its original order when building context. The manager owns terminal publication; return the final response normally and do not also post it with `kardbrd comment add`.

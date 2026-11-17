@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/Kardbrd/kardbrd-agent/internal/api"
+	"github.com/Kardbrd/kardbrd-agent/internal/commentpolicy"
 	"github.com/spf13/cobra"
 )
 
@@ -588,7 +589,13 @@ func newCommentCommand(root *rootOptions) *cobra.Command {
 	group.AddCommand(
 		jsonCommand("add CARD_ID MESSAGE", "Add a comment to a card", cobra.ExactArgs(2), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
 			return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
-				return client.AddComment(ctx, args[0], expandPublishedText(args[1]))
+				body := expandPublishedText(args[1])
+				if os.Getenv("KARDBRD_AGENT_COMMENT_LIMIT") == "250" {
+					if err := commentpolicy.ValidateBotComment(commentpolicy.WebStoredBody(body)); err != nil {
+						return nil, err
+					}
+				}
+				return client.AddCommentOnce(ctx, args[0], body)
 			}
 		}),
 		&cobra.Command{

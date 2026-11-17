@@ -212,7 +212,7 @@ func (m *Manager) EnsureWizardCard(ctx context.Context) error {
 	}
 	cardID := idFromRaw(raw)
 	if cardID != "" {
-		_, _ = m.Client.AddComment(ctx, cardID, "Welcome. Mention @"+m.AgentName+" with the workflow you want to generate.")
+		_, _ = m.publishBotNotice(ctx, cardID, "Welcome. Mention @"+m.AgentName+" with the workflow you want to generate.")
 	}
 	return nil
 }

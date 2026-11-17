@@ -288,7 +288,7 @@ func TestQueuedCommandRechecksCurrentLabelAuthorization(t *testing.T) {
 	time.Sleep(25 * time.Millisecond)
 	assertEqual(t, 1, exec.executionCount())
 	comments := client.commentsSnapshot()
-	assertContains(t, comments[len(comments)-1].content, "no longer authorized")
+	assertContains(t, comments[len(comments)-1].content, "not authorized in the card's current state")
 }
 
 func TestQueuedCommandReportsLifecycleFailure(t *testing.T) {
@@ -328,7 +328,8 @@ func TestQueuedCommandReportsLifecycleFailure(t *testing.T) {
 		return len(comments) >= 2 && strings.Contains(comments[len(comments)-1].content, "Command Error")
 	})
 	comments := manager.Client.(*fakeBoardClient).commentsSnapshot()
-	assertContains(t, comments[len(comments)-1].content, "foreign ''' worktree")
+	assertContains(t, comments[len(comments)-1].content, "Workspace preparation or execution failed")
+	assertNotContains(t, comments[len(comments)-1].content, "foreign")
 }
 
 func TestExactCommandDeduplicatesAndBoundsPerCardQueue(t *testing.T) {
@@ -422,7 +423,7 @@ func TestExactCommandRejectsCurrentDoneStateBeforePreparation(t *testing.T) {
 	assertEqual(t, 0, manager.Executor.(*fakeExecutor).executionCount())
 	assertEqual(t, 0, manager.Worktree.(*fakeWorktree).createCalls)
 	comments := manager.Client.(*fakeBoardClient).commentsSnapshot()
-	assertContains(t, comments[len(comments)-1].content, "in Done")
+	assertContains(t, comments[len(comments)-1].content, "card's current state")
 }
 
 func TestExactCommandReportsPreparationFailure(t *testing.T) {
@@ -438,7 +439,8 @@ func TestExactCommandReportsPreparationFailure(t *testing.T) {
 	}
 	comments := manager.Client.(*fakeBoardClient).commentsSnapshot()
 	assertContains(t, comments[len(comments)-1].content, "Command Error")
-	assertContains(t, comments[len(comments)-1].content, "foreign ''' worktree")
+	assertContains(t, comments[len(comments)-1].content, "Workspace preparation or execution failed")
+	assertNotContains(t, comments[len(comments)-1].content, "foreign")
 }
 
 func TestReloadRejectsLifecycleCommandPolicyChangeWithoutMutation(t *testing.T) {
@@ -792,9 +794,8 @@ func TestProcessMentionDoesNotMarkSuccessWhenTerminalPublishFails(t *testing.T) 
 
 	assertEqual(t, 1, manager.Executor.(*fakeExecutor).executionCount())
 	assertEqual(t, 1, client.commentOnceAttemptCount())
-	assertEqual(t, 2, client.commentAttemptCount())
-	assertEqual(t, 1, client.commentCount())
-	assertContains(t, client.commentsSnapshot()[0].content, "Unable to confirm terminal summary publication")
+	assertEqual(t, 1, client.commentAttemptCount())
+	assertEqual(t, 0, client.commentCount())
 	assertReaction(t, client.reactionsSnapshot(), "comment1", "🛑")
 	assertNoReaction(t, client.reactionsSnapshot(), "comment1", "✅")
 }
@@ -833,7 +834,7 @@ func TestProcessMentionBoundsTerminalSummaryWithoutBreakingUTF8(t *testing.T) {
 	if !utf8.ValidString(content) {
 		t.Fatal("terminal summary is not valid UTF-8")
 	}
-	assertContains(t, content, "*(output truncated)*")
+	assertContains(t, content, "Final response needs revision")
 	assertContains(t, content, "@Paul")
 }
 

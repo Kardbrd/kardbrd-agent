@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -143,8 +144,31 @@ type structuredSnapshot struct {
 }
 
 func (m *Manager) rejectStructuredComment(ctx context.Context, cardID, authorName string, err error) error {
-	_, _ = m.Client.AddCommentOnce(ctx, cardID, "**Execution request error**: "+err.Error()+"\n\n"+requesterMention(authorName))
+	_, _ = m.publishBotNotice(ctx, cardID, structuredRequestNotice(err, authorName))
 	return nil
+}
+
+func structuredRequestNotice(err error, authorName string) string {
+	detail := "The structured request could not be accepted. Review its fields before retrying."
+	var apiErr *api.APIError
+	if errors.As(err, &apiErr) && safePublicErrorCode(apiErr.Code) {
+		detail = "Web rejected the request (code: " + apiErr.Code + "). Reconcile the claim before retrying."
+	} else if strings.Contains(err.Error(), "execution_request.model") {
+		detail = "The execution_request.model field is invalid. Choose an accepted model before retrying."
+	}
+	return "**Execution request error**\n\n" + detail + "\n\n" + requesterMention(authorName)
+}
+
+func safePublicErrorCode(code string) bool {
+	if code == "" || len(code) > 40 {
+		return false
+	}
+	for _, r := range code {
+		if r != '_' && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // An intake error belongs to the persisted request, even when selection
@@ -164,7 +188,7 @@ func (m *Manager) rejectStructuredIntake(ctx context.Context, message map[string
 		_ = json.Unmarshal(models, &snapshot.Models)
 	}
 	selection := mentionDispatch{Content: content}
-	body := "**Execution request error**: " + reason.Error() + "\n\n" + requesterMention(authorName)
+	body := botNoticeBody(structuredRequestNotice(reason, authorName))
 	claim, _, err := m.createOrReadMentionClaimWithDisposition(cardID, commentID, authorName, selection, snapshot, "rejected", body)
 	if err != nil {
 		return err

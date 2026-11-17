@@ -73,7 +73,7 @@ func (m *Manager) ProcessCommentCommand(ctx context.Context, cardID string, rule
 	}
 	if !rules.RuleMatches(rule, "comment_created", message) {
 		if m.reserveTerminalCommand(cardID, rule, message, "denied") {
-			_, _ = m.Client.AddComment(ctx, cardID, "**Command denied**\n\nThis command is not authorized by its configured rule.")
+			_, _ = m.publishBotNotice(ctx, cardID, "**Command denied**\n\nThis command is not authorized by its configured rule.")
 		}
 		return nil
 	}
@@ -82,11 +82,11 @@ func (m *Manager) ProcessCommentCommand(ctx context.Context, cardID string, rule
 		return nil
 	}
 	if queuePosition > 0 {
-		_, _ = m.Client.AddComment(ctx, cardID, fmt.Sprintf("**Command queued** (position %d)", queuePosition))
+		_, _ = m.publishBotNotice(ctx, cardID, fmt.Sprintf("**Command queued** (position %d)", queuePosition))
 		return nil
 	}
 	if rejected != "" {
-		_, _ = m.Client.AddComment(ctx, cardID, "**Command rejected**\n\n"+rejected)
+		_, _ = m.publishBotNotice(ctx, cardID, "**Command rejected**\n\n"+rejected)
 		return nil
 	}
 	if err := m.runCommand(session, claim); err != nil {
@@ -194,7 +194,7 @@ func (m *Manager) runCommand(session *ActiveSession, claim *commandClaim) (runEr
 	}()
 
 	if err := m.recheckCommand(actionCtx, claim); err != nil {
-		return commandRunFailure(err, "**Command rejected**\n\n"+err.Error())
+		return commandRunFailure(err, "**Command rejected**\n\nThe command is not authorized in the card's current state. Check its rule and card status before retrying.")
 	}
 	return m.executeRule(actionCtx, session, claim.rule, claim.message, true, claim.rule.Execution)
 }
@@ -237,7 +237,7 @@ func (m *Manager) recheckCommand(ctx context.Context, claim *commandClaim) error
 
 func (m *Manager) executeRule(ctx context.Context, session *ActiveSession, rule rules.Rule, message map[string]any, publishResult bool, policy rules.ExecutionPolicy) error {
 	if err := validateReasoning(m.ExecutorType, rule.Reasoning); err != nil {
-		return commandRunFailure(err, "**Command selection error**: "+err.Error())
+		return commandRunFailure(err, "**Command selection error**\n\nThe requested model or effort is unsupported. Check the configured selection before retrying.")
 	}
 	if err := ctx.Err(); err != nil {
 		return m.publishCommandExecutionFailure(session.CardID, rule, err, publishResult)
@@ -299,7 +299,7 @@ func (m *Manager) publishCommandExecutionFailure(cardID string, rule rules.Rule,
 		return canceledCommandRunFailure(err)
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return commandRunFailure(fmt.Errorf("executor timed out: %w", err), buildErrorComment(executor.Result{Success: false, Error: err.Error()}, "Automation Error ("+rule.Name+")"))
+		return commandRunFailure(fmt.Errorf("executor timed out: %w", err), "**Automation timed out** ("+rule.Name+")\n\nThe executor exceeded its deadline. Inspect the agent run log before retrying.")
 	}
 	return commandRunFailure(err, "**Automation Error** ("+rule.Name+")\n\nAgent not authenticated.")
 }
@@ -326,12 +326,11 @@ func (m *Manager) postCommandFailure(ctx context.Context, cardID string, err err
 		content = commandErr.comment
 	}
 	if content == "" {
-		diagnostic := redactCleanupDiagnostic(err.Error(), m.Token)
-		content = "**Command Error**\n\n```\n" + diagnostic + "\n```"
+		content = "**Command Error**\n\nWorkspace preparation or execution failed. Check the agent service logs before retrying."
 	}
 	publishCtx, cancel := context.WithTimeout(context.Background(), commandPublishWait)
 	defer cancel()
-	_, _ = m.Client.AddComment(publishCtx, cardID, content)
+	_, _ = m.publishBotNotice(publishCtx, cardID, content)
 }
 
 func (m *Manager) commandQueueSnapshot(cardID string) []*commandClaim {

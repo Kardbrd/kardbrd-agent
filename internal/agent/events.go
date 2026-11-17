@@ -131,7 +131,7 @@ func (m *Manager) HandleCardMoved(ctx context.Context, message map[string]any) e
 		_ = stream.Close()
 	}
 	for range canceledCommands {
-		_, _ = m.Client.AddComment(ctx, cardID, "**Command canceled**\n\nThe card entered Done before this queued command could run.")
+		_, _ = m.publishBotNotice(ctx, cardID, "**Command canceled**\n\nThe card entered Done before this queued command could run.")
 	}
 	if m.Worktree != nil {
 		return m.Worktree.Remove(cardID, false)
@@ -182,7 +182,7 @@ func (m *Manager) HandleStopReaction(ctx context.Context, cardID string, comment
 		_ = stream.Close()
 	}
 
-	_, _ = m.Client.AddComment(ctx, cardID, "**Agent stopped** 🛑\n\nThe active session was terminated.")
+	_, _ = m.publishBotNotice(ctx, cardID, "**Agent stopped** 🛑\n\nThe active session was terminated.")
 	return nil
 }
 
@@ -380,8 +380,13 @@ func isCleanupEnvironmentKey(key string) bool {
 }
 
 func (m *Manager) postCleanupFailure(ctx context.Context, cardID string, rule rules.Rule, err error, output string) {
-	diagnostic := redactCleanupDiagnostic(err.Error()+"\n"+output, m.Token)
-	_, _ = m.Client.AddComment(ctx, cardID, "**Cleanup Error** ("+rule.Name+")\n\n```\n"+diagnostic+"\n```")
+	detail := "Cleanup failed. Check the agent service logs before retrying."
+	if strings.Contains(strings.ToLower(err.Error()), "timed out") {
+		detail = "Cleanup timed out. Check its deadline and agent service logs before retrying."
+	} else if strings.Contains(strings.ToLower(err.Error()), "database") {
+		detail = "The authoritative state update failed during cleanup. Reconcile state before retrying."
+	}
+	_, _ = m.publishBotNotice(ctx, cardID, "**Cleanup Error** ("+rule.Name+")\n\n"+detail)
 }
 
 func redactCleanupDiagnostic(value, token string) string {
@@ -457,7 +462,11 @@ func (m *Manager) processRuleWithExecution(ctx context.Context, cardID string, r
 		if !publishResult {
 			return err
 		}
-		_, _ = m.Client.AddComment(ctx, cardID, "**Automation selection error** ("+rule.Name+"): "+err.Error())
+		detail := "The requested model or effort is unsupported. Check the rule selection before retrying."
+		if strings.Contains(strings.ToLower(err.Error()), "reasoning effort") {
+			detail = "The reasoning effort requires a supported executor. Change the rule effort or executor."
+		}
+		_, _ = m.publishBotNotice(ctx, cardID, "**Automation selection error** ("+rule.Name+")\n\n"+detail)
 		return nil
 	}
 	if err := m.acquire(ctx); err != nil {
@@ -485,7 +494,7 @@ func (m *Manager) processRuleWithExecution(ctx context.Context, cardID string, r
 		if !publishResult {
 			return errors.New("executor authentication failed")
 		}
-		_, _ = m.Client.AddComment(ctx, cardID, "**Automation Error** ("+rule.Name+")\n\nAgent not authenticated: `"+auth.Error+"`")
+		_, _ = m.publishBotNotice(ctx, cardID, "**Automation Error** ("+rule.Name+")\n\nAgent not authenticated. Check the LLM provider configuration and agent run log.")
 		return nil
 	}
 
@@ -534,7 +543,7 @@ func (m *Manager) processRuleWithExecution(ctx context.Context, cardID string, r
 	if !publishResult {
 		return errors.New("executor failed")
 	}
-	_, _ = m.Client.AddComment(ctx, cardID, buildErrorComment(result, "Automation Error ("+rule.Name+")"))
+	_, _ = m.publishBotNotice(ctx, cardID, buildErrorComment(result, "Automation Error ("+rule.Name+")"))
 	return nil
 }
 
@@ -678,24 +687,24 @@ func (m *Manager) HandleBotCardCommand(ctx context.Context, cardID string, conte
 	switch strings.ToLower(fields[0]) {
 	case "/pause":
 		m.Paused = true
-		_, _ = m.Client.AddComment(ctx, cardID, "⏸️ Paused - automation rules are now skipped. @mentions still work.\n\n@"+authorName)
+		_, _ = m.publishBotNotice(ctx, cardID, "⏸️ Paused - automation rules are now skipped. @mentions still work.\n\n@"+authorName)
 	case "/resume":
 		m.Paused = false
-		_, _ = m.Client.AddComment(ctx, cardID, "▶️ Resumed - automation rules are active again.\n\n@"+authorName)
+		_, _ = m.publishBotNotice(ctx, cardID, "▶️ Resumed - automation rules are active again.\n\n@"+authorName)
 	case "/status":
-		_, _ = m.Client.AddComment(ctx, cardID, "🟢 **Online**\n\n@"+authorName)
+		_, _ = m.publishBotNotice(ctx, cardID, "🟢 **Online**\n\n@"+authorName)
 	case "/reload":
 		if m.Reload == nil {
-			_, _ = m.Client.AddComment(ctx, cardID, "⚠️ Rule engine is not reloadable (static rules)\n\n@"+authorName)
+			_, _ = m.publishBotNotice(ctx, cardID, "⚠️ Rule engine is not reloadable (static rules)\n\n@"+authorName)
 			return nil
 		}
 		loaded, err := m.ReloadAndApply(ctx)
 		if err != nil {
-			_, _ = m.Client.AddComment(ctx, cardID, "**Reload failed**\n\n```\n"+err.Error()+"\n```\n\n@"+authorName)
+			_, _ = m.publishBotNotice(ctx, cardID, "**Reload failed**\n\nThe rules could not be applied. Inspect the agent run log before retrying.\n\n@"+authorName)
 			return nil
 		}
 		_ = m.EnsureBotCard(ctx)
-		_, _ = m.Client.AddComment(ctx, cardID, reloadMessage(loaded, authorName))
+		_, _ = m.publishBotNotice(ctx, cardID, reloadMessage(loaded, authorName))
 	}
 	return nil
 }

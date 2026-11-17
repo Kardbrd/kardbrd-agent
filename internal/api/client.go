@@ -22,6 +22,7 @@ type Client struct {
 type APIError struct {
 	Message    string
 	Code       string
+	FieldCode  string
 	StatusCode int
 }
 
@@ -259,14 +260,26 @@ func parseAPIError(status int, data []byte) error {
 	}
 	apiErr := &APIError{StatusCode: status, Message: message}
 	var payload struct {
-		Error string `json:"error"`
-		Code  string `json:"code"`
+		Error  string `json:"error"`
+		Code   string `json:"code"`
+		Errors struct {
+			Content []struct {
+				Message string `json:"message"`
+				Code    string `json:"code"`
+			} `json:"content"`
+		} `json:"errors"`
 	}
 	if err := json.Unmarshal(data, &payload); err == nil {
 		if payload.Error != "" {
 			apiErr.Message = payload.Error
 		}
 		apiErr.Code = payload.Code
+		if len(payload.Errors.Content) > 0 {
+			apiErr.FieldCode = payload.Errors.Content[0].Code
+			if payload.Errors.Content[0].Message != "" {
+				apiErr.Message = payload.Errors.Content[0].Message
+			}
+		}
 	}
 	if apiErr.Message == "" {
 		apiErr.Message = "Unknown error"
