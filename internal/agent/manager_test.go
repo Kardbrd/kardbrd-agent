@@ -799,6 +799,25 @@ func TestProcessMentionDoesNotMarkSuccessWhenTerminalPublishFails(t *testing.T) 
 	assertNoReaction(t, client.reactionsSnapshot(), "comment1", "✅")
 }
 
+func TestProcessMentionPublishesTerminalSummaryOverWritingTarget(t *testing.T) {
+	manager := newTestManager(t)
+	exec := manager.Executor.(*fakeExecutor)
+	client := manager.Client.(*fakeBoardClient)
+	reply := strings.Repeat("word ", 250) + "done"
+	exec.result = executor.Result{Success: true, ResultText: reply, SessionID: "session1"}
+
+	if err := manager.ProcessMention(context.Background(), "card1", "comment1", "@coder summarize", "Paul"); err != nil {
+		t.Fatal(err)
+	}
+
+	assertEqual(t, 1, exec.executionCount())
+	assertEqual(t, 1, client.commentOnceAttemptCount())
+	comments := client.commentsSnapshot()
+	assertEqual(t, 1, len(comments))
+	assertEqual(t, reply+"\n\n@Paul", comments[0].content)
+	assertReaction(t, client.reactionsSnapshot(), "comment1", "✅")
+}
+
 func TestProcessMentionBoundsTerminalSummaryWithoutBreakingUTF8(t *testing.T) {
 	manager := newTestManager(t)
 	manager.Executor.(*fakeExecutor).result = executor.Result{Success: true, ResultText: "x" + strings.Repeat("é", 7000)}

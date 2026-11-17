@@ -71,6 +71,11 @@ You may post progress updates to the card while you work. Comments, attachments,
 links, reactions, and other card updates are allowed during the run; they do not
 finish the task and are never a substitute for the final response.
 
+Aim for 250 words or fewer per card comment, including the final response.
+Lead with the outcome and include the evidence, blockers, or next steps the
+requester needs. Link detailed reports when useful. Use more space when the
+request needs it.
+
 Return your final response normally when the task is complete. Do not use ` + "`kardbrd comment add`" + ` to publish the completion response. The agent manager will publish it once as the terminal summary and mention the requester. This instruction overrides any earlier generic instruction to post a comment when finished.
 `
 
