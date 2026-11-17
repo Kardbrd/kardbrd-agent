@@ -85,6 +85,76 @@ func TestPilotEvidenceRereadAtSameMetadataRevision(t *testing.T) {
 	}
 }
 
+func TestPilotOverlappingSafetyConditions(t *testing.T) {
+	s := pilotCard("Backyard", "BY-overlap")
+	s.Decisions = []Decision{{ID: "no_split", Text: "No split", Accepted: true}}
+	s.Gate = Gate{DecisionID: "no_split", ExcludesNextStep: true, Evidence: "supported"}
+	s.NextStep = "SYM_SPLIT"
+	s.Session.Active = true
+	s.Session.HeartbeatExpired = true
+	assertResult(t, Evaluate(s, pilotNow), "waiting_event", "", "", "", "undetermined", false)
+
+	s.Session.Active = false
+	s.Session.ReleasedTo = "MBPBot"
+	s.Session.ReleaseVerified = true
+	assertResult(t, Evaluate(s, pilotNow), "blocked", "", "", "", "undetermined", false)
+
+	s.Decisions[0].Accepted = false
+	assertResult(t, Evaluate(s, pilotNow), "waiting_user", "", "no_split", "", "undetermined", false)
+
+	s.Enrollment.Verified = false
+	assertResult(t, Evaluate(s, pilotNow), "invalid", "", "", "", "undetermined", false)
+}
+
+func TestPilotPendingUnrelatedAndExpiredOwner(t *testing.T) {
+	s := pilotCard("Backyard", "BY-owner")
+	s.Decisions = []Decision{{ID: "later", Accepted: false}, {ID: "now", Accepted: true}}
+	s.Gate = Gate{DecisionID: "now", Evidence: "supported"}
+	assertResult(t, Evaluate(s, pilotNow), "ready", "SYM_NEXT", "", "", "undetermined", false)
+
+	s.Session.ReleaseVerified = false
+	s.Session.ReleasedTo = ""
+	s.Session.HeartbeatExpired = true
+	assertResult(t, Evaluate(s, pilotNow), "waiting_event", "", "", "", "undetermined", false)
+
+	s.Session.ReleasedTo = "MBPBot"
+	s.Session.ReleaseVerified = true
+	assertResult(t, Evaluate(s, pilotNow), "ready", "SYM_NEXT", "", "", "undetermined", false)
+}
+
+func TestPilotUncertainSendPrecedesDueReportAndOtherGates(t *testing.T) {
+	s := pilotCard("DSO", "DSO-uncertain")
+	s.Report.DueAt = pilotNow.Add(-time.Hour)
+	s.Report.CanDeliver = false
+	s.Effect = Effect{Kind: "report_send", State: "uncertain"}
+	assertResult(t, Evaluate(s, pilotNow), "needs_review", "", "", "", "undetermined", false)
+	if !Evaluate(s, pilotNow).Overdue {
+		t.Fatal("uncertain send hid overdue report")
+	}
+}
+
+func TestPilotUnknownEffectCannotBecomeAnotherSend(t *testing.T) {
+	s := pilotCard("DSO", "DSO-unknown-effect")
+	s.Report.DueAt = pilotNow.Add(-time.Hour)
+	s.Effect = Effect{Kind: "report_send", State: "unknown"}
+	assertResult(t, Evaluate(s, pilotNow), "needs_review", "", "", "", "undetermined", false)
+	s.Effect = Effect{Kind: "deploy", State: "confirmed", Receipt: "deploy-1"}
+	assertResult(t, Evaluate(s, pilotNow), "needs_review", "", "", "", "undetermined", false)
+	s.Effect = Effect{Kind: "report_send", State: "none", Receipt: "send-1"}
+	assertResult(t, Evaluate(s, pilotNow), "needs_review", "", "", "", "undetermined", false)
+}
+
+func TestPilotTerminalEndpointPrecedesExpiredOrActiveOwner(t *testing.T) {
+	s := pilotCard("DSO", "DSO-done")
+	s.Session.Active = true
+	s.Session.HeartbeatExpired = true
+	s.Report.DueAt = pilotNow.Add(-time.Hour)
+	s.Report.DeliveredAt = s.Report.DueAt.Add(-time.Minute)
+	s.Report.CriteriaComplete = true
+	s.Effect = Effect{Kind: "report_send", State: "confirmed", Receipt: "send-1"}
+	assertResult(t, Evaluate(s, pilotNow), "stopped", "", "", "", "met", true)
+}
+
 func TestPilotReportAndDeploymentEndpoints(t *testing.T) {
 	report := pilotCard("DSO", "DSO-1")
 	report.Report.DueAt = pilotNow.Add(-time.Hour)
@@ -168,6 +238,28 @@ type fakeSource struct {
 	reads    []string
 }
 
+type cancelAfterPageSource struct {
+	*fakeSource
+	cancel context.CancelFunc
+}
+
+type cancelAfterReadSource struct {
+	*fakeSource
+	cancel context.CancelFunc
+}
+
+func (f cancelAfterReadSource) ReadCard(ctx context.Context, id string) (Snapshot, error) {
+	card, err := f.fakeSource.ReadCard(ctx, id)
+	f.cancel()
+	return card, err
+}
+
+func (f cancelAfterPageSource) Page(ctx context.Context, board string, feed Feed, cursor string) (Page, error) {
+	page, err := f.fakeSource.Page(ctx, board, feed, cursor)
+	f.cancel()
+	return page, err
+}
+
 func (f *fakeSource) Page(_ context.Context, _ string, feed Feed, cursor string) (Page, error) {
 	k := pageKey{feed, cursor}
 	if err := f.errs[k]; err != nil {
@@ -232,6 +324,54 @@ func TestPilotDiscoveryPartialFailureKeepsCheckpoint(t *testing.T) {
 	}
 }
 
+func TestPilotDiscoveryReadFailureAndCancellationKeepCheckpoint(t *testing.T) {
+	old := Checkpoint{Changed: "c0", Due: "d0", Scope: "s0"}
+	f := sourceWithEmptyFeeds()
+	f.pages[pageKey{Changed, "c0"}] = Page{Entries: []Entry{{CardID: "BY-one"}}, Done: true, NextCursor: "c1"}
+	f.pages[pageKey{Due, "d0"}] = Page{Done: true, NextCursor: "d1"}
+	f.pages[pageKey{Scope, "s0"}] = Page{Done: true, NextCursor: "s1"}
+	f.readErrs["BY-one"] = errors.New("temporary read failure")
+	got, err := Discover(context.Background(), f, "AgentsClients", old, pilotNow)
+	if err == nil || len(got.Cards) != 0 || got.Next != old {
+		t.Fatalf("read failure published partial discovery: batch=%+v err=%v", got, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	got, err = Discover(ctx, f, "AgentsClients", old, pilotNow)
+	if !errors.Is(err, context.Canceled) || len(got.Cards) != 0 || got.Next != old {
+		t.Fatalf("cancellation published partial discovery: batch=%+v err=%v", got, err)
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	got, err = Discover(ctx, cancelAfterPageSource{fakeSource: f, cancel: cancel}, "AgentsClients", old, pilotNow)
+	if !errors.Is(err, context.Canceled) || len(got.Cards) != 0 || got.Next != old {
+		t.Fatalf("mid-page cancellation published partial discovery: batch=%+v err=%v", got, err)
+	}
+
+	f.readErrs["BY-one"] = ErrNotVisible
+	ctx, cancel = context.WithCancel(context.Background())
+	got, err = Discover(ctx, cancelAfterReadSource{fakeSource: f, cancel: cancel}, "AgentsClients", old, pilotNow)
+	if !errors.Is(err, context.Canceled) || len(got.Cards) != 0 || got.Next != old {
+		t.Fatalf("mid-read cancellation published checkpoint: batch=%+v err=%v", got, err)
+	}
+}
+
+func TestPilotDiscoveryRejectsIncompleteAndCyclicPages(t *testing.T) {
+	old := Checkpoint{Changed: "c0"}
+	f := sourceWithEmptyFeeds()
+	f.pages[pageKey{Changed, "c0"}] = Page{NextCursor: "c0"}
+	got, err := Discover(context.Background(), f, "AgentsClients", old, pilotNow)
+	if err == nil || got.Next != old {
+		t.Fatalf("cyclic page accepted: batch=%+v err=%v", got, err)
+	}
+	f.pages[pageKey{Changed, "c0"}] = Page{NextCursor: ""}
+	got, err = Discover(context.Background(), f, "AgentsClients", old, pilotNow)
+	if err == nil || got.Next != old {
+		t.Fatalf("incomplete page accepted: batch=%+v err=%v", got, err)
+	}
+}
+
 func TestPilotDiscoveryLostCursorAndScopeReconciliation(t *testing.T) {
 	f := sourceWithEmptyFeeds()
 	f.errs[pageKey{Changed, "vanished"}] = ErrCursorGone
@@ -276,7 +416,7 @@ func TestPilotReplayAndCrashSafeReceiptObservation(t *testing.T) {
 	card := pilotCard("DSO", "DSO-report")
 	card.Report.DueAt = pilotNow.Add(-time.Hour)
 	card.Report.CriteriaComplete = true
-	card.Report.DeliveredAt = pilotNow.Add(-time.Minute)
+	card.Report.DeliveredAt = card.Report.DueAt.Add(-time.Minute)
 	card.Effect = Effect{Kind: "report_send", State: "confirmed", Receipt: "durable-send-1"}
 	f.cards[card.ID] = card
 	for i := 0; i < 2; i++ { // crash before checkpoint publication: replay the same page
