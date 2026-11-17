@@ -37,6 +37,7 @@ func TestBuildPromptForSlashCommandIncludesAgentFilesKnowledgeAndCLIInstructions
 	assertContains(t, got, "kardbrd card update card1 --clear-labels")
 	assertContains(t, got, "kardbrd comment add card1")
 	assertContains(t, got, "You may post progress updates to the card while you work")
+	assertContains(t, got, "Aim for 250 words or fewer per card comment, including the final response.")
 	assertContains(t, got, "Return your final response normally")
 	assertContains(t, got, "The agent manager will publish it once as the terminal summary")
 	assertContains(t, got, "This instruction overrides any earlier generic instruction to post a comment when finished")
@@ -59,6 +60,7 @@ func TestBuildPromptForFreeFormRequest(t *testing.T) {
 	assertContains(t, got, "@Bot fix this")
 	assertContains(t, got, "**Requested by:** @alice")
 	assertContains(t, got, "Please complete this request.")
+	assertContains(t, got, "Aim for 250 words or fewer per card comment, including the final response.")
 }
 
 func TestExtractCommandRemovesMentionPreservingOriginalCase(t *testing.T) {
