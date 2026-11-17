@@ -166,7 +166,10 @@ func Evaluate(s Snapshot, now time.Time) Result {
 			return set("needs_review", "unresolved_report_observation")
 		}
 		if result.Overdue {
-			if !s.Report.MaterialSufficient && s.Report.ExternalInput != "" {
+			if !s.Report.MaterialSufficient {
+				if s.Report.ExternalInput == "" {
+					return set("needs_review", "insufficient_report_material")
+				}
 				result.Input = s.Report.ExternalInput
 				return set("blocked", "missing_external_input")
 			}

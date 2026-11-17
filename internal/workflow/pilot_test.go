@@ -133,6 +133,16 @@ func TestPilotUncertainSendPrecedesDueReportAndOtherGates(t *testing.T) {
 	}
 }
 
+func TestPilotInsufficientReportMaterialWithoutNamedInputNeedsReview(t *testing.T) {
+	s := pilotCard("DSO", "DSO-missing-material")
+	s.Report.DueAt = pilotNow.Add(-time.Hour)
+	s.Report.MaterialSufficient = false
+	assertResult(t, Evaluate(s, pilotNow), "needs_review", "", "", "", "undetermined", false)
+	if !Evaluate(s, pilotNow).Overdue {
+		t.Fatal("missing material hid overdue report")
+	}
+}
+
 func TestPilotUnknownEffectCannotBecomeAnotherSend(t *testing.T) {
 	s := pilotCard("DSO", "DSO-unknown-effect")
 	s.Report.DueAt = pilotNow.Add(-time.Hour)
