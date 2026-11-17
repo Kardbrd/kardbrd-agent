@@ -103,6 +103,29 @@ func Evaluate(s Snapshot, now time.Time) Result {
 		result.Reasons = []string{reason}
 		return result
 	}
+	// A gate protects only its named candidate. An omitted name retains the
+	// original NextStep binding used by the first pilot fixtures.
+	ready := func(candidate, reason string) Result {
+		if s.Gate.DecisionID != "" &&
+			(s.Gate.Candidate == candidate || s.Gate.Candidate == "" && s.NextStep == candidate) {
+			var decision *Decision
+			for i := range s.Decisions {
+				if s.Decisions[i].ID == s.Gate.DecisionID {
+					decision = &s.Decisions[i]
+					break
+				}
+			}
+			if decision == nil || !decision.Accepted || s.Gate.Evidence != "supported" {
+				result.Gate = s.Gate.DecisionID
+				return set("waiting_user", "dependent_decision_unresolved")
+			}
+			if s.Gate.ExcludesNextStep {
+				return set("blocked", "accepted_negative_excludes_step")
+			}
+		}
+		result.Candidate = candidate
+		return set("ready", reason)
+	}
 	if !s.Enrollment.Explicit || !s.Enrollment.Verified ||
 		(s.Enrollment.Workflow != "Backyard" && s.Enrollment.Workflow != "DSO") ||
 		s.Enrollment.Version != "pilot-v1" || s.Endpoint != "report" && s.Endpoint != "deployed_verified" {
@@ -124,6 +147,9 @@ func Evaluate(s Snapshot, now time.Time) Result {
 			(s.Endpoint == "report" && s.Effect.Kind != "report_send" || s.Endpoint == "deployed_verified" && s.Effect.Kind != "deploy") {
 		result.Overdue = reportOverdue(s, now)
 		return set("needs_review", "unrecognized_effect_observation")
+	}
+	if s.Endpoint == "report" && !s.Report.DeliveredAt.IsZero() && s.Report.DeliveredAt.After(now) {
+		return set("needs_review", "future_report_delivery")
 	}
 	if s.Endpoint == "report" && s.Effect.State == "confirmed" && s.Effect.Receipt != "" &&
 		!s.Report.DeliveredAt.IsZero() && s.Report.CriteriaComplete && !s.Report.ContinueRequested {
@@ -154,8 +180,7 @@ func Evaluate(s Snapshot, now time.Time) Result {
 			}
 			if s.Report.CriteriaComplete {
 				if s.Report.ContinueRequested {
-					result.Candidate = "SYM_INVESTIGATE_NEXT"
-					return set("ready", "continued_investigation")
+					return ready("SYM_INVESTIGATE_NEXT", "continued_investigation")
 				}
 			}
 		}
@@ -179,19 +204,16 @@ func Evaluate(s Snapshot, now time.Time) Result {
 					result.Gate = "SYM_REPORT_DELIVERY_GATE"
 					return set("waiting_user", "delivery_permission")
 				}
-				result.Candidate = "SYM_REPORT_DELIVER"
-				return set("ready", "deliver_report")
+				return ready("SYM_REPORT_DELIVER", "deliver_report")
 			}
 			if !s.Report.CanPrepare {
 				result.Gate = "SYM_REPORT_PREPARATION_GATE"
 				return set("waiting_user", "preparation_permission")
 			}
 			if s.Report.CanDeliver {
-				result.Candidate = "SYM_REPORT_CREATE_AND_DELIVER"
-			} else {
-				result.Candidate = "SYM_REPORT_CREATE_ARTIFACT"
+				return ready("SYM_REPORT_CREATE_AND_DELIVER", "report_due")
 			}
-			return set("ready", "report_due")
+			return ready("SYM_REPORT_CREATE_ARTIFACT", "report_due")
 		}
 	} else {
 		if s.Effect.Kind == "deploy" && s.Effect.State == "queued" {
@@ -216,32 +238,13 @@ func Evaluate(s Snapshot, now time.Time) Result {
 				result.Gate = "SYM_DEPLOY_GATE"
 				return set("waiting_user", "deployment_permission")
 			}
-			result.Candidate = "SYM_DEPLOY"
-			return set("ready", "deployment_candidate")
-		}
-	}
-
-	if s.Gate.DecisionID != "" {
-		var decision *Decision
-		for i := range s.Decisions {
-			if s.Decisions[i].ID == s.Gate.DecisionID {
-				decision = &s.Decisions[i]
-				break
-			}
-		}
-		if decision == nil || !decision.Accepted || s.Gate.Evidence != "supported" {
-			result.Gate = s.Gate.DecisionID
-			return set("waiting_user", "dependent_decision_unresolved")
-		}
-		if s.Gate.ExcludesNextStep {
-			return set("blocked", "accepted_negative_excludes_step")
+			return ready("SYM_DEPLOY", "deployment_candidate")
 		}
 	}
 	if s.NextStep == "" {
 		return set("waiting_event", "no_next_step")
 	}
-	result.Candidate = s.NextStep
-	return set("ready", "next_step")
+	return ready(s.NextStep, "next_step")
 }
 
 func reportOverdue(s Snapshot, now time.Time) bool {

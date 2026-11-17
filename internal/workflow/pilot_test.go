@@ -238,7 +238,7 @@ func TestPilotReportAndDeploymentEndpoints(t *testing.T) {
 
 func TestPilotCandidateDecisionsDoNotBypassGates(t *testing.T) {
 	for _, candidate := range []string{"SYM_REPORT_CREATE_AND_DELIVER", "SYM_DEPLOY", "SYM_INVESTIGATE_NEXT"} {
-		for _, state := range []string{"negative", "pending", "disputed", "unrelated"} {
+		for _, state := range []string{"negative", "pending", "disputed", "allowed", "unrelated"} {
 			t.Run(candidate+"/"+state, func(t *testing.T) {
 				s := pilotCard("DSO", "DSO-decision")
 				s.Decisions = []Decision{{ID: "choice", Text: "Do not take this step", Accepted: true}}
@@ -264,14 +264,21 @@ func TestPilotCandidateDecisionsDoNotBypassGates(t *testing.T) {
 				case "disputed":
 					s.Gate.Evidence = "disputed"
 					wantStatus, wantGate, wantReason = "waiting_user", "choice", "dependent_decision_unresolved"
+				case "allowed":
+					s.Gate.ExcludesNextStep = false
+					wantStatus, wantCandidate = "ready", candidate
 				case "unrelated":
+					s.Decisions[0].Accepted = false
 					s.Gate.Candidate = "SYM_OTHER_STEP"
 					wantStatus, wantCandidate = "ready", candidate
-					if candidate == "SYM_REPORT_CREATE_AND_DELIVER" {
+				}
+				if wantStatus == "ready" {
+					switch candidate {
+					case "SYM_REPORT_CREATE_AND_DELIVER":
 						wantReason = "report_due"
-					} else if candidate == "SYM_DEPLOY" {
+					case "SYM_DEPLOY":
 						wantReason = "deployment_candidate"
-					} else {
+					case "SYM_INVESTIGATE_NEXT":
 						wantReason = "continued_investigation"
 					}
 				}
