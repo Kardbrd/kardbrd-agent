@@ -58,11 +58,14 @@ func decodeObservedDetail(raw json.RawMessage, id string) (observedDetail, bool)
 // describes observed current state, not a server snapshot or action permission.
 func ReadObservedScope(ctx context.Context, client *api.Client, boardIDs []string, old ObservedInventory, limits ScopeLimits, project ObservationProjector, now time.Time) (ObservedScopeResult, error) {
 	prior := ObservedInventory{Records: make(map[string]ObservedRecord, len(old.Records))}
+	working := ObservedInventory{Records: make(map[string]ObservedRecord, len(old.Records))}
 	for id, record := range old.Records {
 		record.Card.Decisions = append([]Decision(nil), record.Card.Decisions...)
 		prior.Records[id] = record
+		record.Card.Decisions = append([]Decision(nil), record.Card.Decisions...)
+		working.Records[id] = record
 	}
-	result := ObservedScopeResult{Next: prior}
+	result := ObservedScopeResult{Next: working}
 	fail := func(boardID, cardID, kind, detail string, err error) (ObservedScopeResult, error) {
 		if canceled := ctx.Err(); canceled != nil {
 			kind, detail, err = "cancelled", canceled.Error(), canceled
@@ -171,12 +174,14 @@ func ReadObservedScope(ctx context.Context, client *api.Client, boardIDs []strin
 			continue
 		}
 		card.Enrollment.Verified = false // Web attribution does not prove an original decision.
+		card.Decisions = append([]Decision(nil), card.Decisions...)
 		record := ObservedRecord{Card: card, ObservedAt: now, DecisionEvidence: "unverified_original_decision"}
 		result.Observations = append(result.Observations, record)
 		result.Unresolved = append(result.Unresolved, UnresolvedEvidence{BoardID: loc.boardID, CardID: id, Kind: "decision_provenance_unverified", Detail: "Web attribution does not establish the original decision"})
 		if !wasPrior && len(result.Next.Records) >= limits.MaxRetainedRecords {
 			return fail(loc.boardID, id, "inventory_limit", "new observation exceeds retained history cap", nil)
 		}
+		record.Card.Decisions = append([]Decision(nil), record.Card.Decisions...)
 		result.Next.Records[id] = record
 	}
 	priorIDs := make([]string, 0, len(prior.Records))

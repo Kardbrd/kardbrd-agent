@@ -101,6 +101,90 @@ func TestObservedScopeCancellationAfterApparentCandidatePublishesNothing(t *test
 	assertRetainedPrior(t, got, old, "BY-old")
 }
 
+func TestObservedScopeFailureAfterStoredObservationRollsBack(t *testing.T) {
+	for _, tc := range []struct {
+		name, firstID, secondID string
+		old                     ObservedInventory
+		limit                   int
+		failSecondRead          bool
+	}{
+		{"updated record then detail read fails", "BY-old", "BY-peer", observedPrior("BY-old"), 3, true},
+		{"new record then detail read fails", "BY-new", "BY-peer", observedPrior("unknown-1"), 3, true},
+		{"updated record then history cap", "BY-old", "BY-peer", observedPrior("BY-old"), 1, false},
+		{"new record then history cap", "BY-new", "BY-peer", observedPrior("unknown-1"), 2, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			old := tc.old
+			for id, record := range old.Records {
+				record.Card.Decisions = []Decision{{ID: "prior", Text: "original decision", Accepted: true}}
+				old.Records[id] = record
+			}
+			original := ObservedInventory{Records: make(map[string]ObservedRecord, len(old.Records))}
+			for id, record := range old.Records {
+				record.Card.Decisions = append([]Decision(nil), record.Card.Decisions...)
+				original.Records[id] = record
+			}
+			f := &httpScopeFixture{
+				boards: []string{observedBoard("B", summaryJSON(tc.firstID, "todo", false), summaryJSON(tc.secondID, "todo", false))},
+				cards: map[string]string{
+					tc.firstID:  detailJSON(tc.firstID, "B", "todo", false, "null", `[]`),
+					tc.secondID: detailJSON(tc.secondID, "B", "todo", false, "null", `[]`),
+				},
+				status: map[string]int{},
+			}
+			if tc.failSecondRead {
+				f.status[tc.secondID] = http.StatusServiceUnavailable
+			}
+			client, closeServer := fixtureClient(t, f)
+			defer closeServer()
+			limits := scopeLimits()
+			limits.MaxRetainedRecords = tc.limit
+			got, _ := ReadObservedScope(context.Background(), client, []string{"B"}, old, limits, observedProjector(true, true), pilotNow)
+			wantKind := "inventory_limit"
+			if tc.failSecondRead {
+				wantKind = "detail_read"
+			}
+			if got.PassComplete || len(got.Observations) != 0 || len(got.Unresolved) != 1 || got.Unresolved[0].Kind != wantKind {
+				t.Fatalf("failed pass exposed partial observations: %+v", got)
+			}
+			if !reflect.DeepEqual(got.Next, original) || !reflect.DeepEqual(old, original) {
+				t.Fatalf("failed pass changed inventory: returned=%+v caller=%+v want=%+v", got.Next, old, original)
+			}
+			for id, record := range got.Next.Records {
+				record.Card.Decisions[0].Text = "changed through result"
+				got.Next.Records[id] = record
+				delete(got.Next.Records, id)
+			}
+			if !reflect.DeepEqual(old, original) {
+				t.Fatalf("returned records or decision slices alias caller: got=%+v want=%+v", old, original)
+			}
+		})
+	}
+}
+
+func TestObservedScopeObservationAndNextDecisionsAreIndependent(t *testing.T) {
+	f := &httpScopeFixture{
+		boards: []string{observedBoard("B", summaryJSON("BY-new", "todo", false))},
+		cards:  map[string]string{"BY-new": detailJSON("BY-new", "B", "todo", false, "null", `[]`)},
+		status: map[string]int{},
+	}
+	client, closeServer := fixtureClient(t, f)
+	defer closeServer()
+	project := observedProjector(true, true)
+	got, err := ReadObservedScope(context.Background(), client, []string{"B"}, ObservedInventory{}, scopeLimits(), func(id string, raw json.RawMessage) (Snapshot, bool) {
+		card, ok := project(id, raw)
+		card.Decisions = []Decision{{ID: "current", Text: "original decision", Accepted: true}}
+		return card, ok
+	}, pilotNow)
+	if err != nil || !got.PassComplete || len(got.Observations) != 1 {
+		t.Fatalf("complete pass: %+v err=%v", got, err)
+	}
+	got.Observations[0].Card.Decisions[0].Text = "changed through observation"
+	if got.Next.Records["BY-new"].Card.Decisions[0].Text != "original decision" {
+		t.Fatal("observation decision slice aliases next inventory")
+	}
+}
+
 func TestObservedScopeConflictingCurrentMembershipIsIncomplete(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body := observedBoard("B1", summaryJSON("BY-new", "todo", false))
