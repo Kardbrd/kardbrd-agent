@@ -95,7 +95,11 @@ func observedMultiBoardClient(t *testing.T, mode *int) (*api.Client, func()) {
 		}
 		switch r.URL.RequestURI() {
 		case "/api/boards/B1/?include_archived=true":
-			_, _ = w.Write([]byte(observedBoard("B1")))
+			if *mode == 2 {
+				_, _ = w.Write([]byte(observedBoard("B1", summaryJSON("BY-new", "todo", false))))
+			} else {
+				_, _ = w.Write([]byte(observedBoard("B1")))
+			}
 		case "/api/boards/B2/?include_archived=true":
 			if *mode == 2 {
 				w.WriteHeader(http.StatusForbidden)
@@ -112,6 +116,8 @@ func observedMultiBoardClient(t *testing.T, mode *int) (*api.Client, func()) {
 			}
 		case "/api/cards/BY-old/":
 			_, _ = w.Write([]byte(detailJSON("BY-old", "B2", "todo", *mode == 3, "null", `[]`)))
+		case "/api/cards/BY-new/":
+			_, _ = w.Write([]byte(detailJSON("BY-new", "B1", "todo", false, "null", `[]`)))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
