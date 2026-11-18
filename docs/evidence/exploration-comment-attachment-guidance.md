@@ -53,6 +53,16 @@ The first commit was based on an older local `main`; GitHub showed a conflict
 with `origin/main` at `95cf115`. The branch was rebased onto that current main
 and the prompt wording was reconciled with its manager-owned final response.
 
+## Supervisor revision check
+
+The verified code revision `f78f9342cbedc8032e780c9f3000152ecd6727fa`
+is based directly on `origin/main` at
+`95cf1153d6ae0cebc55961392b9c62cd1d49760c`; the latter is its merge
+base. After fetching origin, GitHub reported PR #80 `MERGEABLE` and `CLEAN`.
+The diff contains only this card's CLI help, prompt wording, and evidence.
+The upstream advisory comment sentence and manager-owned final publication
+path remain present. `git diff --check origin/main...HEAD` passed.
+
 ## Generated help inspected
 
 The following commands were run against this branch with
@@ -86,6 +96,19 @@ The first full run after rebase found two existing prompt tests that require
 the original 250-word sentence verbatim. The sentence was retained, the
 advisory clarification was placed after it, and the focused and full suites
 then passed.
+
+The supervisor check reran all three generated `--help` pages from the rebased
+branch and read their complete output. It also reran `go test ./...`,
+`go vet ./...`, and `PATH=/usr/local/go/bin:$PATH pre-commit run --all-files`.
+All passed. The test suite reported passing results for `internal/agent`,
+`internal/api`, `internal/cli`, `internal/config`, `internal/executor`,
+`internal/packaging`, `internal/prompt`, `internal/rules`,
+`internal/scheduler`, `internal/update`, `internal/worker`, and
+`internal/worktree`; the command and version packages had no test files.
+The applicable hooks (whitespace, end-of-file, YAML, large-file,
+merge-conflict, case-conflict, yamllint, codespell, and kardbrd.yml
+validation) passed; Ruff hooks had no applicable files. `go vet` exited
+successfully with no diagnostics.
 
 The rebased branch's Go CLI uploaded a synthetic 239-byte Markdown file using
 `--content-file`. The returned attachment is `Ee8QWogn`, filename
