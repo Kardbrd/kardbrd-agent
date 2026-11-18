@@ -586,11 +586,7 @@ func cardMoveToBoard(root *rootOptions) *cobra.Command {
 func newCommentCommand(root *rootOptions) *cobra.Command {
 	group := &cobra.Command{Use: "comment", Short: "Comment operations on cards"}
 	group.AddCommand(
-		jsonCommand("add CARD_ID MESSAGE", "Add a comment to a card", cobra.ExactArgs(2), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
-			return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
-				return client.AddComment(ctx, args[0], expandPublishedText(args[1]))
-			}
-		}),
+		commentAdd(root),
 		&cobra.Command{
 			Use:   "delete CARD_ID COMMENT_ID",
 			Short: "Delete a comment",
@@ -617,6 +613,24 @@ func newCommentCommand(root *rootOptions) *cobra.Command {
 		}),
 	)
 	return group
+}
+
+const commentAttachmentGuidance = `Use comments for the result, important reasoning, decisions, blockers, and
+questions the human should read directly. Keep them concise (aim for about 250
+words; this is guidance, not a publication limit), follow writing rules, and
+avoid filler or AI-style prose. If a detailed report cannot be condensed into
+a sensible comment without losing necessary detail, upload the complete report
+as an attachment. Mention or link it in a short comment with the useful
+takeaway, without duplicating the full report.`
+
+func commentAdd(root *rootOptions) *cobra.Command {
+	cmd := jsonCommand("add CARD_ID MESSAGE", "Add a comment to a card", cobra.ExactArgs(2), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
+		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
+			return client.AddComment(ctx, args[0], expandPublishedText(args[1]))
+		}
+	})
+	cmd.Long = "Add a comment to a card.\n\n" + commentAttachmentGuidance
+	return cmd
 }
 
 func newChecklistCommand(root *rootOptions) *cobra.Command {
@@ -744,11 +758,16 @@ func newAttachmentCommand(root *rootOptions) *cobra.Command {
 }
 
 func attachmentUpload(root *rootOptions) *cobra.Command {
-	return jsonCommand("upload CARD_ID FILE_PATH", "Upload a file to a card", cobra.ExactArgs(2), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
+	cmd := jsonCommand("upload CARD_ID FILE_PATH", "Upload a file to a card", cobra.ExactArgs(2), root, func(_ *cobra.Command, args []string) func(context.Context, *api.Client) (json.RawMessage, error) {
 		return func(ctx context.Context, client *api.Client) (json.RawMessage, error) {
 			return client.UploadAttachment(ctx, args[0], args[1])
 		}
 	})
+	cmd.Long = "Upload a file to a card.\n\n" + commentAttachmentGuidance + `
+
+For a Markdown report, use attachment markdown to name the uploaded file:
+  kardbrd attachment markdown CARD_ID --filename report.md --content-file PATH`
+	return cmd
 }
 
 func attachmentMarkdown(root *rootOptions) *cobra.Command {
@@ -766,6 +785,13 @@ func attachmentMarkdown(root *rootOptions) *cobra.Command {
 	cmd.Flags().StringVar(&content, "content", "", "Markdown content")
 	cmd.Flags().StringVar(&contentFile, "content-file", "", "Read content from file, or - for stdin")
 	_ = cmd.MarkFlagRequired("filename")
+	cmd.Long = "Upload markdown content as an attachment.\n\n" + commentAttachmentGuidance + `
+
+Use a UTF-8 file to preserve real newlines, code fences, and fenced Mermaid
+source in the complete report. For example:
+  kardbrd attachment markdown CARD_ID --filename report.md --content-file PATH
+
+Use --content-file - to read the report from stdin.`
 	return cmd
 }
 

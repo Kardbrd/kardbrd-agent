@@ -72,9 +72,13 @@ links, reactions, and other card updates are allowed during the run; they do not
 finish the task and are never a substitute for the final response.
 
 Aim for 250 words or fewer per card comment, including the final response.
-Lead with the outcome and include the evidence, blockers, or next steps the
-requester needs. Link detailed reports when useful. Use more space when the
-request needs it.
+This is guidance, not a publication limit. Lead with the outcome and include the
+important reasoning, decisions, blockers, questions, and next steps the
+requester needs. Avoid filler or AI-style prose. Use more space when the request
+needs it. If a detailed report cannot be condensed sensibly without losing
+necessary detail, upload the complete report as an attachment and mention or
+link it in the short comment. Preserve its UTF-8 text, real newlines, code
+fences, and Mermaid source.
 
 Return your final response normally when the task is complete. Do not use ` + "`kardbrd comment add`" + ` to publish the completion response. The agent manager will publish it once as the terminal summary and mention the requester. This instruction overrides any earlier generic instruction to post a comment when finished.
 `
